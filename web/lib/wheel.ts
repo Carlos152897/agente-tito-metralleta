@@ -4,6 +4,7 @@
 // Un contrato son 100 acciones y el colateral de un cash-secured put es
 // strike × 100: ese efectivo queda inmovilizado hasta el vencimiento.
 
+import { bsDelta, bsPrice, impliedVol } from "./blackScholes";
 import { probAbove } from "./expectedMove";
 import type { Level } from "./levels";
 
@@ -296,4 +297,125 @@ export function scoreCandidate(input: ScoreInput): WheelScore {
   const earnings = earningsPart(input.earnings);
   const total = annualized.points + ivRank.points + cushion.points + liquidity.points + earnings.points;
   return { total, annualized, ivRank, cushion, liquidity, earnings };
+}
+
+// ── Ensamblado de candidatos ───────────────────────────────────────────
+
+/** Una fila de la cadena, ya normalizada desde el snapshot de Massive. */
+export interface ChainQuote {
+  strike: number;
+  expiration: string; // YYYY-MM-DD
+  dte: number;
+  bid: number | null;
+  ask: number | null;
+  lastTrade: number | null;
+  openInterest: number;
+}
+
+export type IvSource = "implicita" | "estimada";
+
+export interface WheelCandidate {
+  ticker: string;
+  strike: number;
+  expiration: string;
+  dte: number;
+  spot: number;
+  /** Negativo (es un put). 0 si no se pudo calcular. */
+  delta: number;
+  /** IV decimal usada en todos los cálculos de esta fila. */
+  iv: number;
+  ivSource: IvSource;
+  openInterest: number;
+  spreadPct: number | null;
+  /** null si el candidato está bloqueado: no se muestra prima que no puedes cobrar. */
+  premium: PremiumPick | null;
+  metrics: WheelMetrics | null;
+  score: WheelScore | null;
+  blocked: boolean;
+  blockReason: WheelBlockReason | null;
+}
+
+export interface CandidatesInput {
+  ticker: string;
+  spot: number;
+  quotes: ChainQuote[];
+  preset: WheelPreset;
+  ivRank: number | null;
+  supports: Level[];
+  earnings: EarningsFlag;
+  /** IV de respaldo (volatilidad realizada) cuando la bisección no converge. */
+  fallbackIv: number;
+}
+
+/** IV del strike más cercano al spot — el proxy de "la IV de esta cadena". */
+export function atmIv(rows: { strike: number; iv: number }[], spot: number): number | null {
+  if (rows.length === 0) return null;
+  const best = rows.reduce((a, b) =>
+    Math.abs(b.strike - spot) < Math.abs(a.strike - spot) ? b : a);
+  return best.iv;
+}
+
+export function wheelCandidates(input: CandidatesInput): WheelCandidate[] {
+  const { ticker, spot, quotes, preset, ivRank, supports, earnings, fallbackIv } = input;
+  if (!(spot > 0)) return [];
+
+  const out: WheelCandidate[] = [];
+
+  for (const q of quotes) {
+    if (q.dte < preset.dteMin || q.dte > preset.dteMax) continue;
+
+    const T = Math.max(q.dte, 1) / 365;
+    const mid = q.bid != null && q.ask != null && q.bid > 0 && q.ask > 0
+      ? (q.bid + q.ask) / 2
+      : null;
+
+    const implied = mid != null ? impliedVol(mid, spot, q.strike, T, "put") : null;
+    const iv = implied ?? fallbackIv;
+    const ivSource: IvSource = implied != null ? "implicita" : "estimada";
+
+    const delta = bsDelta(spot, q.strike, T, iv, "put");
+    const absDelta = Math.abs(delta);
+    if (absDelta < preset.deltaMin || absDelta > preset.deltaMax) continue;
+
+    const spreadPct = spreadPctOf(q.bid, q.ask);
+    const blockReason = liquidityBlock({ bid: q.bid, ask: q.ask, openInterest: q.openInterest });
+
+    if (blockReason) {
+      // Bloqueado: sin prima y sin métricas. No se enseña un número que no puedes cobrar.
+      out.push({
+        ticker, strike: q.strike, expiration: q.expiration, dte: q.dte, spot,
+        delta, iv, ivSource, openInterest: q.openInterest, spreadPct,
+        premium: null, metrics: null, score: null, blocked: true, blockReason,
+      });
+      continue;
+    }
+
+    const premium = pickPremium({
+      bid: q.bid,
+      ask: q.ask,
+      lastTrade: q.lastTrade,
+      model: bsPrice(spot, q.strike, T, iv, "put"),
+    });
+    if (!premium) continue;
+
+    const metrics = wheelMetrics({ strike: q.strike, price: premium.price, spot, dte: q.dte, iv });
+    const score = scoreCandidate({
+      annualizedPct: metrics.annualizedPct,
+      ivRank, strike: q.strike, spot,
+      cushionPct: metrics.cushionPct,
+      supports, openInterest: q.openInterest, spreadPct, earnings,
+    });
+
+    out.push({
+      ticker, strike: q.strike, expiration: q.expiration, dte: q.dte, spot,
+      delta, iv, ivSource, openInterest: q.openInterest, spreadPct,
+      premium, metrics, score, blocked: false, blockReason: null,
+    });
+  }
+
+  // Operables primero, y dentro de ellos el mejor score.
+  return out.sort((a, b) => {
+    if (a.blocked !== b.blocked) return a.blocked ? 1 : -1;
+    return (b.score?.total ?? 0) - (a.score?.total ?? 0);
+  });
 }

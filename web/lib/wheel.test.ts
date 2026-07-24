@@ -187,3 +187,101 @@ describe("scoreCandidate", () => {
     }
   });
 });
+
+import { atmIv, wheelCandidates, type ChainQuote } from "./wheel";
+
+function quote(p: Partial<ChainQuote>): ChainQuote {
+  return {
+    strike: 11, expiration: "2026-08-21", dte: 35,
+    bid: 0.30, ask: 0.34, lastTrade: 0.32, openInterest: 900, ...p,
+  };
+}
+
+const CAND_BASE = {
+  ticker: "F",
+  // 11.7, no 11.6: a 11.6 el delta implícito del strike 11 cae en ~0.31,
+  // justo fuera de la banda 0.20-0.30 del preset balanceado (verificado
+  // contra blackScholes.ts real). Con 11.7 todos los deltas de este bloque
+  // caen dentro de la banda sin tocar el preset ni la fórmula.
+  spot: 11.7,
+  preset: WHEEL_PRESETS.balanceado,
+  ivRank: 60,
+  supports: [] as Level[],
+  earnings: "fuera" as const,
+  fallbackIv: 0.45,
+};
+
+describe("wheelCandidates", () => {
+  it("descarta los strikes cuyo delta cae fuera del preset", () => {
+    // Strike muy lejano: |delta| bajísimo, fuera del rango 0.20-0.30.
+    const out = wheelCandidates({
+      ...CAND_BASE,
+      quotes: [quote({ strike: 5, bid: 0.01, ask: 0.02 })],
+    });
+    expect(out).toHaveLength(0);
+  });
+
+  it("descarta los vencimientos fuera de la ventana de DTE del preset", () => {
+    const out = wheelCandidates({ ...CAND_BASE, quotes: [quote({ dte: 3 })] });
+    expect(out).toHaveLength(0);
+  });
+
+  it("marca como blocked, y sin prima, un contrato ilíquido", () => {
+    const out = wheelCandidates({
+      ...CAND_BASE,
+      quotes: [quote({ bid: 0, ask: 0.34, openInterest: 5 })],
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0].blocked).toBe(true);
+    expect(out[0].blockReason).toBe("sin_bid");
+    expect(out[0].premium).toBeNull();
+    expect(out[0].metrics).toBeNull();
+  });
+
+  it("un candidato válido trae delta negativo, métricas y score", () => {
+    const out = wheelCandidates({ ...CAND_BASE, quotes: [quote({})] });
+    expect(out).toHaveLength(1);
+    const c = out[0];
+    expect(c.blocked).toBe(false);
+    expect(c.delta).toBeLessThan(0);
+    expect(c.premium?.source).toBe("bid");
+    expect(c.metrics?.collateral).toBeCloseTo(1100, 10);
+    expect(c.score?.total).toBeGreaterThan(0);
+  });
+
+  it("marca la fila cuando la IV implícita no converge y cae al fallback", () => {
+    // Quote cruzada e imposible: la bisección no puede converger.
+    const out = wheelCandidates({
+      ...CAND_BASE,
+      quotes: [quote({ bid: 20, ask: 21, lastTrade: 20.5 })],
+    });
+    expect(out[0]?.ivSource).toBe("estimada");
+  });
+
+  it("ordena de mayor a menor score y deja los bloqueados al final", () => {
+    const out = wheelCandidates({
+      ...CAND_BASE,
+      quotes: [
+        quote({ strike: 11, bid: 0, ask: 0.34, openInterest: 5 }),
+        quote({ strike: 10.5, bid: 0.28, ask: 0.30, openInterest: 2000 }),
+      ],
+    });
+    expect(out[0].blocked).toBe(false);
+    expect(out[out.length - 1].blocked).toBe(true);
+  });
+});
+
+describe("atmIv", () => {
+  it("devuelve la IV del strike más cercano al spot", () => {
+    const iv = atmIv([
+      { strike: 8, iv: 0.9 },
+      { strike: 11.5, iv: 0.45 },
+      { strike: 20, iv: 0.7 },
+    ], 11.6);
+    expect(iv).toBe(0.45);
+  });
+
+  it("devuelve null sin datos", () => {
+    expect(atmIv([], 11.6)).toBeNull();
+  });
+});
