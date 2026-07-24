@@ -1,19 +1,23 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { StructureScore } from "@/lib/structure";
 import type { GexAnalysis } from "@/lib/gex";
 import type { TfBar } from "@/lib/types";
 import type { LevelsReport } from "@/lib/levels";
 import { conePoints, expectedMove, levelProbabilities, predictionPath } from "@/lib/expectedMove";
+import PriceChart, { type ChartTarget } from "./chart/PriceChart";
 import { px } from "../format";
-
-
 
 /** Bandas del heatmap: dorado = muro de calls · morado = muro de puts. */
 function bandColor(side: "call" | "put", weight: number): string {
-  const a = 0.06 + Math.pow(weight, 0.55) * 0.6;
+  const a = 0.05 + Math.pow(weight, 0.55) * 0.4;
   return side === "call" ? `rgba(212,160,23,${a})` : `rgba(124,110,228,${a})`;
+}
+
+/** El chip usa el color sólido del lado; la banda va traslúcida. */
+function chipColor(side: "call" | "put"): string {
+  return side === "call" ? "#b8880f" : "#6b5cd6";
 }
 
 /**
@@ -34,11 +38,7 @@ export default function ProWallsCard({
   horizonDays: number;
   levels?: LevelsReport | null;
 }) {
-  const hostRef = useRef<HTMLDivElement>(null);
   const [bars, setBars] = useState<TfBar[] | null>(null);
-  const [geom, setGeom] = useState<
-    { y: (p: number) => number | null; h: number; xNow: number; xEnd: number } | null
-  >(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -78,81 +78,27 @@ export default function ProWallsCard({
     [magnet, gex, spot, iv, horizonDays],
   );
 
-  useEffect(() => {
-    const host = hostRef.current;
-    if (!host || !bars || bars.length === 0 || !(spot > 0)) return;
-    let disposed = false;
-    let cleanup = () => {};
+  // Muros del heatmap → chips con precio y probabilidad, más su banda de color.
+  const targets: ChartTarget[] = useMemo(
+    () => levels.map((l) => ({
+      key: String(l.strike),
+      price: l.strike,
+      label: l.side === "call" ? "Calls" : "Puts",
+      sublabel: `${(l.magnet * 100).toFixed(0)}%`,
+      color: chipColor(l.side),
+      weight: l.magnet,
+      bandColor: bandColor(l.side, l.magnet),
+    })),
+    [levels],
+  );
 
-    (async () => {
-      const { createChart, ColorType, CrosshairMode, LineStyle } = await import("lightweight-charts");
-      if (disposed || !hostRef.current) return;
-
-      const chart = createChart(hostRef.current, {
-        layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: "#5c6a85", fontFamily: "inherit" },
-        grid: { vertLines: { visible: false }, horzLines: { visible: false } },
-        crosshair: { mode: CrosshairMode.Normal },
-        rightPriceScale: { borderColor: "rgba(255,255,255,0.12)", scaleMargins: { top: 0.08, bottom: 0.08 } },
-        timeScale: { borderColor: "rgba(255,255,255,0.12)", rightOffset: 26 },
-        height: 460,
-        autoSize: true,
-      });
-      const candles = chart.addCandlestickSeries({
-        upColor: "#e3ecfb", downColor: "#7f8db0",
-        wickUpColor: "#93a5c6", wickDownColor: "#93a5c6",
-        borderVisible: false, priceLineVisible: true, priceLineColor: "rgba(255,255,255,0.35)",
-      });
-      candles.setData(bars.map((b) => ({
-        time: b.time as never, open: b.open, high: b.high, low: b.low, close: b.close,
-      })));
-
-      // Techo y suelo de 1σ — el movimiento esperado por desviación estándar.
-      for (const [price, label] of [[em.upper1, "+1σ"], [em.lower1, "−1σ"]] as [number, string][]) {
-        candles.createPriceLine({
-          price, color: "rgba(245,197,66,0.5)", lineWidth: 1,
-          lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: label,
-        });
-      }
-
-      // Soportes y resistencias: solo los realmente fuertes, para no saturar.
-      for (const l of [...(srLevels?.resistances ?? []), ...(srLevels?.supports ?? [])]) {
-        if (l.strength < 35) continue;
-        candles.createPriceLine({
-          price: l.price,
-          color: l.kind === "soporte" ? "rgba(18,183,106,0.55)" : "rgba(240,68,56,0.55)",
-          lineWidth: 1,
-          lineStyle: LineStyle.Dotted,
-          axisLabelVisible: false,
-          title: `${l.kind === "soporte" ? "S" : "R"} ${l.strength}`,
-        });
-      }
-
-      chart.timeScale().fitContent();
-
-      // El overlay HTML necesita saber en qué píxel cae cada precio.
-      const publish = () => {
-        if (disposed || !hostRef.current) return;
-        const last = bars[bars.length - 1];
-        // x real de la última vela: sin esto el cono se dibuja encima del histórico.
-        const xNow = chart.timeScale().timeToCoordinate(last.time as never) as number | null;
-        const scaleW = chart.priceScale("right").width();
-        const xEnd = (hostRef.current.clientWidth || 0) - scaleW;
-        setGeom({
-          y: (p: number) => candles.priceToCoordinate(p) as number | null,
-          h: hostRef.current.clientHeight || 460,
-          xNow: xNow ?? 0,
-          xEnd,
-        });
-      };
-      publish();
-      const t = setTimeout(publish, 80);
-      chart.timeScale().subscribeVisibleLogicalRangeChange(publish);
-
-      cleanup = () => { clearTimeout(t); chart.remove(); };
-    })();
-
-    return () => { disposed = true; cleanup(); };
-  }, [bars, em, spot, srLevels]);
+  // Soportes y resistencias: solo los realmente fuertes, para no saturar.
+  const srLines = useMemo(
+    () => [...(srLevels?.resistances ?? []), ...(srLevels?.supports ?? [])]
+      .filter((l) => l.strength >= 35)
+      .map((l) => ({ price: l.price, kind: l.kind, strength: l.strength })),
+    [srLevels],
+  );
 
   const dirLabel = magnet
     ? magnet.strike > spot * 1.002 ? "al alza"
@@ -192,68 +138,24 @@ export default function ProWallsCard({
         </div>
       </div>
 
-      <div className="pro-chart" style={{ height: 460 }}>
+      <div className="pro-chart">
         {bars === null && <div style={{ padding: 20, color: "#5c6a85", fontSize: 12 }}>Cargando velas…</div>}
-        <div ref={hostRef} style={{ position: "absolute", inset: 0 }} />
-
-        {geom && levels.length > 0 && (
-          <div className="wall-overlay">
-            {levels.map((l) => {
-              const y = geom.y(l.strike);
-              if (y == null) return null;
-              const band = Math.max(15, geom.h * 0.038);
-              return (
-                <div
-                  key={l.strike}
-                  className="wall-band"
-                  style={{ top: y - band / 2, height: band, width: geom.xEnd, background: bandColor(l.side, l.magnet) }}
-                >
-                  <span className="wall-label">
-                    {px.format(l.strike)} — {(l.magnet * 100).toFixed(0)}%
-                  </span>
-                </div>
-              );
-            })}
-
-            <svg
-              className="wall-proj"
-              style={{ left: geom.xNow, width: Math.max(0, geom.xEnd - geom.xNow) }}
-            >
-              {(() => {
-                const W = Math.max(1, geom.xEnd - geom.xNow);
-                const pt = (i: number, n: number, price: number): string | null => {
-                  const yy = geom.y(price);
-                  return yy == null ? null : `${(i / n) * W},${yy}`;
-                };
-                const seg = (sel: (c: (typeof cone)[number]) => number) =>
-                  cone.map((c, i) => pt(i, cone.length - 1, sel(c))).filter(Boolean) as string[];
-
-                const up2 = seg((c) => c.upper2);
-                const lo2 = seg((c) => c.lower2).reverse();
-                const up1 = seg((c) => c.upper1);
-                const lo1 = seg((c) => c.lower1).reverse();
-                const line = (path?.points
-                  .map((p, i) => pt(i, path.points.length - 1, p.price))
-                  .filter(Boolean) as string[] | undefined)?.join(" ");
-
-                return (
-                  <>
-                    {up2.length > 1 && lo2.length > 1 && (
-                      <polygon points={[...up2, ...lo2].join(" ")} fill="rgba(245,197,66,0.08)" />
-                    )}
-                    {up1.length > 1 && lo1.length > 1 && (
-                      <polygon points={[...up1, ...lo1].join(" ")} fill="rgba(245,197,66,0.16)" />
-                    )}
-                    {line && (
-                      <polyline points={line} fill="none" stroke="#f5c542" strokeWidth="2" />
-                    )}
-                  </>
-                );
-              })()}
-            </svg>
-            <div className="wall-divider" style={{ left: geom.xNow }} />
-            <div className="wall-now" style={{ left: geom.xNow + 6 }}>AHORA</div>
-          </div>
+        {bars !== null && bars.length === 0 && (
+          <div style={{ padding: 20, color: "#5c6a85", fontSize: 12 }}>Sin datos de precio.</div>
+        )}
+        {bars !== null && bars.length > 0 && (
+          <PriceChart
+            bars={bars}
+            spot={spot}
+            horizonDays={horizonDays}
+            cone={cone}
+            series={path ? [{ key: "magnet", points: path.points, color: "#f5c542", width: 2.2 }] : []}
+            targets={targets}
+            levels={srLines}
+            theme="dark"
+            height="100%"
+            showCone1
+          />
         )}
       </div>
 

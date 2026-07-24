@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { AggressionScore, ConvictionScore, FlowRow } from "@/lib/flow";
 import type { ChainEvent, ChainMeta, CompanyInfo, DailyBar, Row } from "@/lib/types";
 import type { StructureScore } from "@/lib/structure";
@@ -13,6 +13,13 @@ import { predictPro } from "@/lib/prediction";
 import { findLevels, type ChainLevel, type FlowLevel } from "@/lib/levels";
 import { int } from "./format";
 import HeaderBar from "./components/HeaderBar";
+import AnalysisLoader from "./components/AnalysisLoader";
+import VeredictoCard from "./components/VeredictoCard";
+import EscenariosCard from "./components/EscenariosCard";
+import SimpleChart from "./components/SimpleChart";
+import NivelesSimples from "./components/NivelesSimples";
+import ContextoLinea from "./components/ContextoLinea";
+import MemoriaCard from "./components/MemoriaCard";
 import SentimentCard, { type SentimentPart } from "./components/SentimentCard";
 import PredictionCard from "./components/PredictionCard";
 import ActivityCard from "./components/ActivityCard";
@@ -79,6 +86,7 @@ export default function Dashboard() {
   const [flowErr, setFlowErr] = useState<string | null>(null);
   const [showChain, setShowChain] = useState(false);
   const [horizonDays, setHorizonDays] = useState(20);
+  const [view, setView] = useState<"estudiante" | "pro">("estudiante");
 
   const chainEs = useRef<EventSource | null>(null);
   const flowEs = useRef<EventSource | null>(null);
@@ -166,6 +174,31 @@ export default function Dashboard() {
       lowLiquidity: gex.lowLiquidity,
     });
   }, [gex, horizonDays, aggScore, conviction, unusuality, structure, ivContext, validation, callPct]);
+
+  // Memoria del agente: guarda la predicción del día (una vez por ticker/sesión). El
+  // dedupe por fecha ET vive en el servidor, así que reenviar el mismo día no duplica.
+  const savedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!ticker || !prediction || prediction.caveat || !(prediction.spot > 0)) return;
+    if (savedRef.current === ticker) return;
+    savedRef.current = ticker;
+    fetch("/api/prediction", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ticker,
+        snapshot: {
+          spot: prediction.spot,
+          horizonDays: prediction.horizonDays,
+          bear: prediction.bear.target,
+          base: prediction.base.target,
+          bull: prediction.bull.target,
+          direction: prediction.direction,
+          confidence: prediction.confidence,
+        },
+      }),
+    }).catch(() => {});
+  }, [ticker, prediction]);
 
   // Los 3 flows de mayor premium — lo que sostiene la lectura.
   const topFlows = useMemo(() => {
@@ -283,7 +316,7 @@ export default function Dashboard() {
   return (
     <>
       <HeaderBar ticker={ticker} company={company} busy={busy} onSearch={runSearch} />
-      <main className="wrap" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <main className="wrap page-stack">
 
         {!started && !busy && (
           <div className="card" style={{ alignItems: "center", padding: "48px 24px", textAlign: "center" }}>
@@ -295,20 +328,74 @@ export default function Dashboard() {
           </div>
         )}
 
-        {busy && steps.length > 0 && (
-          <div className="steps">
-            {steps.map((s, i) => {
-              const isLast = i === steps.length - 1;
-              return <div key={i} className={`step ${busy && isLast ? "active" : "done"}`}><span className="dot" /><span>{s}</span></div>;
-            })}
-          </div>
-        )}
+        {busy && <AnalysisLoader ticker={ticker} steps={steps} />}
 
         {chainErr && <div className="error">⚠ Option chain: {chainErr}</div>}
         {flowErr && <div className="error">⚠ Flujo: {flowErr}</div>}
 
         {started && ticker && (
           <>
+            <div className="view-toggle-row">
+              <div className="view-toggle">
+                <button className={view === "estudiante" ? "active" : ""} onClick={() => setView("estudiante")}>
+                  👤 Estudiante
+                </button>
+                <button className={view === "pro" ? "active" : ""} onClick={() => setView("pro")}>
+                  ⚡ Pro
+                </button>
+              </div>
+            </div>
+
+            {view === "estudiante" && (
+              <>
+                <VeredictoCard ticker={ticker} prediction={prediction} horizonDays={horizonDays} />
+
+                {/* El selector de horizonte va pegado a la gráfica que controla:
+                    si flota a la misma distancia que una sección, deja de leerse
+                    como su control. */}
+                <div className="stack-tight">
+                  <div className="view-toggle-row">
+                    <div className="view-toggle">
+                      {[[10, "Esta semana"], [20, "2 semanas"], [30, "1 mes"]].map(([d, lbl]) => (
+                        <button
+                          key={d as number}
+                          className={horizonDays === d ? "active" : ""}
+                          onClick={() => setHorizonDays(d as number)}
+                        >
+                          {lbl}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <SimpleChart
+                    ticker={ticker}
+                    spot={gex?.spot ?? company?.price ?? chainMeta?.underlyingPrice ?? 0}
+                    iv={gex?.iv ?? 0.4}
+                    horizonDays={horizonDays}
+                    scenarios={prediction ? { bear: prediction.bear.target, base: prediction.base.target, bull: prediction.bull.target } : null}
+                    levels={levels}
+                  />
+                </div>
+
+                <EscenariosCard prediction={prediction} />
+
+                <ContextoLinea ticker={ticker} company={company} callPct={callPct} />
+
+                {levels && (
+                  <NivelesSimples levels={levels} iv={gex?.iv ?? 0.4} horizonDays={horizonDays} />
+                )}
+
+                <MemoriaCard ticker={ticker} />
+
+                <div className="disclaimer">
+                  Las predicciones son estimaciones de IA, no consejo financiero.
+                </div>
+              </>
+            )}
+
+            {view === "pro" && (
+              <>
             <div className="grid-2">
               <SentimentCard ticker={ticker} parts={sentimentParts} />
               <PredictionCard ticker={ticker} prediction={prediction} horizonDays={horizonDays} onHorizon={setHorizonDays} topFlows={topFlows} />
@@ -374,6 +461,8 @@ export default function Dashboard() {
                 )}
               </div>
             </details>
+              </>
+            )}
           </>
         )}
       </main>
