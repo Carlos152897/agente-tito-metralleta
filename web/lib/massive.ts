@@ -1,6 +1,7 @@
 // Cliente de Massive (massive.com — antes Polygon.io). Solo se usa en el servidor.
 
 import type { CompanyInfo, DailyBar, RawContract, TfBar } from "./types";
+import { marketDateStr } from "./occ";
 
 const BASE_URL = "https://api.massive.com";
 
@@ -256,7 +257,7 @@ export async function fetchLogoImage(
  *
  * Los filtros (`contract_type`, `expiration_date.gte/lte`, `strike_price.lte`)
  * los resuelve Massive, así que un ticker cabe en UNA página en vez de exigir
- * la cadena completa paginada. Verificado el 2026-07-24: 48 contratos, sin
+ * la cadena completa paginada. Verificado el 2026-07-24: 126 contratos, sin
  * next_url.
  *
  * `last_quote` (bid/ask) SÍ viene en este plan; `greeks` e `implied_volatility`
@@ -293,8 +294,13 @@ export async function fetchWheelChain(
   if (!clean) throw new MassiveError("Ticker vacío.");
   const now = opts.now ?? new Date();
   const day = 24 * 60 * 60 * 1000;
-  const from = toDateStr(now.getTime() + opts.dteMin * day);
-  const to = toDateStr(now.getTime() + opts.dteMax * day);
+  // Ancla "hoy" en el día de mercado ET (no UTC): después de las ~8 PM ET el
+  // día UTC ya saltó al siguiente y el dte/rango de vencimientos saldría
+  // desfasado un día (ver el aviso en marketDateStr, lib/occ.ts).
+  const todayET = marketDateStr(now);
+  const todayETMs = Date.parse(`${todayET}T00:00:00Z`);
+  const from = toDateStr(todayETMs + opts.dteMin * day);
+  const to = toDateStr(todayETMs + opts.dteMax * day);
 
   const path =
     `/v3/snapshot/options/${encodeURIComponent(clean)}` +
@@ -313,7 +319,7 @@ export async function fetchWheelChain(
     if (spot == null && c.underlying_asset?.price) spot = c.underlying_asset.price;
 
     const dte = Math.round(
-      (new Date(`${expiration}T00:00:00Z`).getTime() - new Date(`${toDateStr(now.getTime())}T00:00:00Z`).getTime()) / day,
+      (Date.parse(`${expiration}T00:00:00Z`) - todayETMs) / day,
     );
 
     quotes.push({
