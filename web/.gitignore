@@ -1,0 +1,14 @@
+/node_modules
+/.next
+/out
+/build
+next-env.d.ts
+*.tsbuildinfo
+
+# secrets — never commit
+.env
+.env.local
+.env*.local
+
+# historial local de transacciones categorizadas
+/data
