@@ -1037,3 +1037,5 @@ tfoot .totals td {
 .wheel-why { margin-top: 6px; color: var(--muted); font-size: 12px; }
 .wheel-blocked-why { margin: 8px 0 0; font-size: 13px; color: #b42318; }
 .wheel-empty { color: var(--muted); }
+.wheel-status { font-size: 14px; font-weight: 600; margin: 4px 0; }
+.wheel-disclaimer { font-size: 12px; color: var(--muted); margin: 0 0 8px; }
