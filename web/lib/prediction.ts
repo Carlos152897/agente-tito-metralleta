@@ -62,6 +62,23 @@ export interface PredictionInput {
   /** Tasa de acierto histórica del sub-agente 6 (0-100). */
   hitRate: number | null;
   lowLiquidity: boolean;
+  /** Memoria del agente: sesgo histórico del target base para auto-corregir. */
+  calibration?: { biasPct: number | null; samples: number };
+}
+
+/**
+ * Calibración por memoria (lazo de control). Corrige el target base según el sesgo
+ * histórico medido en `predictionStore.reviewPredictions`. Amortiguado y acotado:
+ * solo actúa con historial suficiente, corrige una fracción del sesgo y tiene tope,
+ * así converge (al mejorar, el sesgo baja y la corrección se apaga sola).
+ */
+export const CALIBRATION = { minSamples: 5, gain: 0.6, capPct: 3 };
+
+/** Devuelve el ajuste en % del spot (firmado; >0 sube el target). */
+export function calibrationShiftPct(biasPct: number | null, samples: number): number {
+  if (biasPct == null || samples < CALIBRATION.minSamples || !Number.isFinite(biasPct)) return 0;
+  const raw = biasPct * CALIBRATION.gain;
+  return Math.max(-CALIBRATION.capPct, Math.min(CALIBRATION.capPct, raw));
 }
 
 export interface ProPrediction {
@@ -80,6 +97,8 @@ export interface ProPrediction {
   direction: "up" | "down" | "flat";
   summary: string;
   caveat: string | null;
+  /** Auto-corrección aplicada al target base según la memoria del agente. */
+  calibration: { applied: boolean; shiftPct: number; samples: number };
 }
 
 /** Sentiment 0-100: promedio ponderado de las categorías que ya tienen dato. */
@@ -127,11 +146,21 @@ export function predictPro(input: PredictionInput): ProPrediction {
 
   // BASE = el nivel de mayor peso (probabilidad × dinero). Es el imán.
   const magnet = levels[0] ?? null;
-  const baseTarget = magnet ? magnet.strike : spot;
+  const rawBase = magnet ? magnet.strike : spot;
+
+  // Auto-corrección por memoria: si el agente históricamente apunta alto/bajo, se
+  // ajusta el target base (recortado al cono de 2σ). El imán crudo sigue anclando
+  // la búsqueda de bull/bear para no arrastrar el sesgo a los extremos.
+  const inCone = (x: number) => Math.min(Math.max(x, em.lower2), em.upper2);
+  const shiftPct = calibrationShiftPct(
+    input.calibration?.biasPct ?? null,
+    input.calibration?.samples ?? 0,
+  );
+  const baseTarget = shiftPct !== 0 ? inCone(rawBase + (spot * shiftPct) / 100) : rawBase;
 
   // Bull y bear se buscan EXCLUYENDO el nivel base: si no, cuando el imán ya está
   // arriba (o abajo) los tres escenarios colapsan en el mismo precio.
-  const others = levels.filter((l) => l.strike !== baseTarget);
+  const others = levels.filter((l) => l.strike !== rawBase);
   const above = others.filter((l) => l.strike > spot).sort((a, b) => b.magnet - a.magnet)[0];
   const below = others.filter((l) => l.strike < spot).sort((a, b) => b.magnet - a.magnet)[0];
 
@@ -214,9 +243,15 @@ export function predictPro(input: PredictionInput): ProPrediction {
     hitRate == null ? ""
       : ` Históricamente, cuando aparece flujo así en este ticker el precio lo confirmó el ${hitRate.toFixed(0)}% de las veces.`;
 
+  const samples = input.calibration?.samples ?? 0;
+  const calText =
+    shiftPct !== 0
+      ? ` El target se ajustó ${shiftPct >= 0 ? "+" : ""}${shiftPct.toFixed(1)}% por el sesgo histórico del agente (${samples} predicciones vencidas).`
+      : "";
+
   const summary =
     `A ${horizonDays} días el escenario base apunta ${dirText}, dentro de un rango esperado de ` +
-    `±${em.sigmaPct.toFixed(1)}% (1σ). ${moneyText} ${scoreText}${trackText}`;
+    `±${em.sigmaPct.toFixed(1)}% (1σ). ${moneyText} ${scoreText}${trackText}${calText}`;
 
   const caveat = lowLiquidity
     ? "Cadena de baja liquidez: la predicción se marca como NO FIABLE y no debe usarse para operar."
@@ -229,5 +264,6 @@ export function predictPro(input: PredictionInput): ProPrediction {
     bear, base, bull,
     score, active, confidence, levels, direction,
     summary, caveat,
+    calibration: { applied: shiftPct !== 0, shiftPct, samples },
   };
 }

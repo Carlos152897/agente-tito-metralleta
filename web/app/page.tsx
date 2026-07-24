@@ -87,6 +87,9 @@ export default function Dashboard() {
   const [showChain, setShowChain] = useState(false);
   const [horizonDays, setHorizonDays] = useState(20);
   const [view, setView] = useState<"estudiante" | "pro">("estudiante");
+  // Sesgo histórico (memoria) para auto-corregir los targets, y si ya se leyó.
+  const [calib, setCalib] = useState<{ biasPct: number | null; samples: number }>({ biasPct: null, samples: 0 });
+  const [calibReady, setCalibReady] = useState(false);
 
   const chainEs = useRef<EventSource | null>(null);
   const flowEs = useRef<EventSource | null>(null);
@@ -172,14 +175,17 @@ export default function Dashboard() {
       callPct,
       hitRate: validation?.hitRate.value ?? null,
       lowLiquidity: gex.lowLiquidity,
+      calibration: calib,
     });
-  }, [gex, horizonDays, aggScore, conviction, unusuality, structure, ivContext, validation, callPct]);
+  }, [gex, horizonDays, aggScore, conviction, unusuality, structure, ivContext, validation, callPct, calib]);
 
   // Memoria del agente: guarda la predicción del día (una vez por ticker/sesión). El
   // dedupe por fecha ET vive en el servidor, así que reenviar el mismo día no duplica.
   const savedRef = useRef<string | null>(null);
   useEffect(() => {
     if (!ticker || !prediction || prediction.caveat || !(prediction.spot > 0)) return;
+    // Esperar a leer el sesgo: así se guarda el target YA calibrado, no el crudo.
+    if (!calibReady) return;
     if (savedRef.current === ticker) return;
     savedRef.current = ticker;
     fetch("/api/prediction", {
@@ -198,7 +204,7 @@ export default function Dashboard() {
         },
       }),
     }).catch(() => {});
-  }, [ticker, prediction]);
+  }, [ticker, prediction, calibReady]);
 
   // Los 3 flows de mayor premium — lo que sostiene la lectura.
   const topFlows = useMemo(() => {
@@ -256,12 +262,23 @@ export default function Dashboard() {
     setChainErr(null); setFlowErr(null);
     chainDoneRef.current = false; flowDoneRef.current = false;
     setShowChain(false);
+    setCalib({ biasPct: null, samples: 0 }); setCalibReady(false); savedRef.current = null;
 
     // Backtest del sub-agente 6 sobre los flows ya guardados (no bloquea las streams).
     fetch(`/api/validation?ticker=${encodeURIComponent(tk)}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d: ValidationScore | null) => { if (d && !("error" in d)) setValidation(d); })
       .catch(() => {});
+
+    // Memoria: lee el sesgo histórico ANTES de fijar el target para auto-corregirlo.
+    // Es rápido (JSON + barras cacheadas) y termina mucho antes que las streams.
+    fetch(`/api/prediction?ticker=${encodeURIComponent(tk)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { biasPct?: number | null; maturedCount?: number; error?: string } | null) => {
+        if (d && !d.error) setCalib({ biasPct: d.biasPct ?? null, samples: d.maturedCount ?? 0 });
+      })
+      .catch(() => {})
+      .finally(() => setCalibReady(true));
 
     // Stream 1 — Massive: empresa + option chain + estructura
     const c = new EventSource(`/api/chain?ticker=${encodeURIComponent(tk)}`);

@@ -69,6 +69,14 @@ export default function VeredictoCard({
         <div className="verdict-line">
           <span className={`verdict-conf ${conf.cls}`}>{conf.text}</span>
           <span className="verdict-horizon">· en las próximas ~{horizonDays === 10 ? "1 semana" : horizonDays === 20 ? "2 semanas" : "4 semanas"}</span>
+          {prediction.calibration.applied && (
+            <span
+              className="verdict-cal"
+              title={`El agente históricamente apunta ${prediction.calibration.shiftPct >= 0 ? "bajo" : "alto"}; se ajustó el target ${prediction.calibration.shiftPct >= 0 ? "+" : ""}${prediction.calibration.shiftPct.toFixed(1)}% con ${prediction.calibration.samples} predicciones vencidas.`}
+            >
+              🧠 ajustado {prediction.calibration.shiftPct >= 0 ? "+" : ""}{prediction.calibration.shiftPct.toFixed(1)}%
+            </span>
+          )}
         </div>
         <div className="verdict-sub">{prediction.summary}</div>
       </div>

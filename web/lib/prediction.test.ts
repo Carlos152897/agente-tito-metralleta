@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { confidenceOf, predictPro, weightedScore, type PredictionInput, type SubScores } from "./prediction";
+import { calibrationShiftPct, confidenceOf, predictPro, weightedScore, type PredictionInput, type SubScores } from "./prediction";
 import { levelProbabilities } from "./expectedMove";
 
 const FULL: SubScores = {
@@ -228,5 +228,50 @@ describe("predictPro — dirección y resumen", () => {
 
   it("sin avisos cuando están los 6 y hay liquidez", () => {
     expect(predictPro(input()).caveat).toBeNull();
+  });
+});
+
+describe("calibrationShiftPct", () => {
+  it("no corrige sin historial suficiente (< 5 vencidas)", () => {
+    expect(calibrationShiftPct(3, 4)).toBe(0);
+    expect(calibrationShiftPct(null, 20)).toBe(0);
+  });
+  it("corrige el 60% del sesgo (amortiguado)", () => {
+    expect(calibrationShiftPct(2, 8)).toBeCloseTo(1.2, 5); // 2 × 0.6
+  });
+  it("acota a ±3% aunque el sesgo sea enorme", () => {
+    expect(calibrationShiftPct(10, 10)).toBe(3);
+    expect(calibrationShiftPct(-10, 10)).toBe(-3);
+  });
+});
+
+describe("predictPro — auto-corrección por memoria", () => {
+  it("sin calibración deja el target base crudo (imán = 110)", () => {
+    const r = predictPro(input());
+    expect(r.base.target).toBeCloseTo(110, 5);
+    expect(r.calibration.applied).toBe(false);
+    expect(r.calibration.shiftPct).toBe(0);
+  });
+
+  it("con sesgo +2% y 8 vencidas sube el target base 1.2% del spot", () => {
+    const r = predictPro(input({ calibration: { biasPct: 2, samples: 8 } }));
+    // shift = spot(100) × 1.2% = 1.2 → 110 + 1.2
+    expect(r.base.target).toBeCloseTo(111.2, 5);
+    expect(r.calibration.applied).toBe(true);
+    expect(r.calibration.shiftPct).toBeCloseTo(1.2, 5);
+    expect(r.summary).toContain("ajustó");
+  });
+
+  it("con sesgo negativo baja el target y respeta el orden bear < base < bull", () => {
+    const r = predictPro(input({ calibration: { biasPct: -5, samples: 6 } }));
+    expect(r.base.target).toBeLessThan(110);
+    expect(r.bear.target).toBeLessThan(r.base.target);
+    expect(r.bull.target).toBeGreaterThan(r.base.target);
+  });
+
+  it("historial insuficiente → no toca el target", () => {
+    const r = predictPro(input({ calibration: { biasPct: 5, samples: 3 } }));
+    expect(r.base.target).toBeCloseTo(110, 5);
+    expect(r.calibration.applied).toBe(false);
   });
 });
