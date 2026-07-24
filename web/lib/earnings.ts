@@ -71,6 +71,15 @@ export async function fetchFilingDates(ticker: string): Promise<string[]> {
     .filter((d): d is string => Boolean(d));
 }
 
+// NOTA (limitación declarada): el escaneo Wheel real (app/api/wheel/route.ts)
+// siempre llama a esta función con frontSkew: null, porque ese escaneo no
+// calcula ivContextScore por ticker (no tiene el flujo de MarketSnack por
+// símbolo). En consecuencia, HOY "dentro_confirmado" es INALCANZABLE en
+// producción: el flag efectivo es únicamente la cadencia de filing_date (el
+// "doble proxy" descrito arriba es, en la práctica, un proxy único). El
+// parámetro frontSkew se conserva para el día en que el skew esté disponible
+// en el escaneo Wheel; los tests unitarios de este módulo sí lo ejercitan
+// pasando un valor > 10 a propósito, y eso está bien.
 export async function earningsForTicker(input: {
   ticker: string;
   expiration: string;

@@ -80,6 +80,11 @@ export async function GET(req: Request) {
             const ivRank = currentRv != null ? rankWithin(rvSeries, currentRv) : null;
 
             // Earnings sobre el vencimiento más cercano de la ventana.
+            // frontSkew: null a propósito — este escaneo Wheel no computa
+            // ivContextScore por ticker (no hay flujo de MarketSnack por
+            // símbolo aquí), así que la confirmación por skew de earningsFlag
+            // ("dentro_confirmado") queda pendiente y hoy nunca dispara; ver
+            // la nota en lib/earnings.ts (earningsForTicker).
             const nearExp = chain.quotes.reduce((a, b) => (b.dte < a.dte ? b : a)).expiration;
             const earnings = await earningsForTicker({
               ticker: sym.ticker, expiration: nearExp, frontSkew: null, now,
