@@ -100,7 +100,7 @@ html, body {
 .hb-link { font-size: 12px; color: var(--accent); text-decoration: none; white-space: nowrap; }
 .hb-link:hover { text-decoration: underline; }
 
-/* ── Navegación entre vistas (Ticker / Ideas / Time & Sales) ── */
+/* ── Navegación entre vistas (Ticker / Ideas / Wheel / Time & Sales) ── */
 .nav-tabs {
   display: flex;
   align-items: center;
@@ -1001,3 +1001,41 @@ tfoot .totals td {
 .star.on { color: var(--amber); }
 .unstar { border: 0; background: transparent; cursor: pointer; color: var(--faint); font-size: 13px; }
 .unstar:hover { color: var(--red); }
+
+/* ── Módulo Wheel ────────────────────────────────────── */
+.wheel-preset-head h2 { margin: 0 0 4px; font-size: 18px; }
+.wheel-preset-head p { margin: 0 0 14px; color: var(--muted); font-size: 13px; }
+.wheel-preset-tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+.wheel-preset-tab {
+  font-family: inherit; font-size: 13px; font-weight: 600;
+  padding: 8px 16px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--border); background: #fff; color: #344054;
+}
+.wheel-preset-tab.on { background: #101828; color: #fff; border-color: #101828; }
+.wheel-preset-explain { margin: 0 0 12px; font-size: 14px; }
+.wheel-preset-facts { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; color: var(--muted); }
+.wheel-preset-facts b { color: var(--text); }
+
+.wheel-list { display: flex; flex-direction: column; gap: 10px; }
+.wheel-row { padding: 16px 20px; }
+.wheel-row.unafford { opacity: 0.72; }
+.wheel-row.blocked { border-color: #fecaca; background: #fff7f7; }
+.wheel-row-head {
+  width: 100%; display: flex; justify-content: space-between; align-items: center;
+  font-family: inherit; font-size: 15px; background: none; border: none;
+  cursor: pointer; text-align: left; padding: 0; color: var(--text);
+}
+.wheel-score { font-weight: 700; font-size: 20px; }
+.wheel-score small { font-size: 12px; color: var(--muted); font-weight: 500; }
+.wheel-plain { margin: 10px 0 0; font-size: 14px; line-height: 1.5; }
+.wheel-grid { display: flex; flex-wrap: wrap; gap: 6px 20px; margin-top: 10px; font-size: 13px; color: var(--muted); }
+.wheel-grid b { color: var(--text); }
+.wheel-tag { font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 600; }
+.wheel-tag.danger { background: #fee2e2; color: #b42318; }
+.wheel-tag.warn { background: #fef0c7; color: #b54708; }
+.wheel-outcomes { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.wheel-why { margin-top: 6px; color: var(--muted); font-size: 12px; }
+.wheel-blocked-why { margin: 8px 0 0; font-size: 13px; color: #b42318; }
+.wheel-empty { color: var(--muted); }
+.wheel-status { font-size: 14px; font-weight: 600; margin: 4px 0; }
+.wheel-disclaimer { font-size: 12px; color: var(--muted); margin: 0 0 8px; }
