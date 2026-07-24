@@ -5,6 +5,7 @@
 // strike × 100: ese efectivo queda inmovilizado hasta el vencimiento.
 
 import { probAbove } from "./expectedMove";
+import type { Level } from "./levels";
 
 const MULTIPLIER = 100;
 
@@ -154,4 +155,145 @@ export function wheelMetrics(input: {
   const probExpireWorthless = probAbove(spot, strike, iv, dte) * 100;
 
   return { credit, collateral, returnPct, annualizedPct, breakeven, cushionPct, probExpireWorthless };
+}
+
+// ── Score compuesto Wheel (0-100) ──────────────────────────────────────
+
+/** Estado del riesgo de reporte dentro del vencimiento. */
+export type EarningsFlag = "fuera" | "dentro" | "dentro_confirmado" | "no_aplica";
+
+export interface ScorePart {
+  points: number;
+  max: number;
+  band: string;
+  /** Por qué, en llano. Se muestra tal cual en la UI. */
+  why: string;
+}
+
+export interface WheelScore {
+  total: number;
+  annualized: ScorePart;
+  ivRank: ScorePart;
+  cushion: ScorePart;
+  liquidity: ScorePart;
+  earnings: ScorePart;
+}
+
+export interface ScoreInput {
+  annualizedPct: number;
+  /** 0-100. null si no hay historia suficiente. */
+  ivRank: number | null;
+  strike: number;
+  spot: number;
+  cushionPct: number;
+  /** Soportes del ticker, de findLevels. */
+  supports: Level[];
+  openInterest: number;
+  /** Spread relativo en %, de spreadPctOf. */
+  spreadPct: number | null;
+  earnings: EarningsFlag;
+}
+
+/** Fuerza mínima para considerar que un soporte de verdad sostiene. */
+const STRONG_SUPPORT = 35;
+
+function annualizedPart(pct: number): ScorePart {
+  // El castigo por encima del 60% es DELIBERADO: un screener que ordena por
+  // prima pone arriba justo las acciones que están a punto de desplomarse.
+  if (pct > 60)
+    return { points: 10, max: 30, band: ">60%",
+      why: "Prima sospechosamente alta: el mercado descuenta una caída fuerte." };
+  if (pct >= 35)
+    return { points: 22, max: 30, band: "35-60%",
+      why: "Rendimiento muy alto — bien pagado, pero comprueba por qué paga tanto." };
+  if (pct >= 15)
+    return { points: 30, max: 30, band: "15-35%",
+      why: "Rendimiento en el rango sano para vender puts." };
+  if (pct >= 8)
+    return { points: 18, max: 30, band: "8-15%",
+      why: "Rendimiento modesto pero razonable." };
+  return { points: 5, max: 30, band: "<8%",
+    why: "Lo que cobras no paga el riesgo de quedarte con las acciones." };
+}
+
+function ivRankPart(rank: number | null): ScorePart {
+  // OJO: banda INVERTIDA respecto a ivcontext.ts. Allí el pico está en 16-30
+  // porque el resto del agente COMPRA opciones y quiere vega barata. La Wheel
+  // VENDE: quiere que la volatilidad esté cara.
+  if (rank == null)
+    return { points: 4, max: 20, band: "sin datos",
+      why: "Sin historia suficiente para saber si la volatilidad está cara o barata." };
+  if (rank > 70)
+    return { points: 20, max: 20, band: ">70",
+      why: "La volatilidad está cara frente a su propio año: buen momento para vender prima." };
+  if (rank >= 50)
+    return { points: 16, max: 20, band: "50-70",
+      why: "Volatilidad por encima de su media anual." };
+  if (rank >= 30)
+    return { points: 10, max: 20, band: "30-50",
+      why: "Volatilidad en su zona media." };
+  return { points: 4, max: 20, band: "<30",
+    why: "La volatilidad está barata: te pagan poco por asumir el riesgo." };
+}
+
+function cushionPart(input: ScoreInput): ScorePart {
+  const below = input.supports.filter((s) => s.price >= input.strike);
+  const strongest = below.reduce<Level | null>(
+    (best, s) => (best == null || s.strength > best.strength ? s : best), null);
+
+  if (strongest && strongest.strength >= STRONG_SUPPORT)
+    return { points: 25, max: 25, band: "bajo soporte fuerte",
+      why: `El strike queda bajo un soporte de fuerza ${Math.round(strongest.strength)}: el precio ya rebotó ahí antes.` };
+  if (strongest)
+    return { points: 15, max: 25, band: "bajo soporte débil",
+      why: "El strike queda bajo un soporte, pero flojo." };
+  if (input.cushionPct > 10)
+    return { points: 12, max: 25, band: "colchón >10%",
+      why: "Sin soporte identificado, pero la acción tendría que caer más de un 10% para hacerte daño." };
+  return { points: 5, max: 25, band: "sin colchón",
+    why: "El strike está por encima del soporte más cercano: te pueden asignar con facilidad." };
+}
+
+function liquidityPart(oi: number, spreadPct: number | null): ScorePart {
+  // Las bandas se evalúan EN ORDEN y gana la primera que se cumple: un OI de
+  // 800 con spread del 20% cae a la tercera, no cobra la primera.
+  const s = spreadPct ?? Infinity;
+  if (oi >= 500 && s <= 10)
+    return { points: 15, max: 15, band: "excelente",
+      why: "Contrato muy negociado y con horquilla estrecha: entras y sales sin regalar dinero." };
+  if (oi >= 250 && s <= 15)
+    return { points: 10, max: 15, band: "buena",
+      why: "Liquidez suficiente para entrar y salir." };
+  if (oi >= MIN_OI && s <= MAX_SPREAD_PCT)
+    return { points: 5, max: 15, band: "justa",
+      why: "Liquidez ajustada: la horquilla te va a costar al cerrar." };
+  return { points: 0, max: 15, band: "insuficiente",
+    why: "Liquidez insuficiente." };
+}
+
+function earningsPart(flag: EarningsFlag): ScorePart {
+  switch (flag) {
+    case "no_aplica":
+      return { points: 10, max: 10, band: "no aplica",
+        why: "No reporta resultados: no hay riesgo de reporte." };
+    case "fuera":
+      return { points: 10, max: 10, band: "fuera",
+        why: "El reporte estimado cae después del vencimiento." };
+    case "dentro":
+      return { points: 3, max: 10, band: "dentro",
+        why: "El reporte estimado cae ANTES del vencimiento — es una estimación, verifícala." };
+    case "dentro_confirmado":
+      return { points: 0, max: 10, band: "dentro, confirmado",
+        why: "El reporte cae antes del vencimiento y la volatilidad del frente lo confirma." };
+  }
+}
+
+export function scoreCandidate(input: ScoreInput): WheelScore {
+  const annualized = annualizedPart(input.annualizedPct);
+  const ivRank = ivRankPart(input.ivRank);
+  const cushion = cushionPart(input);
+  const liquidity = liquidityPart(input.openInterest, input.spreadPct);
+  const earnings = earningsPart(input.earnings);
+  const total = annualized.points + ivRank.points + cushion.points + liquidity.points + earnings.points;
+  return { total, annualized, ivRank, cushion, liquidity, earnings };
 }
