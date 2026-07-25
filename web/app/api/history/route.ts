@@ -1,6 +1,7 @@
 // GET /api/history?ticker=XXX — barras diarias del subyacente para la gráfica.
 
-import { fetchDailyBars, MassiveError } from "@/lib/massive";
+import { MassiveError } from "@/lib/massive";
+import { cachedDailyBarsOrThrow } from "@/lib/barsStore";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,7 +13,7 @@ export async function GET(request: Request) {
     return Response.json({ error: "ticker requerido" }, { status: 400 });
   }
   try {
-    const bars = await fetchDailyBars(ticker);
+    const bars = await cachedDailyBarsOrThrow(ticker);
     return Response.json({ ticker, bars });
   } catch (err) {
     const message = err instanceof MassiveError ? err.message : "Error al cargar histórico.";
