@@ -34,6 +34,25 @@ function maxPages(): number {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 40;
 }
 
+/**
+ * fetch con reintento ante 429 (rate limit por minuto de Massive). La cadena de
+ * opciones sola dispara decenas de páginas seguidas, así que un 429 aislado a
+ * mitad de ráfaga es normal y se resuelve solo esperando el `Retry-After`
+ * (o un backoff fijo si no viene) en vez de abortar la consulta entera.
+ */
+async function fetchMassive(url: string, key: string, retries = 4): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${key}` },
+      cache: "no-store",
+    });
+    if (res.status !== 429 || attempt >= retries) return res;
+    const retryAfter = Number(res.headers.get("retry-after"));
+    const delayMs = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 3000 * (attempt + 1);
+    await new Promise((r) => setTimeout(r, delayMs));
+  }
+}
+
 export interface FetchProgress {
   /** Se llama al terminar cada página, con el número de página y el total acumulado. */
   onPage?: (page: number, accumulated: number) => void | Promise<void>;
@@ -68,10 +87,7 @@ export async function fetchOptionChain(
 
   while (url) {
     page += 1;
-    const res: Response = await fetch(url, {
-      headers: { Authorization: `Bearer ${key}` },
-      cache: "no-store",
-    });
+    const res: Response = await fetchMassive(url, key);
 
     if (!res.ok) {
       const body = await res.text().catch(() => "");
@@ -128,10 +144,7 @@ interface StockSnapshot {
 
 async function getJson<T>(path: string): Promise<T | null> {
   const key = apiKey();
-  const res = await fetch(`${BASE_URL}${path}`, {
-    headers: { Authorization: `Bearer ${key}` },
-    cache: "no-store",
-  });
+  const res = await fetchMassive(`${BASE_URL}${path}`, key);
   if (res.status === 404) return null;
   if (!res.ok) {
     const body = await res.text().catch(() => "");
@@ -199,7 +212,7 @@ export async function fetchDailyBars(ticker: string, days = 365): Promise<DailyB
     `/v2/aggs/ticker/${encodeURIComponent(clean)}/range/1/day/` +
     `${toDateStr(from.getTime())}/${toDateStr(to.getTime())}` +
     `?adjusted=true&sort=asc&limit=500`;
-  const json = await getJson<{ results?: AggBar[] }>(path).catch(() => null);
+  const json = await getJson<{ results?: AggBar[] }>(path);
   const bars = json?.results ?? [];
   return bars.map((b) => ({
     time: toDateStr(b.t),

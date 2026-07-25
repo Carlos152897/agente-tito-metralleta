@@ -292,8 +292,12 @@ export default function Dashboard() {
         setChainHistory(d.history ?? []);
         chainDoneRef.current = true; finish(); c.close();
         fetch(`/api/history?ticker=${encodeURIComponent(d.meta.ticker)}`)
-          .then((r) => r.json()).then((h) => setBars(Array.isArray(h.bars) ? h.bars : []))
-          .catch(() => setBars([]));
+          .then((r) => r.json())
+          .then((h) => {
+            if (Array.isArray(h.bars)) setBars(h.bars);
+            else { setBars([]); setChainErr(h.error ?? "No se pudo cargar el histórico de precio."); }
+          })
+          .catch(() => { setBars([]); setChainErr("No se pudo cargar el histórico de precio."); });
       } else if (d.type === "error") { setChainErr(d.message); chainDoneRef.current = true; finish(); c.close(); }
     };
     c.onerror = () => { chainDoneRef.current = true; finish(); c.close(); };
