@@ -8,12 +8,12 @@ import SpxVecinosTab from "./SpxVecinosTab";
 import SpxAmigaTab from "./SpxAmigaTab";
 import AgenteOdteTab from "./AgenteOdteTab";
 import ContractSearchTab from "./ContractSearchTab";
-import RegistroOperacionesTab from "./RegistroOperacionesTab";
+import SimulacionTab from "./SimulacionTab";
 import { migrateLegacyKey } from "@/lib/legacyStorage";
 
 const KEY_TAB = "visionary.pruebaDeFuego.tab";
 
-type Tab = "TSLA" | "SPX" | "SPX_VECINOS" | "SPX_AMIGA" | "SPX_0DTE" | "buscar" | "registro";
+type Tab = "TSLA" | "SPX" | "SPX_VECINOS" | "SPX_AMIGA" | "SPX_0DTE" | "buscar" | "simulacion";
 
 export default function PruebaDeFuegoPage() {
   const [tab, setTab] = useState<Tab>("TSLA");
@@ -28,7 +28,7 @@ export default function PruebaDeFuegoPage() {
       saved === "SPX_AMIGA" ||
       saved === "SPX_0DTE" ||
       saved === "buscar" ||
-      saved === "registro"
+      saved === "simulacion"
     ) {
       setTab(saved);
     }
@@ -67,8 +67,8 @@ export default function PruebaDeFuegoPage() {
             <button className={tab === "buscar" ? "active" : ""} onClick={() => pickTab("buscar")}>
               Búsqueda de contratos
             </button>
-            <button className={tab === "registro" ? "active" : ""} onClick={() => pickTab("registro")}>
-              🗒 Registro de Operaciones
+            <button className={tab === "simulacion" ? "active" : ""} onClick={() => pickTab("simulacion")}>
+              Simulación
             </button>
           </div>
         </div>
@@ -79,7 +79,7 @@ export default function PruebaDeFuegoPage() {
         {tab === "SPX_AMIGA" && <SpxAmigaTab />}
         {tab === "SPX_0DTE" && <AgenteOdteTab />}
         {tab === "buscar" && <ContractSearchTab />}
-        {tab === "registro" && <RegistroOperacionesTab />}
+        {tab === "simulacion" && <SimulacionTab />}
       </div>
     </main>
   );
