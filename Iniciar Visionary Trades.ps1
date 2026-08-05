@@ -1,6 +1,6 @@
 $ErrorActionPreference = "SilentlyContinue"
 
-$repoDir = "C:\Users\carlo\OneDrive\Desktop\agente-tito-metralleta\web"
+$repoDir = "C:\Users\carlo\OneDrive\Desktop\visionary-trades\web"
 $npm     = "C:\Program Files\nodejs\npm.cmd"
 $chrome  = "C:\Users\carlo\AppData\Local\Google\Chrome\Application\chrome.exe"
 $port    = 3000

@@ -13,7 +13,7 @@ Open Interest, Open Premium y Valor Nocional con pasos de carga en vivo (cubre T
 ## Estructura
 
 ```
-Visionary Trades/                    # carpeta en disco: agente-tito-metralleta (pendiente de renombrar)
+Visionary Trades/
 ├── CLAUDE.md                        # Este archivo
 ├── Agente Principal/
 │   ├── Proceso Principal.pdf        # Fuente original (Apple Pages/PDF)
@@ -54,7 +54,7 @@ Visionary Trades/                    # carpeta en disco: agente-tito-metralleta 
   - **Ojo con el estado en `page.tsx`:** el watchlist se lee de `wlRef` (ref siempre fresca), no del estado de React. Marcar una estrella mientras la carga inicial seguía en vuelo escribía sobre un array vacío y borraba lo ya guardado — pasó de verdad con el WULF migrado.
 - **Wheel Strategy (`/wheel`, jul 2026):** screener de cash-secured puts que responde "qué put vendo hoy y cuánto efectivo inmoviliza". Universo curado de 40 tickers (`lib/wheelUniverse.ts`), 3 presets (`WHEEL_PRESETS` en `lib/wheel.ts`), score compuesto 0-100 que reusa `findLevels` (soportes), proxy de IV Rank y estimador de earnings (`lib/earnings.ts`). Criterio PURO y testeado en `lib/{blackScholes,wheel,earnings,wheelAfford}.ts`; ruta SSE `app/api/wheel/route.ts` solo orquesta I/O. El saldo vive en `localStorage` y la asequibilidad se calcula en el cliente (`sortByAffordThenScore`), nunca en el servidor. **Ojo:** la banda de IV Rank en `wheel.ts` va INVERTIDA respecto a `ivcontext.ts` — la Wheel vende volatilidad, el resto del agente la compra. Spec: [docs/superpowers/specs/2026-07-24-wheel-strategy-design.md](web/docs/superpowers/specs/2026-07-24-wheel-strategy-design.md).
 - **Noticias (Tarea 7):** `lib/news.ts` + `app/api/news/route.ts` + `app/components/NewsCard.tsx`. **Dos capas:** macro (los RSS de [RSS Feed.md](RSS%20Feed.md), cache 15 min) + empresa (`/v2/reference/news?ticker=` de Massive, que trae `insights[].sentiment` por ticker, cache 5 min). Los titulares macro que mencionan a la empresa se promueven a la capa de empresa. **Bandera de contradicción** (`contradictionFlag`) confronta la dirección del flujo contra el sesgo de noticias — **no toca los 100 pts del scorecard**. Tests en `lib/news.test.ts`.
-- **Stack:** Next.js 15 (App Router, TS). Correr con el dev server `tito-web` (`.claude/launch.json` a nivel Desktop, nombre pendiente de renombrar — ver aviso al final de este archivo) o `npm run dev` en `web/` (puerto 3000).
+- **Stack:** Next.js 15 (App Router, TS). Correr con el dev server `visionary-web` (`.claude/launch.json` a nivel Desktop) o `npm run dev` en `web/` (puerto 3000).
 - **Proveedor de datos:** Massive (`api.massive.com`, rebrand de Polygon.io). Endpoints: option chain `GET /v3/snapshot/options/{ticker}` (paginado), detalles empresa `GET /v3/reference/tickers/{ticker}`, snapshot acción `GET /v2/snapshot/locale/us/markets/stocks/tickers/{ticker}`.
 - **Vista Estudiante vs Pro (jul 2026):** toggle en `page.tsx` (`view`, default `estudiante`). La vista **Estudiante** es limpia para novatos y NO toca `lib/` (cálculos) — solo re-empaqueta lo ya calculado: `VeredictoCard` (frase llana desde `prediction.summary` + dirección + confianza; muestra "no fiable/no operar" si `prediction.caveat`), selector de horizonte llano (Esta semana/2 semanas/1 mes → 10/20/30), `SimpleChart`, `EscenariosCard` (los **3 targets** bajista/base/alcista con % y prob), `ContextoLinea` (noticias en 1 línea + bandera de contradicción), `NivelesSimples` (lista mínima con `probTouch` por nivel), y `MemoriaCard`. Sin jerga (GEX/gamma/notional viven solo en Pro). La vista **Pro** es el dashboard completo original sin cambios. Spec: [docs/superpowers/specs/2026-07-24-vista-simple-estudiantes-design.md](docs/superpowers/specs/2026-07-24-vista-simple-estudiantes-design.md).
   - **`SimpleChart`:** velas + los **3 escenarios** como líneas que SE MUEVEN (helper `wigglePath`: ruta `predictionPath` + oscilación ∝ σ con un sobre `sin(πf)` que vale 0 al inicio y al target, así ancla ambos extremos y "baila" dentro del cono; `seed` distinto por escenario, determinista). Se dibujan una vez (`stroke-dashoffset`) sobre `PriceChart`. Ruido reducido: solo los **2 soportes + 2 resistencias más cercanos** con fuerza ≥25. El **target base = nivel imán del GEX** (mayor probabilidad×premium) recortado al cono 2σ; por eso en flujo lateral la línea sale casi plana.
@@ -134,12 +134,11 @@ Monitorear los feeds definidos en [RSS Feed](RSS%20Feed.md) (CNBC + Investing.co
 - **Al implementar código:** este directorio es documentación de diseño. Cualquier implementación (parser de option chain, motor de flujo, lector RSS) debe respetar las fórmulas y umbrales exactos de arriba.
 - La regla de **liquidez/GEX** es una salvaguarda: ante la duda, no operar y avisar.
 
-## Rebrand a Visionary Trades (ago 2026) — pendiente
+## Rebrand a Visionary Trades (ago 2026)
 
-El proyecto se llama **Visionary Trades** en todo el texto visible y la documentación (ver
-[[visionary_trades_rebrand]] y el rename completo de ago 2026: código, `localStorage`,
-comentarios y docs ya no dicen "Tito"/"Metralleta"). Quedan dos cosas atadas a rutas físicas
-que NO se tocaron porque requieren coordinar con procesos/sesiones en vivo — avisar a Carlos
-antes de hacerlas:
-- La carpeta del proyecto en disco sigue siendo `agente-tito-metralleta` (no `visionary-trades`).
-- El dev server en `.claude/launch.json` (nivel Desktop) sigue registrado como `tito-web`.
+El proyecto se llama **Visionary Trades** en todo el texto visible, la documentación, el
+código, `localStorage` (con migración automática de las keys viejas `tito.*`, ver
+`web/lib/legacyStorage.ts`) y en disco: la carpeta pasó de `agente-tito-metralleta` a
+`visionary-trades`, y el dev server de `.claude/launch.json` (nivel Desktop) de `tito-web`
+a `visionary-web`. Los specs/plans históricos de `docs/superpowers/` (fechados 24-jul-2026)
+se dejaron intactos a propósito — son actas de una sesión de planificación pasada.

@@ -13,7 +13,7 @@ Cubre las Tareas 1, 2 y 5 del [Proceso Principal](../Agente%20Principal/Proceso%
 
 ## Stack
 
-- **Next.js** (App Router, TypeScript), en `web/` (carpeta del proyecto en disco: `agente-tito-metralleta`, pendiente de renombrar — ver CLAUDE.md).
+- **Next.js** (App Router, TypeScript), en `web/`.
 - API key en `.env.local` como `MASSIVE_API_KEY` — **solo servidor**, nunca `NEXT_PUBLIC`. En `.gitignore`.
 - Progreso en vivo vía **SSE** (Server-Sent Events) desde un route handler.
 
