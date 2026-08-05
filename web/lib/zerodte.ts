@@ -1,10 +1,9 @@
 // ============================================================================
-// Agente 0DTE — cadena del vencimiento del día (SPX), ordenada por volumen.
-// Ver Agente Principal/Proceso 0DTE.md (compartido por Carlos).
-//
-// Alcance: solo SPX (la propia spec del agente lo limita a "un solo
-// subyacente"). Reutiliza `getAccessToken` real de Schwab vía zerodteSchwab.ts;
-// no toca `lib/schwab.ts`/`lib/types.ts`/`lib/gex.ts` reales — ver plan de port.
+// Agente ODTE — cadena del vencimiento del día, ordenada por volumen. Ver
+// Agente Principal/Proceso 0DTE.md (compartido por Carlos). Genérico por
+// ticker (ver lib/zerodteTickers.ts para el selector SPX/SPY/QQQ/ES/NQ).
+// Reutiliza `getAccessToken` real de Schwab vía zerodteSchwab.ts; no toca
+// `lib/schwab.ts`/`lib/types.ts`/`lib/gex.ts` reales — ver plan de port.
 // ============================================================================
 
 import { marketDateStr } from "./occ";
@@ -14,14 +13,16 @@ import { evaluateEntry, noSetupReason, riskReward, type EntryDecision } from "./
 import { fetchZeroDteChain } from "./zerodteSchwab";
 import type { ContractType, ZRow } from "./zerodteTypes";
 import { loadFlow, overlayRealtime } from "./zerodteFlow";
+import { INDEX_UNDERLYINGS } from "./zerodteTickers";
 
 /** Cuántos strikes se toman de cada lado. */
 export const TOP_N = 10;
 
-/** Símbolo que espera Schwab: los índices necesitan el prefijo "$". */
+/** Símbolo que espera Schwab: los índices necesitan el prefijo "$", las ETF no. */
 export function toSchwabSymbol(ticker: string): string {
   const t = ticker.trim().toUpperCase();
-  return t ? `$${t}` : "";
+  if (!t) return "";
+  return INDEX_UNDERLYINGS.has(t) ? `$${t}` : t;
 }
 
 /** Fecha de HOY en hora de Nueva York (no UTC — la premisa del agente). */

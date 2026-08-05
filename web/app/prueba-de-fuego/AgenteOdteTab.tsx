@@ -1,16 +1,19 @@
 "use client";
 
-// Agente 0DTE — cadena del vencimiento de hoy de SPX con los strikes de mayor
+// Agente ODTE — cadena del vencimiento de hoy con los strikes de mayor
 // volumen. Calls a la izquierda, strike al centro, puts a la derecha. Ver
 // Agente Principal/Proceso 0DTE.md. Puerto del fork Agente0DTE, adaptado como
-// pestaña de Prueba de Fuego (alcance recortado a solo SPX, sin selector de
-// idioma — ver plan de port).
+// pestaña de Prueba de Fuego. Selector de ticker real (SPX/SPY/QQQ/ES/NQ);
+// el selector de idioma es solo visual — español fijo, ver zerodteTickers.ts.
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChainLine, ZeroDteResult } from "@/lib/zerodte";
 import type { AggressorRead } from "@/lib/zerodteFlow";
 import { DEFAULT_PARAMS, evaluateEntry, noSetupReason, riskReward } from "@/lib/zerodteStrategy";
+import { ZERO_DTE_TICKERS, DEFAULT_ZERO_DTE_TICKER, type ZeroDteTickerId } from "@/lib/zerodteTickers";
 import ZeroDteChart from "@/app/components/ZeroDteChart";
+
+const KEY_TICKER = "tito.zeroDte.ticker";
 
 interface FlowState {
   cycles: number;
@@ -94,7 +97,7 @@ function etClock(): string {
 
 const CONFIDENCE: Record<string, string> = { baja: "baja", media: "media", alta: "alta" };
 
-export default function SpxZeroDteTab() {
+export default function AgenteOdteTab() {
   const [data, setData] = useState<ZeroDteResult | null>(null);
   const [flow, setFlow] = useState<FlowState | null>(null);
   const [evalu, setEvalu] = useState<EvalState | null>(null);
@@ -102,19 +105,30 @@ export default function SpxZeroDteTab() {
   const [loading, setLoading] = useState(true);
   const [days] = useState<string[]>(() => expirationDays(5));
   const [selDate, setSelDate] = useState<string>(() => etTodayStr());
+  const [selTicker, setSelTicker] = useState<ZeroDteTickerId>(DEFAULT_ZERO_DTE_TICKER);
 
-  const load = useCallback(async (date: string) => {
+  useEffect(() => {
+    const saved = window.localStorage.getItem(KEY_TICKER);
+    if (saved && ZERO_DTE_TICKERS.some((t) => t.id === saved)) setSelTicker(saved as ZeroDteTickerId);
+  }, []);
+
+  const pickTicker = useCallback((id: ZeroDteTickerId) => {
+    setSelTicker(id);
+    window.localStorage.setItem(KEY_TICKER, id);
+  }, []);
+
+  const load = useCallback(async (date: string, ticker: ZeroDteTickerId) => {
     setLoading(true);
     setError(null);
     const isToday = date === etTodayStr();
 
     let flowPromise: Promise<void> = Promise.resolve();
     if (isToday) {
-      flowPromise = fetch(`/api/0dte/flow`, { cache: "no-store" })
+      flowPromise = fetch(`/api/0dte/flow?ticker=${ticker}`, { cache: "no-store" })
         .then((r) => r.json())
         .then((j) => setFlow(j as FlowState))
         .catch(() => setFlow(null));
-      fetch(`/api/0dte/eval`, { cache: "no-store" })
+      fetch(`/api/0dte/eval?ticker=${ticker}`, { cache: "no-store" })
         .then((r) => r.json())
         .then((j) => setEvalu(j as EvalState))
         .catch(() => setEvalu(null));
@@ -124,7 +138,9 @@ export default function SpxZeroDteTab() {
     }
 
     try {
-      const res = await fetch(`/api/0dte?date=${encodeURIComponent(date)}`, { cache: "no-store" });
+      const res = await fetch(
+        `/api/0dte?date=${encodeURIComponent(date)}&ticker=${ticker}`, { cache: "no-store" },
+      );
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
       setData(json as ZeroDteResult);
@@ -138,11 +154,11 @@ export default function SpxZeroDteTab() {
   }, []);
 
   useEffect(() => {
-    load(selDate);
+    load(selDate, selTicker);
     if (selDate !== etTodayStr()) return;
-    const id = setInterval(() => load(selDate), REFRESH_MS);
+    const id = setInterval(() => load(selDate, selTicker), REFRESH_MS);
     return () => clearInterval(id);
-  }, [selDate, load]);
+  }, [selDate, selTicker, load]);
 
   const live = useMemo(() => {
     if (!data || !data.isToday || data.spot == null) return null;
@@ -171,14 +187,29 @@ export default function SpxZeroDteTab() {
 
       <header className="z-head">
         <div>
-          <h1>SPX 0 DTE</h1>
+          <h1>Agente ODTE</h1>
           <p>
             {selDate === etTodayStr() ? "Vencimiento de hoy" : "Vencimiento futuro"} · los{" "}
             {data ? data.lines.length : "—"} strikes de mayor volumen (top 10 calls + top 10 puts)
           </p>
         </div>
         <div className="z-controls">
-          <button onClick={() => load(selDate)} disabled={loading}>
+          <select
+            value={selTicker}
+            onChange={(e) => pickTicker(e.target.value as ZeroDteTickerId)}
+            aria-label="Ticker"
+          >
+            {ZERO_DTE_TICKERS.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.label}{t.sublabel ? ` (${t.sublabel})` : ""}
+              </option>
+            ))}
+          </select>
+          <select defaultValue="es" aria-label="Idioma">
+            <option value="es">ES Español</option>
+            <option value="en" disabled>EN English (próximamente)</option>
+          </select>
+          <button onClick={() => load(selDate, selTicker)} disabled={loading}>
             {loading ? "Cargando…" : "Actualizar"}
           </button>
         </div>
@@ -454,7 +485,7 @@ export default function SpxZeroDteTab() {
         <section className="z-chart-card">
           <div className="z-chart-head">Gráfica de {data.ticker} con niveles del agente</div>
           <ZeroDteChart
-            ticker={data.ticker}
+            ticker={selTicker}
             reloadKey={data.asOf}
             maxCall={data.summary.maxCallStrike}
             maxPut={data.summary.maxPutStrike}

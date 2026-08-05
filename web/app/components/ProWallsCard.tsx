@@ -152,7 +152,7 @@ export default function ProWallsCard({
             series={path ? [{ key: "magnet", points: path.points, color: "#f5c542", width: 2.2 }] : []}
             targets={targets}
             levels={srLines}
-            theme="dark"
+            theme="light"
             height="100%"
             showCone1
           />

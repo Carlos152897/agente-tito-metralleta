@@ -43,7 +43,7 @@ export default function ZeroDteChart({
 
   useEffect(() => {
     let alive = true;
-    fetch(`/api/0dte/bars`, { cache: "no-store" })
+    fetch(`/api/0dte/bars?ticker=${encodeURIComponent(ticker)}`, { cache: "no-store" })
       .then((r) => r.json())
       .then((j) => {
         if (!alive) return;

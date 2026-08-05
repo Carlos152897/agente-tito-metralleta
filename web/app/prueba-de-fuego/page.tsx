@@ -6,7 +6,7 @@ import NavTabs from "@/app/components/NavTabs";
 import TickerLiveTab from "./TickerLiveTab";
 import SpxVecinosTab from "./SpxVecinosTab";
 import SpxAmigaTab from "./SpxAmigaTab";
-import SpxZeroDteTab from "./SpxZeroDteTab";
+import AgenteOdteTab from "./AgenteOdteTab";
 import ContractSearchTab from "./ContractSearchTab";
 import RegistroOperacionesTab from "./RegistroOperacionesTab";
 
@@ -60,7 +60,7 @@ export default function PruebaDeFuegoPage() {
               SPX amiga
             </button>
             <button className={tab === "SPX_0DTE" ? "active" : ""} onClick={() => pickTab("SPX_0DTE")}>
-              SPX 0 DTE
+              Agente ODTE
             </button>
             <button className={tab === "buscar" ? "active" : ""} onClick={() => pickTab("buscar")}>
               Búsqueda de contratos
@@ -75,7 +75,7 @@ export default function PruebaDeFuegoPage() {
         {tab === "SPX" && <TickerLiveTab ticker="SPX" />}
         {tab === "SPX_VECINOS" && <SpxVecinosTab ticker="SPX" />}
         {tab === "SPX_AMIGA" && <SpxAmigaTab />}
-        {tab === "SPX_0DTE" && <SpxZeroDteTab />}
+        {tab === "SPX_0DTE" && <AgenteOdteTab />}
         {tab === "buscar" && <ContractSearchTab />}
         {tab === "registro" && <RegistroOperacionesTab />}
       </div>

@@ -3,11 +3,10 @@
 
 import { SchwabError } from "@/lib/schwab";
 import { calibrationShiftPct, fetchZeroDte } from "@/lib/zerodte";
+import { zeroDteTickerConfig } from "@/lib/zerodteTickers";
 import {
   loadCalibration, loadLatestClosing, saveClosingPrediction, saveForecast,
 } from "@/lib/zerodteEval";
-
-const TICKER = "SPX";
 
 /** Minutos desde medianoche en hora de Nueva York. */
 function etMinutes(now: Date): number {
@@ -28,6 +27,7 @@ export const dynamic = "force-dynamic";
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const date = searchParams.get("date") ?? undefined; // YYYY-MM-DD; vacío = hoy
+  const TICKER = zeroDteTickerConfig(searchParams.get("ticker")).underlying;
 
   try {
     // Auto-corrección: el sesgo histórico medido (si hay suficientes sesiones)

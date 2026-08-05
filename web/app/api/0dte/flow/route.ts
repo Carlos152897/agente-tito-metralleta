@@ -4,6 +4,7 @@
 
 import { fetchFlow, MarketSnackError } from "@/lib/marketsnack";
 import { marketDateStr } from "@/lib/occ";
+import { zeroDteTickerConfig } from "@/lib/zerodteTickers";
 import {
   accumulate, loadFlow, readAggressor, saveFlow, type AggressorRead,
 } from "@/lib/zerodteFlow";
@@ -11,11 +12,12 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const TICKER = "SPX";
 /** Páginas por ciclo. Cada una son 50 trades (~1 segundo de cinta en SPX). */
 const PAGES = 40;
 
-export async function GET() {
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const TICKER = zeroDteTickerConfig(searchParams.get("ticker")).underlying;
   const now = new Date();
   const date = marketDateStr(now);
 

@@ -5,16 +5,17 @@
 import { SchwabError } from "@/lib/schwab";
 import { fetchIntradayBarsRange } from "@/lib/zerodteSchwab";
 import { toSchwabSymbol } from "@/lib/zerodte";
+import { zeroDteTickerConfig } from "@/lib/zerodteTickers";
 import {
   loadEvalJournal, reviewForecasts, saveCalibration, type EvalBar,
 } from "@/lib/zerodteEval";
 
-const TICKER = "SPX";
-
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const TICKER = zeroDteTickerConfig(searchParams.get("ticker")).underlying;
   const journal = await loadEvalJournal(TICKER);
   if (!journal || journal.snapshots.length === 0) {
     return Response.json({
