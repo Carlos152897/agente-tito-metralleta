@@ -2,7 +2,7 @@
 // display para los futuros — no son subyacentes propios, reusan el chain/spot
 // real de SPX y NDX respectivamente (mismo historial de calibración/flujo).
 
-export type ZeroDteTickerId = "SPX" | "SPY" | "QQQ" | "ES" | "NQ";
+export type ZeroDteTickerId = "SPX" | "SPY" | "QQQ" | "ES" | "NQ" | "TSLA";
 
 export interface ZeroDteTickerConfig {
   id: ZeroDteTickerId;
@@ -18,6 +18,7 @@ export const ZERO_DTE_TICKERS: ZeroDteTickerConfig[] = [
   { id: "QQQ", label: "QQQ", underlying: "QQQ" },
   { id: "ES", label: "/ES", sublabel: "futuro · vía SPX", underlying: "SPX" },
   { id: "NQ", label: "/NQ", sublabel: "futuro · vía NDX", underlying: "NDX" },
+  { id: "TSLA", label: "TSLA", sublabel: "acción · rara vez 0DTE", underlying: "TSLA" },
 ];
 
 export const DEFAULT_ZERO_DTE_TICKER: ZeroDteTickerId = "SPX";
