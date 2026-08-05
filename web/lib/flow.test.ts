@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  aggressionOf, aggressionScore, classifyFlow, detectClusters,
+  aggressionOf, aggressionScore, classifyFlow, dedupeByContract, detectClusters,
   convictionScore, dominanceScore, executionLevel, executionScore,
   deltaScore, expiryScore, gammaScore, legScore, orderSizeScore, thetaScore,
   unusualityScore, unusualTradeScore,
@@ -160,6 +160,23 @@ describe("classifyFlow", () => {
       NOW,
     );
     expect(interesting.map((r) => r.premium)).toEqual([2_000_000, 500_000, 60_000]);
+  });
+});
+
+describe("dedupeByContract", () => {
+  it("se queda con el trade de mayor premium por contrato", () => {
+    const now = NOW;
+    const { rows } = classifyFlow(
+      [
+        trade({ id: 1, symbol: "TSLA261120P00305000", premium: 1000 }),
+        trade({ id: 2, symbol: "TSLA261120P00305000", premium: 5000 }),
+        trade({ id: 3, symbol: "TSLA261120C00310000", premium: 2000 }),
+      ],
+      now,
+    );
+    const deduped = dedupeByContract(rows);
+    expect(deduped).toHaveLength(2);
+    expect(deduped.find((r) => r.symbol === "TSLA261120P00305000")?.id).toBe(2);
   });
 });
 

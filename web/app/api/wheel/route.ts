@@ -5,13 +5,15 @@
 // asequibilidad se calcula en el cliente con tito.risk.* de localStorage.
 
 import { fetchWheelChain } from "@/lib/massive";
+import { fetchGreeksMap } from "@/lib/schwab";
+import { greeksKey } from "@/lib/schwabParse";
 import { cachedDailyBars } from "@/lib/barsStore";
 import { findLevels, type LvlBar } from "@/lib/levels";
 import { realizedVolSeries, rankWithin } from "@/lib/ivcontext";
 import { earningsForTicker } from "@/lib/earnings";
 import {
   WHEEL_PRESETS, wheelCandidates,
-  type PresetId, type WheelCandidate,
+  type ChainQuote, type PresetId, type WheelCandidate,
 } from "@/lib/wheel";
 import { WHEEL_UNIVERSE } from "@/lib/wheelUniverse";
 import type { WheelSseEvent } from "@/app/wheel/types";
@@ -27,6 +29,10 @@ function sse(event: WheelSseEvent): string {
 
 function isPreset(v: string | null): v is PresetId {
   return v === "conservador" || v === "balanceado" || v === "agresivo";
+}
+
+function toDateStr(d: Date): string {
+  return d.toISOString().slice(0, 10);
 }
 
 /** Corre `worker` sobre `items` con como mucho `limit` en vuelo a la vez. */
@@ -64,15 +70,47 @@ export async function GET(req: Request) {
             const chain = await fetchWheelChain(sym.ticker, {
               dteMin: preset.dteMin, dteMax: preset.dteMax, now,
             });
-            if (chain.spot == null || chain.quotes.length === 0) {
+            if (chain.quotes.length === 0) {
               failed++;
               send({ type: "step", label: `${sym.ticker}: sin cadena` });
               return;
             }
 
+            // Delta/IV real de Schwab, si está configurado — opcional: si falla
+            // (sin credenciales, rate limit, ticker no cubierto) el candidato sigue
+            // con Black-Scholes/IV implícita como antes, sin marcar al ticker como fallido.
+            // Bonus: Massive a veces no trae underlying_asset.price en este endpoint
+            // (chain.spot sale null) — el underlyingPrice de Schwab sirve de respaldo
+            // para no perder el ticker entero por un solo campo faltante.
+            let quotes: ChainQuote[] = chain.quotes;
+            let spot = chain.spot;
+            try {
+              const { underlyingPrice, greeks } = await fetchGreeksMap(sym.ticker, {
+                contractType: "PUT",
+                fromDate: toDateStr(now),
+                toDate: toDateStr(new Date(now.getTime() + preset.dteMax * 86_400_000)),
+              });
+              spot = spot ?? underlyingPrice;
+              quotes = chain.quotes.map((q) => {
+                const real = greeks[greeksKey(q.strike, q.expiration, "put")];
+                return { ...q, delta: real?.delta ?? null, iv: real?.iv ?? null };
+              });
+            } catch {
+              // Schwab opcional — sin él, sigue con la estimación de siempre.
+            }
+
+            if (spot == null) {
+              failed++;
+              send({ type: "step", label: `${sym.ticker}: sin precio del subyacente` });
+              return;
+            }
+            // fetchWheelChain solo filtra a OTM cuando YA conoce el spot; si vino de
+            // Schwab (chain.spot era null), ese filtro no corrió — se aplica aquí.
+            if (chain.spot == null) quotes = quotes.filter((q) => q.strike <= spot!);
+
             const bars = await cachedDailyBars(sym.ticker, 365, now);
             const lvlBars: LvlBar[] = bars.map((b) => ({ time: b.time, high: b.high, low: b.low, close: b.close }));
-            const levels = findLevels({ bars: lvlBars, spot: chain.spot, now });
+            const levels = findLevels({ bars: lvlBars, spot, now });
 
             // IV Rank propio: proxy de volatilidad realizada (no hay serie de IV).
             const rvSeries = realizedVolSeries(bars.map((b) => b.close), 30);
@@ -92,7 +130,7 @@ export async function GET(req: Request) {
 
             const fallbackIv = currentRv != null ? currentRv / 100 : 0.4;
             const cands = wheelCandidates({
-              ticker: sym.ticker, spot: chain.spot, quotes: chain.quotes,
+              ticker: sym.ticker, spot, quotes,
               preset, ivRank, supports: levels.supports, earnings, fallbackIv,
             });
             all.push(...cands);

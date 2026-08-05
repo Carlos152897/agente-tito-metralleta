@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { daysToExpiration, parseOcc } from "./occ";
+import { buildOccSymbol, daysToExpiration, parseOcc } from "./occ";
 
 describe("parseOcc", () => {
   it("parsea un put OCC real (TSLA)", () => {
@@ -28,6 +28,34 @@ describe("parseOcc", () => {
     expect(parseOcc("")).toBeNull();
     expect(parseOcc("AAPL")).toBeNull();
     expect(parseOcc("TSLA261120X00305000")).toBeNull(); // tipo inválido
+  });
+});
+
+describe("buildOccSymbol", () => {
+  it("arma el símbolo inverso a parseOcc (put TSLA)", () => {
+    expect(
+      buildOccSymbol({ underlying: "TSLA", expiration: "2026-11-20", type: "put", strike: 305 }),
+    ).toBe("TSLA261120P00305000");
+  });
+
+  it("arma un call con root de 4+ letras (SPXW)", () => {
+    expect(
+      buildOccSymbol({ underlying: "SPXW", expiration: "2026-07-23", type: "put", strike: 7400 }),
+    ).toBe("SPXW260723P07400000");
+  });
+
+  it("arma un strike con decimales (352.5)", () => {
+    expect(
+      buildOccSymbol({ underlying: "TSLA", expiration: "2026-07-24", type: "put", strike: 352.5 }),
+    ).toBe("TSLA260724P00352500");
+  });
+
+  it("hace round-trip con parseOcc para varios símbolos reales", () => {
+    for (const symbol of ["TSLA261120P00305000", "SPXW260723P07400000", "TSLA260724P00352500"]) {
+      const info = parseOcc(symbol);
+      expect(info).not.toBeNull();
+      expect(buildOccSymbol(info!)).toBe(symbol);
+    }
   });
 });
 

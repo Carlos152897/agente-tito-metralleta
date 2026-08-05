@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RISK_FREE, bsDelta, bsPrice, impliedVol } from "./blackScholes";
+import { RISK_FREE, bsCharm, bsDelta, bsPrice, bsVanna, impliedVol } from "./blackScholes";
 
 describe("bsPrice", () => {
   it("cumple la paridad put-call: C − P = S − K·e^(−rT)", () => {
@@ -57,5 +57,49 @@ describe("impliedVol", () => {
   it("devuelve null con precio no positivo o T = 0", () => {
     expect(impliedVol(0, 100, 92, 0.1, "put")).toBeNull();
     expect(impliedVol(2, 100, 92, 0, "put")).toBeNull();
+  });
+});
+
+describe("bsCharm", () => {
+  const S = 100, K = 98, T = 0.1, iv = 0.35;
+
+  it("coincide con la derivada numérica (diferencias finitas) de bsDelta respecto a T", () => {
+    const h = 1e-5;
+    // charm = ∂Δ/∂t = −∂Δ/∂T
+    const numeric = -(bsDelta(S, K, T + h, iv, "call") - bsDelta(S, K, T - h, iv, "call")) / (2 * h);
+    expect(bsCharm(S, K, T, iv)).toBeCloseTo(numeric, 3);
+  });
+
+  it("da el mismo valor para call y put (bajo q=0, Δput = Δcall − 1 es constante)", () => {
+    const hNumeric = -(bsDelta(S, K, T + 1e-5, iv, "put") - bsDelta(S, K, T - 1e-5, iv, "put")) / (2e-5);
+    expect(bsCharm(S, K, T, iv)).toBeCloseTo(hNumeric, 3);
+  });
+
+  it("devuelve 0 con insumos inválidos", () => {
+    expect(bsCharm(0, K, T, iv)).toBe(0);
+    expect(bsCharm(S, K, 0, iv)).toBe(0);
+    expect(bsCharm(S, K, T, 0)).toBe(0);
+  });
+});
+
+describe("bsVanna", () => {
+  const S = 100, K = 98, T = 0.1, iv = 0.35;
+
+  it("coincide con la derivada numérica (diferencias finitas) de bsDelta respecto a IV", () => {
+    const h = 1e-5;
+    const numeric = (bsDelta(S, K, T, iv + h, "call") - bsDelta(S, K, T, iv - h, "call")) / (2 * h);
+    expect(bsVanna(S, K, T, iv)).toBeCloseTo(numeric, 3);
+  });
+
+  it("da el mismo valor para call y put (bajo q=0)", () => {
+    const h = 1e-5;
+    const numeric = (bsDelta(S, K, T, iv + h, "put") - bsDelta(S, K, T, iv - h, "put")) / (2 * h);
+    expect(bsVanna(S, K, T, iv)).toBeCloseTo(numeric, 3);
+  });
+
+  it("devuelve 0 con insumos inválidos", () => {
+    expect(bsVanna(0, K, T, iv)).toBe(0);
+    expect(bsVanna(S, K, 0, iv)).toBe(0);
+    expect(bsVanna(S, K, T, 0)).toBe(0);
   });
 });

@@ -268,6 +268,16 @@ function computeInteresting(r: FlowRow): boolean {
   );
 }
 
+/** Se queda con un solo trade por contrato: el de mayor premium. */
+export function dedupeByContract(rows: FlowRow[]): FlowRow[] {
+  const best = new Map<string, FlowRow>();
+  for (const r of rows) {
+    const prev = best.get(r.symbol);
+    if (!prev || r.premium > prev.premium) best.set(r.symbol, r);
+  }
+  return [...best.values()];
+}
+
 export interface ClassifiedFlow {
   rows: FlowRow[];
   interesting: FlowRow[];

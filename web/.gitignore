@@ -10,5 +10,10 @@ next-env.d.ts
 .env.local
 .env*.local
 
-# historial local de transacciones categorizadas
+# historial local de transacciones categorizadas (incluye marketsnack-cookie.json)
 /data
+
+# logs y wrapper generado del keep-alive / extractor de cookie de MarketSnack
+scripts/marketsnack-keepalive/*.log
+scripts/marketsnack-keepalive/_run-keepalive.cmd
+scripts/marketsnack-cookie/extractor.log

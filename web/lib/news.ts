@@ -312,7 +312,7 @@ export async function fetchMacroFeeds(): Promise<NewsItem[]> {
     MACRO_FEEDS.map(async (f) => {
       try {
         const res = await fetch(f.url, {
-          headers: { "User-Agent": "Mozilla/5.0 (compatible; TitoMetralleta/1.0)" },
+          headers: { "User-Agent": "Mozilla/5.0 (compatible; VisionaryTrades/1.0)" },
           cache: "no-store",
           signal: AbortSignal.timeout(8000),
         });

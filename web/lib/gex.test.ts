@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { bsGamma, estimateIV, gexAnalysis, FALLBACK_IV, type GexInput } from "./gex";
+import { greeksKey, type SchwabGreeksMap } from "./schwabParse";
 import type { Row } from "./types";
 
 // now fijo para DTE determinista.
@@ -127,5 +128,44 @@ describe("gexAnalysis", () => {
     });
     expect(a.confidence).toBeGreaterThanOrEqual(0);
     expect(a.confidence).toBeLessThanOrEqual(100);
+  });
+
+  it("la gamma real de Schwab gana sobre la estimación BS", () => {
+    const r = row(100, "call", 5000);
+    const withoutSchwab = analyze([r]);
+    // Gamma real absurdamente alta (10x lo que daría BS) para que el cambio sea inequívoco.
+    const schwabGreeks: SchwabGreeksMap = {
+      [greeksKey(100, "2026-08-21", "call")]: {
+        delta: 0.5, gamma: 10, theta: -0.1, vega: 0.2, iv: 0.35,
+        bid: 1, ask: 1.1, last: 1.05, openInterest: 5000,
+      },
+    };
+    const withSchwab = analyze([r], { schwabGreeks });
+    expect(withSchwab.nodes[0].callGex).toBeGreaterThan(withoutSchwab.nodes[0].callGex);
+  });
+
+  it("usa la IV real de Schwab (ponderada por OI) en vez del proxy de vol realizada", () => {
+    const rows = [row(100, "call", 5000)];
+    const schwabGreeks: SchwabGreeksMap = {
+      [greeksKey(100, "2026-08-21", "call")]: {
+        delta: 0.5, gamma: null, theta: null, vega: null, iv: 0.9,
+        bid: null, ask: null, last: null, openInterest: 5000,
+      },
+    };
+    const a = analyze(rows, { schwabGreeks });
+    expect(a.iv).toBeCloseTo(0.9);
+  });
+
+  it("sin cobertura de Schwab para un strike, sigue con BS/MarketSnack como antes", () => {
+    const r = row(100, "call", 5000);
+    const schwabGreeks: SchwabGreeksMap = {
+      [greeksKey(999, "2026-08-21", "call")]: {
+        delta: 0.5, gamma: 10, theta: -0.1, vega: 0.2, iv: 0.35,
+        bid: 1, ask: 1.1, last: 1.05, openInterest: 100,
+      },
+    };
+    const a = analyze([r], { schwabGreeks });
+    const b = analyze([r]);
+    expect(a.nodes[0].callGex).toBeCloseTo(b.nodes[0].callGex);
   });
 });

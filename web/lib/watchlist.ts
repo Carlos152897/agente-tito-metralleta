@@ -17,7 +17,7 @@ export type BrokerGranularity = "contracts" | "underlying_only" | "none";
  * - `mcp`  — escritura real en su watchlist, la conduce el agente por MCP.
  * - `link` — abrimos la página del ticker en el broker; el estudiante lo añade de un toque.
  * - `copy` — el broker no enruta por símbolo desde una URL: copiamos la lista al portapapeles.
- * - `none` — el watchlist se queda solo en Tito.
+ * - `none` — el watchlist se queda solo en Visionary Trades.
  */
 export type SyncKind = "mcp" | "link" | "copy" | "none";
 
@@ -41,7 +41,7 @@ export interface BrokerAdapter {
  * expone `get_option_watchlist` / `add_option_to_watchlist` sobre una lista propia de
  * opciones (`allowed_object_types: ["option_strategy"]`), distinta de la de acciones.
  * Lo que sigue en beta solo-acciones es la **ejecución de órdenes**, no el watchlist —
- * y Tito nunca coloca una orden, así que no nos limita.
+ * y Visionary Trades nunca coloca una orden, así que no nos limita.
  *
  * Las URLs de los `link` se verificaron una a una con peticiones reales. Webull e IBKR
  * son `copy` a propósito y no por pereza: Webull exige el prefijo de bolsa en la ruta
@@ -102,7 +102,7 @@ export const BROKERS: BrokerAdapter[] = [
   },
   {
     id: "none",
-    name: "Solo en Tito",
+    name: "Solo en Visionary Trades",
     kind: "none",
     granularity: "none",
   },

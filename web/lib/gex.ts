@@ -4,10 +4,15 @@
 // ACTIVIDAD REAL (premium de los trades que están ocurriendo) para dibujar
 // "nodos de concentración" y derivar una predicción (precio imán).
 //
-// Massive no entrega gamma ni IV en este plan, así que:
+// Massive no entrega gamma ni IV en este plan, así que por defecto:
 //  · la IV se estima de la volatilidad realizada del subyacente (barras diarias)
 //  · la gamma se calcula con Black-Scholes por contrato
-//  · donde hay gamma real de MarketSnack, se ancla la estimada contra la real
+//  · donde hay gamma real de MarketSnack (de los trades), se ancla la estimada
+//
+// Si hay griegos reales de Schwab (Market Data Production, `schwabGreeks` en
+// GexInput — ver lib/schwabParse.ts) para un strike+vencimiento, esos GANAN
+// sobre la estimación BS y sobre el ancla de MarketSnack: es la fuente más
+// fuerte porque viene directo del broker, no de una aproximación.
 //
 // Funciones puras y testeables (lib/gex.test.ts). Términos neutros a propósito.
 // ============================================================================
@@ -17,6 +22,7 @@ import { daysToExpiration } from "./occ";
 // bsGamma vive en blackScholes.ts (la Wheel usa las mismas primitivas).
 // Se re-exporta para no romper a quien la importa desde aquí.
 import { bsGamma } from "./blackScholes";
+import { greeksKey, type SchwabGreeksMap } from "./schwabParse";
 export { bsGamma };
 
 /** IV de respaldo cuando no hay suficientes barras para estimar. */
@@ -86,6 +92,8 @@ export interface GexInput {
   structureScore?: number | null;  // 0-10
   lowLiquidity?: boolean;
   now: Date;
+  /** Griegos e IV reales de Schwab, si /api/schwab-greeks los trajo. Opcional. */
+  schwabGreeks?: SchwabGreeksMap;
 }
 
 const emptyAnalysis = (spot: number, iv: number, lowLiquidity: boolean): GexAnalysis => ({
@@ -100,8 +108,8 @@ const emptyAnalysis = (spot: number, iv: number, lowLiquidity: boolean): GexAnal
  * (imán), zona de inversión gamma, régimen, dirección y confianza.
  */
 export function gexAnalysis(input: GexInput): GexAnalysis {
-  const { rows, closes, spot, trades = [], convictionScore, structureScore, now } = input;
-  const iv = estimateIV(closes);
+  const { rows, closes, spot, trades = [], convictionScore, structureScore, now, schwabGreeks } = input;
+  let iv = estimateIV(closes);
   const lowLiquidity = input.lowLiquidity ?? false;
   if (spot <= 0 || rows.length === 0) return emptyAnalysis(spot, iv, lowLiquidity);
 
@@ -122,18 +130,39 @@ export function gexAnalysis(input: GexInput): GexAnalysis {
   // ── GEX por strike sobre toda la cadena (solo contratos vigentes) ──
   const lo = spot * (1 - NEAR_SPOT_PCT);
   const hi = spot * (1 + NEAR_SPOT_PCT);
+  const nearRows = rows.filter(
+    (r) => r.strike >= lo && r.strike <= hi && r.openInterest > 0 && daysToExpiration(r.expiration, now) > 0,
+  );
+
+  // IV real de Schwab (promedio ponderado por OI de los strikes cercanos al spot)
+  // reemplaza el proxy de volatilidad realizada cuando hay cobertura suficiente —
+  // es la base que usan TODOS los strikes sin griego real propio en el loop de abajo.
+  if (schwabGreeks) {
+    let wSum = 0, wIv = 0;
+    for (const r of nearRows) {
+      const real = schwabGreeks[greeksKey(r.strike, r.expiration, r.contractType)];
+      if (real?.iv != null && real.iv > 0) {
+        wSum += r.openInterest;
+        wIv += real.iv * r.openInterest;
+      }
+    }
+    if (wSum > 0) iv = wIv / wSum;
+  }
+
   const byStrike = new Map<number, { callGex: number; putGex: number }>();
 
-  for (const r of rows) {
-    if (r.strike < lo || r.strike > hi) continue;
-    if (r.openInterest <= 0) continue;
+  for (const r of nearRows) {
     const dte = daysToExpiration(r.expiration, now);
-    if (dte <= 0) continue;
     const T = dte / 365;
 
     let gamma = bsGamma(spot, r.strike, T, iv);
     const anchor = realGamma.get(`${r.strike}|${r.contractType}`);
     if (anchor && anchor.n > 0) gamma = (gamma + anchor.sum / anchor.n) / 2;
+
+    // Griego real de Schwab (si cubre este strike+vencimiento) gana sobre la
+    // estimación BS y sobre el ancla de MarketSnack — viene directo del broker.
+    const real = schwabGreeks?.[greeksKey(r.strike, r.expiration, r.contractType)];
+    if (real?.gamma != null && real.gamma > 0) gamma = real.gamma;
 
     const gex = gamma * r.openInterest * 100 * spot * spot * 0.01;
     const s = byStrike.get(r.strike) ?? { callGex: 0, putGex: 0 };

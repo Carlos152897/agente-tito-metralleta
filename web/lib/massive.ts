@@ -351,6 +351,120 @@ export async function fetchWheelChain(
   return { spot, quotes: otm };
 }
 
+// ── Backtest ("Prueba de Fuego") ────────────────────────────────────────────
+
+export interface OptionContractRef {
+  ticker: string;
+  strike: number;
+  expiration: string; // YYYY-MM-DD
+}
+
+/**
+ * Lista de referencia de contratos (strike + vencimiento), incluyendo YA VENCIDOS
+ * (`expired=true`) — es la única forma de saber qué contratos existían en una
+ * ventana pasada. NO trae precio ni Open Interest, solo la identidad del contrato.
+ */
+export async function fetchOptionContractsList(
+  ticker: string,
+  opts: { contractType: "call" | "put"; expirationGte: string; expirationLte: string },
+): Promise<OptionContractRef[]> {
+  const key = apiKey();
+  const clean = ticker.trim().toUpperCase();
+  const out: OptionContractRef[] = [];
+  let url: string | null =
+    `${BASE_URL}/v3/reference/options/contracts?underlying_ticker=${encodeURIComponent(clean)}` +
+    `&contract_type=${opts.contractType}&expiration_date.gte=${opts.expirationGte}` +
+    `&expiration_date.lte=${opts.expirationLte}&expired=true&limit=1000`;
+
+  while (url) {
+    const res = await fetchMassive(url, key);
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new MassiveError(describeStatus(res.status, clean, body), res.status);
+    }
+    const json: {
+      results?: { ticker?: string; strike_price?: number; expiration_date?: string }[];
+      next_url?: string;
+    } = await res.json();
+    for (const c of json.results ?? []) {
+      if (c.ticker && typeof c.strike_price === "number" && c.expiration_date) {
+        out.push({ ticker: c.ticker, strike: c.strike_price, expiration: c.expiration_date });
+      }
+    }
+    url = json.next_url ?? null;
+  }
+  return out;
+}
+
+/** Barra diaria (open/high/low/close) de UN contrato de opción en UNA fecha. null si no operó ese día. */
+export async function fetchOptionDayBar(
+  optionTicker: string,
+  dateStr: string,
+): Promise<{ open: number; high: number; low: number; close: number } | null> {
+  const key = apiKey();
+  const path = `/v2/aggs/ticker/${encodeURIComponent(optionTicker)}/range/1/day/${dateStr}/${dateStr}?adjusted=true&limit=1`;
+  const json = await getJson<{ results?: { o: number; h: number; l: number; c: number }[] }>(path).catch(
+    () => null,
+  );
+  const bar = json?.results?.[0];
+  if (!bar) return null;
+  return { open: bar.o, high: bar.h, low: bar.l, close: bar.c };
+}
+
+// ── Day trading en vivo ("Prueba de Fuego" TSLA/SPX) ────────────────────────
+
+export interface OptionQuote {
+  symbol: string;
+  bid: number | null;
+  ask: number | null;
+  mid: number | null;
+  lastTrade: number | null;
+  openInterest: number | null;
+  underlyingPrice: number | null;
+}
+
+interface SingleContractSnapshot {
+  results?: {
+    details?: { ticker?: string };
+    last_quote?: { bid?: number; ask?: number; midpoint?: number };
+    last_trade?: { price?: number };
+    open_interest?: number;
+    underlying_asset?: { price?: number };
+  };
+}
+
+/**
+ * Quote en vivo de UN contrato de opción (para trackear P/L en el day trading).
+ * `optionTicker` acepta tanto el símbolo OCC puro (p. ej. de `buildOccSymbol`,
+ * lib/occ.ts) como el formato de `Row.optionTicker` (`details.ticker` de Massive,
+ * que ya trae el prefijo `O:`) — Massive exige el prefijo en este endpoint
+ * puntual, así que se agrega acá si falta (verificado en vivo: sin el prefijo
+ * responde 404 aunque el contrato exista). null si Massive no tiene snapshot.
+ */
+export async function fetchOptionQuote(
+  underlyingTicker: string,
+  optionTicker: string,
+): Promise<OptionQuote | null> {
+  const underlying = underlyingTicker.trim().toUpperCase();
+  const symbol = optionTicker.startsWith("O:") ? optionTicker : `O:${optionTicker}`;
+  const path = `/v3/snapshot/options/${encodeURIComponent(underlying)}/${encodeURIComponent(symbol)}`;
+  const json = await getJson<SingleContractSnapshot>(path).catch(() => null);
+  const r = json?.results;
+  if (!r) return null;
+  const bid = r.last_quote?.bid ?? null;
+  const ask = r.last_quote?.ask ?? null;
+  const mid = r.last_quote?.midpoint ?? (bid != null && ask != null ? (bid + ask) / 2 : null);
+  return {
+    symbol: r.details?.ticker ?? optionTicker,
+    bid,
+    ask,
+    mid,
+    lastTrade: r.last_trade?.price ?? null,
+    openInterest: r.open_interest ?? null,
+    underlyingPrice: r.underlying_asset?.price ?? null,
+  };
+}
+
 function describeStatus(status: number, ticker: string, body: string): string {
   switch (status) {
     case 401:

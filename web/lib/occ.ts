@@ -31,6 +31,15 @@ export function parseOcc(symbol: string): OccInfo | null {
   };
 }
 
+/** Inverso exacto de `parseOcc`: arma el símbolo OCC a partir de sus partes. */
+export function buildOccSymbol(info: OccInfo): string {
+  const [y, m, d] = info.expiration.split("-");
+  const dateRaw = `${y.slice(2)}${m}${d}`;
+  const typeRaw = info.type === "call" ? "C" : "P";
+  const strikeRaw = Math.round(info.strike * 1000).toString().padStart(8, "0");
+  return `${info.underlying}${dateRaw}${typeRaw}${strikeRaw}`;
+}
+
 /**
  * Fecha del mercado (ET) para `now`, como epoch de medianoche UTC.
  * Importante: no se puede usar la fecha UTC — después de las ~8 PM ET, UTC ya
@@ -55,4 +64,14 @@ function marketToday(now: Date): number {
 export function daysToExpiration(expiration: string, now: Date): number {
   const exp = Date.parse(`${expiration}T00:00:00Z`);
   return Math.round((exp - marketToday(now)) / 86_400_000);
+}
+
+/**
+ * La raíz OCC real de un contrato (ej. "SPXW" para SPX, cuando el índice
+ * cotiza sus opciones bajo una raíz distinta al ticker que se pide/muestra).
+ * `optionTicker` puede venir con el prefijo "O:" de Massive.
+ */
+export function resolveOccRoot(optionTicker: string, fallback: string): string {
+  const clean = optionTicker.startsWith("O:") ? optionTicker.slice(2) : optionTicker;
+  return parseOcc(clean)?.underlying ?? fallback;
 }

@@ -1,7 +1,14 @@
 // Cliente del API interno de MarketSnack (app.marketsnack.com). Solo servidor.
-// Auth por cookie de sesión (MARKETSNACK_COOKIE en .env.local). Ver SCOREDCARD/Scoredcard.md.
+// Auth por cookie de sesión. Fuente: lib/marketsnackCookie.ts, que se lee EN CADA
+// PETICIÓN (no al arrancar) — así /ajustes puede actualizarla sin reiniciar `next dev`.
+// MARKETSNACK_COOKIE en .env.local sigue funcionando como respaldo si aún no se ha
+// guardado nada ahí. Ver SCOREDCARD/Scoredcard.md.
 
 import type { RawTrade } from "./flow";
+import { loadCookie } from "./marketsnackCookie";
+import type { ContractPremiumSummary, TradeSummaryBucket } from "./neighborContracts";
+import { summarizeTradeBuckets } from "./neighborContracts";
+import type { ExtendedChainContract, GexStatsBucket } from "./spxLevels";
 
 const BASE_URL = "https://app.marketsnack.com";
 
@@ -14,14 +21,47 @@ export class MarketSnackError extends Error {
   }
 }
 
-function cookie(): string {
-  const c = process.env.MARKETSNACK_COOKIE;
-  if (!c || !c.trim()) {
+async function cookie(): Promise<string> {
+  const c = await loadCookie();
+  if (!c) {
     throw new MarketSnackError(
-      "Falta MARKETSNACK_COOKIE en .env.local. Copia tu cookie de sesión de app.marketsnack.com.",
+      "Falta la cookie de sesión de MarketSnack. Configúrala en /ajustes (o en MARKETSNACK_COOKIE, .env.local).",
     );
   }
-  return c.trim();
+  return c;
+}
+
+/**
+ * Prueba una cookie candidata contra MarketSnack SIN guardarla — la usa /ajustes
+ * (y el extractor automático) para rechazar cookies que no sirven antes de pisar
+ * la que sí funcionaba. Pega contra `/api/assets/SPY`, el endpoint más liviano del
+ * cliente (un solo precio), igual que `fetchAssetPrice`.
+ */
+export async function testMarketSnackCookie(
+  candidate: string,
+): Promise<{ ok: boolean; message: string }> {
+  try {
+    const res = await fetch(`${BASE_URL}/api/assets/SPY`, {
+      headers: { Accept: "application/json", Cookie: candidate },
+      cache: "no-store",
+      redirect: "manual",
+    });
+    if (res.status === 401 || res.status === 403 || (res.status >= 300 && res.status < 400)) {
+      return { ok: false, message: `MarketSnack respondió ${res.status}: sesión inválida o expirada.` };
+    }
+    if (!res.ok) {
+      return { ok: false, message: `MarketSnack respondió ${res.status}.` };
+    }
+    const json: { latest_price?: number; regular_price?: number } = await res
+      .json()
+      .catch(() => ({}) as { latest_price?: number; regular_price?: number });
+    if (json.latest_price == null && json.regular_price == null) {
+      return { ok: false, message: "MarketSnack respondió 200 pero sin datos reconocibles — revisa la cookie." };
+    }
+    return { ok: true, message: "Cookie válida — MarketSnack respondió con datos de SPY." };
+  } catch (err) {
+    return { ok: false, message: `No se pudo contactar a MarketSnack: ${(err as Error).message}` };
+  }
 }
 
 export interface FetchFlowOptions {
@@ -29,6 +69,9 @@ export interface FetchFlowOptions {
   maxPages?: number;
   minPremium?: number; // filtro server-side: solo trades con premium ≥ este valor ($)
   targetDays?: number; // detener la paginación al cubrir N días hacia atrás
+  /** Ventana de fecha exacta (YYYY-MM-DD, inclusive) — para reconstruir un día histórico. */
+  dateGte?: string;
+  dateLte?: string;
   onPage?: (page: number, accumulated: number) => void | Promise<void>;
 }
 
@@ -68,7 +111,7 @@ async function paginate(
   const clean = symbol;
   const period = opts.period ?? "5d";
   const maxPages = opts.maxPages ?? 10;
-  const cookieHeader = cookie();
+  const cookieHeader = await cookie();
 
   const trades: RawTrade[] = [];
   let token: string | null = null;
@@ -87,6 +130,8 @@ async function paginate(
     if (opts.minPremium && opts.minPremium > 0) {
       params.set("filter[premium][gte]", String(Math.floor(opts.minPremium)));
     }
+    if (opts.dateGte) params.set("filter[date][gte]", opts.dateGte);
+    if (opts.dateLte) params.set("filter[date][lte]", opts.dateLte);
     if (token) params.set("next_page_token", token);
     const url = `${BASE_URL}/api/flow_feed?${params.toString()}`;
 
@@ -99,7 +144,7 @@ async function paginate(
     // Sesión inválida/expirada → MarketSnack redirige a /login o responde 401.
     if (res.status === 401 || res.status === 403 || (res.status >= 300 && res.status < 400)) {
       throw new MarketSnackError(
-        "Sesión de MarketSnack inválida o expirada. Actualiza MARKETSNACK_COOKIE en .env.local.",
+        "Sesión de MarketSnack inválida o expirada. Actualiza la cookie en /ajustes.",
         res.status,
       );
     }
@@ -130,4 +175,166 @@ async function paginate(
   } while (token);
 
   return { trades, pages: page, truncated };
+}
+
+/**
+ * Precio en vivo del subyacente vía `GET /api/assets/{ticker}` — MISMO
+ * endpoint que alimenta el encabezado de la app de MarketSnack. `latest_price`
+ * ya resuelve solo regular/pre-market/after-hours (coincide con
+ * `extended_price` fuera de horario regular y con `regular_price` dentro).
+ * Distinto de `fetchFlow`/`fetchContractTradeSummary`: esto NO son trades de
+ * opciones, es directamente el precio del activo — la fuente correcta para
+ * el spot en vivo, a diferencia del snapshot de acciones de Massive (que no
+ * refleja pre-market/after-hours, ver lib/dayTrade.ts `resolveLiveSpot`).
+ * `null` si el ticker no existe o la respuesta no trae un precio válido — no
+ * es un error fatal, `resolveLiveSpot` tiene más fuentes de respaldo.
+ */
+export async function fetchAssetPrice(ticker: string): Promise<number | null> {
+  const clean = ticker.trim().toUpperCase();
+  if (!clean) return null;
+  const res = await fetch(`${BASE_URL}/api/assets/${encodeURIComponent(clean)}`, {
+    headers: { Accept: "application/json", Cookie: await cookie() },
+    cache: "no-store",
+    redirect: "manual",
+  });
+
+  if (res.status === 401 || res.status === 403 || (res.status >= 300 && res.status < 400)) {
+    throw new MarketSnackError(
+      "Sesión de MarketSnack inválida o expirada. Actualiza la cookie en /ajustes.",
+      res.status,
+    );
+  }
+  if (!res.ok) return null;
+
+  const json: { latest_price?: number; regular_price?: number } = await res.json();
+  const price = json.latest_price ?? json.regular_price ?? null;
+  return price != null && price > 0 ? price : null;
+}
+
+/**
+ * GEX agregado de MarketSnack, ya calculado por ellos (call_wall, put_wall,
+ * magnet, max_pain, gamma_flip, net_gex) — vía `GET /api/assets/{ticker}/
+ * gex_stats_chart`, buckets de 5 min. Ver lib/spxLevels.ts. Distinto de
+ * `lib/gex.ts` (nuestra aproximación Black-Scholes): esto es el GEX "real" de
+ * MarketSnack, pedido explícito de Carlos (2026-07-30) para el panel de
+ * Soportes y Resistencias de SPX. `[]` si no hay datos, no es error fatal.
+ */
+export async function fetchGexStats(
+  ticker: string,
+  opts: { period?: string } = {},
+): Promise<GexStatsBucket[]> {
+  const clean = ticker.trim().toUpperCase();
+  if (!clean) return [];
+  const period = opts.period ?? "1d";
+  const url = `${BASE_URL}/api/assets/${encodeURIComponent(clean)}/gex_stats_chart?period=${period}`;
+  const res = await fetch(url, {
+    headers: { Accept: "application/json", Cookie: await cookie() },
+    cache: "no-store",
+    redirect: "manual",
+  });
+
+  if (res.status === 401 || res.status === 403 || (res.status >= 300 && res.status < 400)) {
+    throw new MarketSnackError(
+      "Sesión de MarketSnack inválida o expirada. Actualiza la cookie en /ajustes.",
+      res.status,
+    );
+  }
+  if (!res.ok) return [];
+
+  const json: { data?: GexStatsBucket[] } = await res.json();
+  return json.data ?? [];
+}
+
+/**
+ * Cadena completa de UNA expiración con greeks REALES (gamma incluida, no
+ * estimada) y `premium_breakdown` (bid/mid/ask) por contrato — vía `GET
+ * /api/assets/{ticker}/option_chain_extended?expiration_date=`. Da, en una
+ * sola llamada, el net premium de HOY de todos los strikes de esa
+ * expiración (lo que `trade_summaries` da contrato por contrato) más la
+ * gamma real para calcular GEX sin aproximar. Ver lib/spxLevels.ts. `[]` si
+ * la expiración no tiene contratos, no es error fatal.
+ */
+export async function fetchOptionChainExtended(
+  ticker: string,
+  expirationDate: string,
+): Promise<ExtendedChainContract[]> {
+  const clean = ticker.trim().toUpperCase();
+  if (!clean || !expirationDate) return [];
+  const url = `${BASE_URL}/api/assets/${encodeURIComponent(clean)}/option_chain_extended?expiration_date=${encodeURIComponent(expirationDate)}`;
+  const res = await fetch(url, {
+    headers: { Accept: "application/json", Cookie: await cookie() },
+    cache: "no-store",
+    redirect: "manual",
+  });
+
+  if (res.status === 401 || res.status === 403 || (res.status >= 300 && res.status < 400)) {
+    throw new MarketSnackError(
+      "Sesión de MarketSnack inválida o expirada. Actualiza la cookie en /ajustes.",
+      res.status,
+    );
+  }
+  if (!res.ok) return [];
+
+  const json: ExtendedChainContract[] = await res.json();
+  return Array.isArray(json) ? json : [];
+}
+
+/**
+ * Buckets de 5 min de un contrato puntual (net premium ya desglosado en
+ * ask/bid/mid) — endpoint distinto a `flow_feed`, uno por símbolo OCC exacto.
+ * Ver lib/neighborContracts.ts (contratos vecinos). Array vacío = el contrato
+ * no tuvo trades hoy, no es error.
+ */
+export async function fetchContractTradeSummary(
+  occSymbol: string,
+  opts: { period?: string } = {},
+): Promise<TradeSummaryBucket[]> {
+  const period = opts.period ?? "1d";
+  const url = `${BASE_URL}/api/option_contracts/${encodeURIComponent(occSymbol)}/trade_summaries?period=${period}`;
+  const res = await fetch(url, {
+    headers: { Accept: "application/json", Cookie: await cookie() },
+    cache: "no-store",
+    redirect: "manual",
+  });
+
+  if (res.status === 401 || res.status === 403 || (res.status >= 300 && res.status < 400)) {
+    throw new MarketSnackError(
+      "Sesión de MarketSnack inválida o expirada. Actualiza la cookie en /ajustes.",
+      res.status,
+    );
+  }
+  if (!res.ok) return []; // contrato sin datos hoy (ej. 404), no es error
+
+  const json: { data?: TradeSummaryBucket[] } = await res.json();
+  return json.data ?? [];
+}
+
+/**
+ * `fetchContractTradeSummary` para varios símbolos a la vez, ya reducidos a
+ * net premium (`summarizeTradeBuckets`). Batchea en chunks de `concurrency`
+ * (default 8) para no disparar todos los fetches de una — Búsqueda de
+ * contratos puede pedir esto hasta 5 veces por escaneo (uno por finalista).
+ * Un símbolo individual sin datos se omite; una sesión inválida (401/403)
+ * propaga el MarketSnackError, igual que `paginate()`.
+ */
+export async function fetchContractPremiumSummaries(
+  occSymbols: string[],
+  opts: { period?: string; concurrency?: number } = {},
+): Promise<Map<string, ContractPremiumSummary>> {
+  const unique = [...new Set(occSymbols)];
+  const concurrency = opts.concurrency ?? 8;
+  const out = new Map<string, ContractPremiumSummary>();
+
+  for (let i = 0; i < unique.length; i += concurrency) {
+    const chunk = unique.slice(i, i + concurrency);
+    const results = await Promise.all(
+      chunk.map(async (symbol) => {
+        const buckets = await fetchContractTradeSummary(symbol, { period: opts.period });
+        return [symbol, summarizeTradeBuckets(buckets)] as const;
+      }),
+    );
+    for (const [symbol, summary] of results) out.set(symbol, summary);
+  }
+
+  return out;
 }

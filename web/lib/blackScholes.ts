@@ -62,6 +62,42 @@ export function bsGamma(spot: number, strike: number, T: number, iv: number): nu
   return phi(d1) / (spot * iv * sqrtT);
 }
 
+/**
+ * Charm: ∂Delta/∂t — cuánto cambia el delta a medida que pasa el tiempo (T se
+ * achica), a igual spot/IV. Bajo q=0 (sin dividendo, misma convención que el
+ * resto del archivo) da el MISMO valor para call y put: Δput = Δcall − 1 es
+ * una constante, así que su derivada respecto a t es idéntica — por eso no
+ * lleva parámetro `type`, igual que `bsGamma`.
+ *
+ * Se deriva en forma cerrada de Δ = N(d1) (∂Δ/∂t = −φ(d1)·∂d1/∂T) en vez de
+ * copiar una fórmula de texto — hay ambigüedad de signo entre fuentes para
+ * "charm". Verificado en `blackScholes.test.ts` contra la derivada numérica
+ * (diferencias finitas) de `bsDelta`, así queda garantizado consistente con
+ * el delta que ya usa el resto del repo.
+ */
+export function bsCharm(spot: number, strike: number, T: number, iv: number, r = RISK_FREE): number {
+  if (invalid(spot, strike, T, iv)) return 0;
+  const sqrtT = Math.sqrt(T);
+  const d1 = d1Of(spot, strike, T, iv, r);
+  const dD1dT = (0.5 / (iv * T * sqrtT)) * ((r + 0.5 * iv * iv) * T - Math.log(spot / strike));
+  return -phi(d1) * dD1dT;
+}
+
+/**
+ * Vanna: ∂Delta/∂σ (equivalente a ∂Vega/∂S) — cuánto cambia el delta ante un
+ * cambio de IV. Mismo razonamiento que `bsCharm`: bajo q=0, call y put dan el
+ * mismo valor (la derivada de la constante −1 es 0), así que no lleva `type`.
+ * Forma cerrada: ∂Δ/∂σ = φ(d1)·∂d1/∂σ, y ∂d1/∂σ = −d2/σ (álgebra directa desde
+ * d1 = (ln(S/K)+(r+0.5σ²)T)/(σ√T)), así que vanna = −φ(d1)·d2/σ. Verificado en
+ * los tests contra la derivada numérica de `bsDelta` respecto a IV.
+ */
+export function bsVanna(spot: number, strike: number, T: number, iv: number, r = RISK_FREE): number {
+  if (invalid(spot, strike, T, iv)) return 0;
+  const d1 = d1Of(spot, strike, T, iv, r);
+  const d2 = d1 - iv * Math.sqrt(T);
+  return (-phi(d1) * d2) / iv;
+}
+
 const IV_LO = 0.01;
 const IV_HI = 5;
 const IV_TOL = 1e-6;

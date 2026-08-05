@@ -28,8 +28,8 @@ if (-not $listening) {
     if (-not $ready) {
         Add-Type -AssemblyName System.Windows.Forms
         [System.Windows.Forms.MessageBox]::Show(
-            "Tito Metralleta no arranco a tiempo (espere $timeoutSeconds segundos). Puede que OneDrive siga sincronizando archivos tras encender la PC, o que el servidor haya fallado. Revisa el log: $errLog",
-            "Tito Metralleta"
+            "Visionary Trades no arranco a tiempo (espere $timeoutSeconds segundos). Puede que OneDrive siga sincronizando archivos tras encender la PC, o que el servidor haya fallado. Revisa el log: $errLog",
+            "Visionary Trades"
         ) | Out-Null
     }
 }

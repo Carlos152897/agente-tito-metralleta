@@ -6,6 +6,7 @@ import { sizeFlow, type RiskProfile } from "@/lib/risk";
 import RiskProfileCard, { DEFAULT_PROFILE, loadProfile } from "@/app/components/RiskProfileCard";
 import IdeasTable, { type SizedIdea } from "@/app/components/IdeasTable";
 import WatchlistCard from "@/app/components/WatchlistCard";
+import BrandMark from "@/app/components/BrandMark";
 import NavTabs from "@/app/components/NavTabs";
 import {
   brokerById,
@@ -308,11 +309,7 @@ export default function IdeasPage() {
   return (
     <main className="ideas-page">
       <div className="hb">
-        <div className="hb-brand">
-          <div className="hb-logo">T</div>
-          <div className="hb-name">Tito Metralleta</div>
-          <div className="hb-chip">Ideas del mercado</div>
-        </div>
+        <BrandMark subtitle="Ideas del mercado" />
         <NavTabs />
       </div>
 
@@ -372,8 +369,8 @@ export default function IdeasPage() {
             <strong>No se pudo escanear.</strong>
             <p>{error}</p>
             <p className="muted">
-              Si menciona la sesión de MarketSnack, hay que refrescar
-              <code> MARKETSNACK_COOKIE</code> en <code>web/.env.local</code>.
+              Si menciona la sesión de MarketSnack, hay que refrescar la cookie en
+              <code> /ajustes</code>.
             </p>
           </section>
         )}

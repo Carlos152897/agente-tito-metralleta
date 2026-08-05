@@ -258,6 +258,17 @@ describe("wheelCandidates", () => {
     expect(out[0]?.ivSource).toBe("estimada");
   });
 
+  it("el delta/IV real de Schwab gana sobre la IV implícita y el fallback", () => {
+    const out = wheelCandidates({
+      ...CAND_BASE,
+      quotes: [quote({ delta: -0.25, iv: 0.5 })],
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0].delta).toBe(-0.25);
+    expect(out[0].iv).toBe(0.5);
+    expect(out[0].ivSource).toBe("real");
+  });
+
   it("ordena de mayor a menor score y deja los bloqueados al final", () => {
     const out = wheelCandidates({
       ...CAND_BASE,

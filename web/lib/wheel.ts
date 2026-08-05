@@ -310,9 +310,12 @@ export interface ChainQuote {
   ask: number | null;
   lastTrade: number | null;
   openInterest: number;
+  /** Delta/IV real de Schwab para este strike+vencimiento, si /api/wheel lo trajo. */
+  delta?: number | null;
+  iv?: number | null;
 }
 
-export type IvSource = "implicita" | "estimada";
+export type IvSource = "implicita" | "estimada" | "real";
 
 export interface WheelCandidate {
   ticker: string;
@@ -369,11 +372,13 @@ export function wheelCandidates(input: CandidatesInput): WheelCandidate[] {
       ? (q.bid + q.ask) / 2
       : null;
 
+    // El delta/IV real de Schwab gana sobre la IV implícita bisectada y sobre la
+    // estimación de respaldo — viene directo del broker, no de una aproximación.
     const implied = mid != null ? impliedVol(mid, spot, q.strike, T, "put") : null;
-    const iv = implied ?? fallbackIv;
-    const ivSource: IvSource = implied != null ? "implicita" : "estimada";
+    const iv = q.iv ?? implied ?? fallbackIv;
+    const ivSource: IvSource = q.iv != null ? "real" : implied != null ? "implicita" : "estimada";
 
-    const delta = bsDelta(spot, q.strike, T, iv, "put");
+    const delta = q.delta ?? bsDelta(spot, q.strike, T, iv, "put");
     const absDelta = Math.abs(delta);
     if (absDelta < preset.deltaMin || absDelta > preset.deltaMax) continue;
 

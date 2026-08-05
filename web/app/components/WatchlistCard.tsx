@@ -130,7 +130,7 @@ export default function WatchlistCard({
           <p className="muted">
             Autorizar da a tu agente lectura de tus cuentas, posiciones e historial de
             órdenes. <strong>No es un permiso menor</strong> — léelo antes de aceptar.
-            Tito solo lo usa para añadir contratos a tu watchlist: <strong>nunca coloca una
+            Visionary Trades solo lo usa para añadir contratos a tu watchlist: <strong>nunca coloca una
             orden</strong>. Si además quieres operar, eso lo configuras tú en tu propio Claude.
           </p>
         </div>
@@ -217,7 +217,7 @@ export default function WatchlistCard({
                       ) : e.brokerSync?.status === "sincronizado" ? (
                         <span className="chip chip-ask">✓ {e.brokerSync.broker}</span>
                       ) : (
-                        <span className="chip chip-neutral">solo Tito</span>
+                        <span className="chip chip-neutral">solo Visionary Trades</span>
                       )}
                     </td>
                     <td>
@@ -241,7 +241,7 @@ export default function WatchlistCard({
         <p className="muted watchlist-note">
           Tu watchlist se guarda en este navegador, no en el servidor — igual que tu saldo.
           Eso significa que no te sigue a otro dispositivo y que se borra si limpias el
-          navegador. Tito <strong>nunca coloca una orden</strong> por ti.
+          navegador. Visionary Trades <strong>nunca coloca una orden</strong> por ti.
         </p>
       )}
     </section>

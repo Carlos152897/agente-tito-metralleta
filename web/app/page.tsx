@@ -8,11 +8,13 @@ import type { IvContextScore } from "@/lib/ivcontext";
 import type { ValidationScore } from "@/lib/validation";
 import type { ChainSnapshot } from "@/lib/chainStore";
 import { gexAnalysis, type TradeLite } from "@/lib/gex";
+import type { SchwabGreeksMap } from "@/lib/schwabParse";
 import { gexHeatmap, type HeatTrade } from "@/lib/gexHeatmap";
 import { predictPro } from "@/lib/prediction";
 import { findLevels, type ChainLevel, type FlowLevel } from "@/lib/levels";
 import { int } from "./format";
 import HeaderBar from "./components/HeaderBar";
+import HeroLanding from "./components/HeroLanding";
 import AnalysisLoader from "./components/AnalysisLoader";
 import VeredictoCard from "./components/VeredictoCard";
 import EscenariosCard from "./components/EscenariosCard";
@@ -79,6 +81,9 @@ export default function Dashboard() {
   const [unusualRows, setUnusualRows] = useState<UnusualRow[] | null>(null);
   const [ivContext, setIvContext] = useState<IvContextScore | null>(null);
   const [validation, setValidation] = useState<ValidationScore | null>(null);
+  // Griegos e IV reales de Schwab (Market Data Production). Opcional: si falta o falla,
+  // gexAnalysis sigue con la estimación Black-Scholes/MarketSnack de siempre.
+  const [schwabGreeks, setSchwabGreeks] = useState<SchwabGreeksMap | undefined>(undefined);
   const [notable, setNotable] = useState<FlowRow[] | null>(null);
   const [flowMeta, setFlowMeta] = useState<FlowMeta | null>(null);
 
@@ -137,8 +142,9 @@ export default function Dashboard() {
       structureScore: structure?.score ?? null,
       lowLiquidity: structure?.notional.lowLiquidity ?? false,
       now: new Date(),
+      schwabGreeks,
     });
-  }, [chainRows, bars, company, chainMeta, convRows, unusualRows, conviction, structure]);
+  }, [chainRows, bars, company, chainMeta, convRows, unusualRows, conviction, structure, schwabGreeks]);
 
   // Heatmap de GEX por strike × vencimiento — abre el GEX en sus dos dimensiones.
   const heatmap = useMemo(() => {
@@ -259,6 +265,7 @@ export default function Dashboard() {
     setAggScore(null); setConviction(null); setConvRows(null); setConvMeta(null);
     setUnusuality(null); setUnusualRows(null); setIvContext(null); setValidation(null);
     setNotable(null); setFlowMeta(null);
+    setSchwabGreeks(undefined);
     setChainErr(null); setFlowErr(null);
     chainDoneRef.current = false; flowDoneRef.current = false;
     setShowChain(false);
@@ -279,6 +286,15 @@ export default function Dashboard() {
       })
       .catch(() => {})
       .finally(() => setCalibReady(true));
+
+    // Griegos reales de Schwab — no bloquea nada: si falla o no está configurado,
+    // gex se queda en la estimación BS/MarketSnack de siempre (schwabGreeks null).
+    fetch(`/api/schwab-greeks?ticker=${encodeURIComponent(tk)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { available: boolean; greeks?: SchwabGreeksMap } | null) => {
+        if (d?.available && d.greeks) setSchwabGreeks(d.greeks);
+      })
+      .catch(() => {});
 
     // Stream 1 — Massive: empresa + option chain + estructura
     const c = new EventSource(`/api/chain?ticker=${encodeURIComponent(tk)}`);
@@ -339,15 +355,7 @@ export default function Dashboard() {
       <HeaderBar ticker={ticker} company={company} busy={busy} onSearch={runSearch} />
       <main className="wrap page-stack">
 
-        {!started && !busy && (
-          <div className="card" style={{ alignItems: "center", padding: "48px 24px", textAlign: "center" }}>
-            <div style={{ fontSize: 20, fontWeight: 700 }}>Analiza un ticker</div>
-            <div className="card-sub" style={{ maxWidth: 480 }}>
-              Elige un ticker arriba (o búscalo) y el agente armará el sentiment score, el flujo
-              inusual, los muros de strikes y el detalle completo de cada sub-agente.
-            </div>
-          </div>
-        )}
+        {!started && !busy && <HeroLanding onSearch={runSearch} />}
 
         {busy && <AnalysisLoader ticker={ticker} steps={steps} />}
 

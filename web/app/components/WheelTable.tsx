@@ -73,7 +73,7 @@ function WheelRow({ c, view }: { c: AffordableCandidate; view: "estudiante" | "p
         <div className="wheel-grid">
           <span>Prima <b>{money2(p.price)}</b> <small>({SOURCE_LABEL[p.source]})</small></span>
           <span>Δ <b>{c.delta.toFixed(2)}</b></span>
-          <span>IV <b>{pct(c.iv * 100)}</b> <small>{c.ivSource === "estimada" ? "est." : "impl."}</small></span>
+          <span>IV <b>{pct(c.iv * 100)}</b> <small>{c.ivSource === "real" ? "Schwab" : c.ivSource === "estimada" ? "est." : "impl."}</small></span>
           <span>Anualizado <b>{pct(m.annualizedPct)}</b></span>
           <span>Colchón <b>{pct(m.cushionPct)}</b></span>
           <span>OI <b>{c.openInterest.toLocaleString()}</b></span>

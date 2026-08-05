@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import RiskProfileCard, { DEFAULT_PROFILE, loadProfile } from "@/app/components/RiskProfileCard";
 import WheelPresetCard from "@/app/components/WheelPresetCard";
 import WheelTable from "@/app/components/WheelTable";
+import BrandMark from "@/app/components/BrandMark";
 import NavTabs from "@/app/components/NavTabs";
 import { sortByAffordThenScore } from "@/lib/wheelAfford";
 import type { PresetId, WheelCandidate } from "@/lib/wheel";
@@ -64,11 +65,7 @@ export default function WheelPage() {
   return (
     <main className="ideas-page">
       <div className="hb">
-        <div className="hb-brand">
-          <div className="hb-logo">T</div>
-          <div className="hb-name">Tito Metralleta</div>
-          <div className="hb-chip">Wheel · ingreso con puts</div>
-        </div>
+        <BrandMark subtitle="Wheel · ingreso con puts" />
         <NavTabs />
       </div>
 

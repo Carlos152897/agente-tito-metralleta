@@ -3,14 +3,16 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-// Navegación entre las cuatro vistas del agente (Ticker / Ideas / Wheel /
-// Time & Sales). Vive en la barra superior de cada página para que moverse
-// entre ellas sea un clic, no un enlace perdido.
+// Navegación entre las vistas del agente. Vive en la barra superior de cada
+// página para que moverse entre ellas sea un clic, no un enlace perdido.
 const TABS = [
   { href: "/", label: "Ticker", icon: "📈" },
   { href: "/ideas", label: "Ideas", icon: "💡" },
   { href: "/wheel", label: "Wheel", icon: "🎡" },
   { href: "/flow", label: "Time & Sales", icon: "⚡" },
+  { href: "/prueba-de-fuego", label: "Prueba de Fuego", icon: "🔥" },
+  { href: "/unusual-swing", label: "Unusual Swing Trades", icon: "🦄" },
+  { href: "/ajustes", label: "Ajustes", icon: "⚙️" },
 ];
 
 export default function NavTabs({ standalone = false }: { standalone?: boolean }) {
