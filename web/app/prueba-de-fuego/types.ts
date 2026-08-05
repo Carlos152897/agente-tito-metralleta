@@ -1,4 +1,5 @@
 import type { ContractSuggestion } from "@/lib/dayTrade";
+import type { ContradictionFlag } from "@/lib/news";
 import type { GexStatsBucket, SpxLevelRow, TopVolumeContract } from "@/lib/spxLevels";
 
 // ── Pestañas TSLA / SPX (day-trading en vivo) ───────────────────────────────
@@ -19,51 +20,33 @@ export type DayTradeSseEvent =
     }
   | { type: "error"; message: string };
 
-// ── Pestaña "Búsqueda de contratos" (todo el mercado) ───────────────────────
-
-/**
- * GEX de referencia — SOLO para índices/ETFs líquidos (SPY, SPX, QQQ). Pedido
- * explícito de Carlos (2026-07-28): el target real de "Búsqueda de contratos"
- * sale del movimiento esperado por IV/DTE (ver lib/contractSearch.ts), NUNCA
- * del GEX, para no correrlo por candidato escaneando todo el mercado — pero
- * cuando el candidato SÍ es uno de esos tres, se calcula una vez como dato de
- * referencia adicional (no reemplaza el target, no filtra candidatos).
- */
-export interface GexReference {
-  direction: "up" | "down" | "flat" | null;
-  kingStrike: number | null;
-  confidence: number;
-  regime: "positive" | "negative";
-}
-
-/**
- * Contratos vecinos de referencia (net premium real de call vs put por strike,
- * ver lib/neighborContracts.ts) — a diferencia del GEX, esto SÍ aplica a
- * cualquier ticker (MarketSnack siempre es la fuente de flujo). Informativo:
- * no filtra candidatos ni reemplaza `estimateTarget`.
- */
-export interface NeighborReference {
-  confirms: boolean;
-  flipStrike: number | null;
-}
+// ── Pestaña "Búsqueda de contratos" (S&P 500, acumulación real) ─────────────
 
 export interface FavoriteContract {
   ticker: string;
+  companyName: string | null;
   symbol: string;
   type: "call" | "put";
   strike: number | null;
   expiration: string | null;
+  dte: number | null;
   premium: number;
   size: number;
+  volume: number;
+  openInterest: number;
   delta: number;
   assetPrice: number;
-  target: number | null;
-  convictionPct: number | null;
-  changePctToTarget: number | null;
-  estUsdGain: number | null;
+  target1: number | null;
+  convictionPct1: number | null;
+  changePctToTarget1: number | null;
+  estUsdGain1: number | null;
+  target2: number | null;
+  convictionPct2: number | null;
+  changePctToTarget2: number | null;
+  estUsdGain2: number | null;
   timestamp: string;
-  gexReference: GexReference | null;
-  neighborReference: NeighborReference | null;
+  /** Best-effort — null si el chequeo de noticias falló o no había dirección clara. */
+  newsFlag: ContradictionFlag | null;
 }
 
 export type ContractSearchSseEvent =

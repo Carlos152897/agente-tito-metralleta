@@ -16,16 +16,24 @@ function source(overrides: Partial<EntrySource> = {}): EntrySource {
   return {
     symbol: "SPY260729C00742000",
     ticker: "SPY",
+    companyName: "SPDR S&P 500 ETF Trust",
     type: "call",
     strike: 742,
     expiration: "2026-07-29",
+    dte: 15,
     assetPrice: 741.21,
-    premium: 551_327,
+    premium: 1_551_327,
     size: 1921,
-    target: 744.36,
-    convictionPct: 61,
-    changePctToTarget: 0.4,
-    estUsdGain: 148,
+    volume: 900,
+    openInterest: 400,
+    target1: 744.36,
+    convictionPct1: 61,
+    changePctToTarget1: 0.4,
+    estUsdGain1: 148,
+    target2: 748.5,
+    convictionPct2: 34,
+    changePctToTarget2: 1.0,
+    estUsdGain2: 320,
     ...overrides,
   };
 }
@@ -43,20 +51,20 @@ describe("buildEntry", () => {
     expect(buildEntry(source({ expiration: null }), NOW)).toBeNull();
   });
 
-  it("gexReference null por defecto (acciones); pasa el valor si viene (SPY/SPX/QQQ)", () => {
-    expect(buildEntry(source(), NOW)?.gexReference).toBeNull();
-    const ref = { direction: "up" as const, kingStrike: 750, confidence: 62, regime: "positive" as const };
-    expect(buildEntry(source({ gexReference: ref }), NOW)?.gexReference).toEqual(ref);
+  it("newsFlag null por defecto; pasa el valor si viene", () => {
+    expect(buildEntry(source(), NOW)?.newsFlag).toBeNull();
+    const flag = { kind: "confirm" as const, title: "Flujo alcista confirmado por las noticias", detail: "…" };
+    expect(buildEntry(source({ newsFlag: flag }), NOW)?.newsFlag).toEqual(flag);
   });
 });
 
 describe("upsert", () => {
   it("no pisa la foto original si el símbolo ya existe", () => {
-    const first = buildEntry(source({ target: 744.36 }), NOW)!;
-    const later = buildEntry(source({ target: 999 }), new Date("2026-07-29T00:00:00Z"))!;
+    const first = buildEntry(source({ target1: 744.36 }), NOW)!;
+    const later = buildEntry(source({ target1: 999 }), new Date("2026-07-29T00:00:00Z"))!;
     const entries = upsert([first], later);
     expect(entries).toHaveLength(1);
-    expect(entries[0].target).toBe(744.36);
+    expect(entries[0].target1).toBe(744.36);
   });
 });
 

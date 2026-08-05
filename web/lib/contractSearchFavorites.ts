@@ -1,45 +1,61 @@
 // Favoritos de "Búsqueda de contratos" — PURO. Mismo patrón que
 // lib/unusualSwingWatchlist.ts: el escaneo agrega candidatos nuevos solo
 // (Carlos los revisa y decide), "👎 No me gusta" los saca, "📌 Mantener" los
-// blinda de una futura limpieza automática. La foto (target/convicción al
+// blinda de una futura limpieza automática. La foto (targets/convicción al
 // momento de detectarlo) nunca se pisa, aunque un rescaneo la vuelva a traer.
 
-import type { GexReference } from "@/app/prueba-de-fuego/types";
+import type { ContradictionFlag } from "./news";
 
 export interface ContractSearchFavoriteEntry {
   symbol: string;
   ticker: string;
+  companyName: string | null;
   type: "call" | "put";
   strike: number;
   expiration: string;
+  dte: number | null;
   addedAt: string;
   assetPrice: number;
   premium: number;
   size: number;
-  target: number | null;
-  convictionPct: number | null;
-  changePctToTarget: number | null;
-  estUsdGain: number | null;
+  volume: number;
+  openInterest: number;
+  target1: number | null;
+  convictionPct1: number | null;
+  changePctToTarget1: number | null;
+  estUsdGain1: number | null;
+  target2: number | null;
+  convictionPct2: number | null;
+  changePctToTarget2: number | null;
+  estUsdGain2: number | null;
   pinned: boolean;
-  /** Solo SPY/SPX/QQQ (ver route.ts) — null para el resto (acciones: solo MarketSnack). */
-  gexReference: GexReference | null;
+  /** Best-effort — null si el chequeo de noticias falló o no había dirección clara. */
+  newsFlag: ContradictionFlag | null;
 }
 
 /** Lo mínimo que necesita `buildEntry` — evita acoplar este módulo al SSE completo. */
 export interface EntrySource {
   symbol: string;
   ticker: string;
+  companyName: string | null;
   type: "call" | "put";
   strike: number | null;
   expiration: string | null;
+  dte: number | null;
   assetPrice: number;
   premium: number;
   size: number;
-  target: number | null;
-  convictionPct: number | null;
-  changePctToTarget: number | null;
-  estUsdGain: number | null;
-  gexReference?: GexReference | null;
+  volume: number;
+  openInterest: number;
+  target1: number | null;
+  convictionPct1: number | null;
+  changePctToTarget1: number | null;
+  estUsdGain1: number | null;
+  target2: number | null;
+  convictionPct2: number | null;
+  changePctToTarget2: number | null;
+  estUsdGain2: number | null;
+  newsFlag?: ContradictionFlag | null;
 }
 
 export function buildEntry(source: EntrySource, now: Date): ContractSearchFavoriteEntry | null {
@@ -47,19 +63,27 @@ export function buildEntry(source: EntrySource, now: Date): ContractSearchFavori
   return {
     symbol: source.symbol,
     ticker: source.ticker,
+    companyName: source.companyName,
     type: source.type,
     strike: source.strike,
     expiration: source.expiration,
+    dte: source.dte,
     addedAt: now.toISOString(),
     assetPrice: source.assetPrice,
     premium: source.premium,
     size: source.size,
-    target: source.target,
-    convictionPct: source.convictionPct,
-    changePctToTarget: source.changePctToTarget,
-    estUsdGain: source.estUsdGain,
+    volume: source.volume,
+    openInterest: source.openInterest,
+    target1: source.target1,
+    convictionPct1: source.convictionPct1,
+    changePctToTarget1: source.changePctToTarget1,
+    estUsdGain1: source.estUsdGain1,
+    target2: source.target2,
+    convictionPct2: source.convictionPct2,
+    changePctToTarget2: source.changePctToTarget2,
+    estUsdGain2: source.estUsdGain2,
     pinned: false,
-    gexReference: source.gexReference ?? null,
+    newsFlag: source.newsFlag ?? null,
   };
 }
 
@@ -87,12 +111,9 @@ export function sortEntries(entries: ContractSearchFavoriteEntry[]): ContractSea
 }
 
 /**
- * Saca los favoritos ya VENCIDOS (expiration < hoy) — la "futura limpieza
- * automática" de la que ya hablaba el comentario de arriba de 📌 Mantener,
- * que hasta ahora nunca se había construido (Carlos, 2026-07-30: "me estás
- * dando expirados"). Un contrato que vence HOY (0DTE) se conserva hasta que
- * pase el día de mercado — solo lo que ya quedó atrás se saca. Los
- * 📌 Mantenidos quedan blindados a propósito, tal como se documentó siempre.
+ * Saca los favoritos ya VENCIDOS (expiration < hoy). Un contrato que vence
+ * HOY se conserva hasta que pase el día de mercado — solo lo que ya quedó
+ * atrás se saca. Los 📌 Mantenidos quedan blindados a propósito.
  * `todayStr` en el mismo formato YYYY-MM-DD que `expiration` (ver
  * lib/occ.ts `marketDateStr`).
  */

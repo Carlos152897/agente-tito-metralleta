@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { classifyFlow, type RawTrade } from "./flow";
-import { estimateTarget, isNearExpiration, isNearMoney, rankByAggression } from "./contractSearch";
+import {
+  estimateTarget, isAggressiveAsk, isBuildingIntoOI, isInDteWindow, isSingleLeg,
+} from "./contractSearch";
 
 const NOW = new Date("2026-07-22T21:00:00Z");
 
@@ -25,125 +27,126 @@ function trade(overrides: Partial<RawTrade>): RawTrade {
   };
 }
 
-describe("rankByAggression", () => {
-  it("descarta lo que no compró al ask", () => {
-    const { rows } = classifyFlow(
-      [
-        trade({ id: 1, symbol: "AAAA260101C00100000", side: "ASKSIDE", premium: 100 }),
-        trade({ id: 2, symbol: "BBBB260101C00100000", side: "BIDSIDE", premium: 5_000_000 }),
-      ],
-      NOW,
-    );
-    const ranked = rankByAggression(rows);
-    expect(ranked).toHaveLength(1);
-    expect(ranked[0].symbol).toBe("AAAA260101C00100000");
-  });
-
-  it("prioriza exceededOI sobre premium, y premium dentro de cada grupo", () => {
-    const { rows } = classifyFlow(
-      [
-        // más premium pero SIN superar el OI
-        trade({ id: 1, symbol: "AAAA260101C00100000", side: "ASKSIDE", premium: 900, volume: 10, open_interest: 1000 }),
-        // menos premium pero SÍ superó el OI
-        trade({ id: 2, symbol: "BBBB260101C00100000", side: "ASKSIDE", premium: 500, volume: 200, open_interest: 100 }),
-        // otro que superó el OI, con más premium que el anterior
-        trade({ id: 3, symbol: "CCCC260101C00100000", side: "ASKSIDE", premium: 800, volume: 300, open_interest: 100 }),
-      ],
-      NOW,
-    );
-    const ranked = rankByAggression(rows);
-    expect(ranked.map((r) => r.symbol)).toEqual([
-      "CCCC260101C00100000", // exceededOI, mayor premium
-      "BBBB260101C00100000", // exceededOI, menor premium
-      "AAAA260101C00100000", // no exceededOI, va al final aunque tenga más premium
-    ]);
+describe("isSingleLeg", () => {
+  it("acepta un trade de una sola pata", () => {
+    const { rows } = classifyFlow([trade({ symbol: "AAAA260101C00100000" })], NOW);
+    expect(isSingleLeg(rows[0])).toBe(true);
   });
 });
 
-describe("isNearMoney", () => {
-  it("acepta un strike cerca del precio del subyacente (ATM)", () => {
-    const { rows } = classifyFlow([trade({ symbol: "TSLA260101C00315000", asset_price: 310 })], NOW);
-    expect(isNearMoney(rows[0])).toBe(true); // 315 vs 310 ≈ 1.6%
+describe("isBuildingIntoOI", () => {
+  it("acepta cuando el volumen del día supera el OI existente", () => {
+    const { rows } = classifyFlow(
+      [trade({ symbol: "AAAA260101C00100000", volume: 200, open_interest: 100 })],
+      NOW,
+    );
+    expect(isBuildingIntoOI(rows[0])).toBe(true);
   });
 
-  it("rechaza un strike deep ITM/OTM (ej. call $45 con el subyacente en $91)", () => {
-    const { rows } = classifyFlow([trade({ symbol: "INTC281215C00045000", asset_price: 91.51 })], NOW);
-    expect(isNearMoney(rows[0])).toBe(false); // ≈ 50.8% de distancia
+  it("rechaza cuando el volumen no supera el OI (rotación, no dinero nuevo)", () => {
+    const { rows } = classifyFlow(
+      [trade({ symbol: "AAAA260101C00100000", volume: 50, open_interest: 100 })],
+      NOW,
+    );
+    expect(isBuildingIntoOI(rows[0])).toBe(false);
   });
 
-  it("respeta un umbral custom", () => {
-    const { rows } = classifyFlow([trade({ symbol: "TSLA260101C00350000", asset_price: 310 })], NOW);
-    expect(isNearMoney(rows[0], 10)).toBe(false); // ≈ 12.9%, no pasa ni un umbral de 10% ni el default de 3%
-    expect(isNearMoney(rows[0], 15)).toBe(true);
-  });
-
-  it("false sin precio del subyacente (asset_price ausente)", () => {
-    const { rows } = classifyFlow([trade({ symbol: "TSLA260101C00320000" })], NOW);
-    expect(isNearMoney(rows[0])).toBe(false);
+  it("rechaza sin Open Interest (nada contra qué comparar)", () => {
+    const { rows } = classifyFlow(
+      [trade({ symbol: "AAAA260101C00100000", volume: 200, open_interest: 0 })],
+      NOW,
+    );
+    expect(isBuildingIntoOI(rows[0])).toBe(false);
   });
 });
 
-describe("isNearExpiration", () => {
-  it("acepta vencimientos dentro de la ventana de day-trading (0-5 días)", () => {
+describe("isAggressiveAsk", () => {
+  it("acepta compra ejecutada al ask", () => {
+    const { rows } = classifyFlow([trade({ symbol: "AAAA260101C00100000", side: "ASKSIDE" })], NOW);
+    expect(isAggressiveAsk(rows[0])).toBe(true);
+  });
+
+  it("rechaza venta ejecutada al bid", () => {
+    const { rows } = classifyFlow([trade({ symbol: "AAAA260101C00100000", side: "BIDSIDE" })], NOW);
+    expect(isAggressiveAsk(rows[0])).toBe(false);
+  });
+});
+
+describe("isInDteWindow", () => {
+  it("rechaza vencimientos por debajo de la ventana (day-trading, <10 días)", () => {
     const { rows } = classifyFlow([trade({ symbol: "TSLA260724C00320000" })], NOW); // dte=2
-    expect(isNearExpiration(rows[0])).toBe(true);
+    expect(isInDteWindow(rows[0])).toBe(false);
   });
 
-  it("acepta 0DTE (vence hoy)", () => {
-    const { rows } = classifyFlow([trade({ symbol: "TSLA260722C00320000" })], NOW); // dte=0
-    expect(isNearExpiration(rows[0])).toBe(true);
+  it("acepta justo en el borde inferior (10 días)", () => {
+    const { rows } = classifyFlow([trade({ symbol: "TSLA260801C00320000" })], NOW); // dte=10
+    expect(isInDteWindow(rows[0])).toBe(true);
   });
 
-  it("acepta justo en el borde (5 días)", () => {
-    const { rows } = classifyFlow([trade({ symbol: "TSLA260727C00320000" })], NOW); // dte=5
-    expect(isNearExpiration(rows[0])).toBe(true);
+  it("acepta dentro de la ventana (ej. 24 días)", () => {
+    const { rows } = classifyFlow([trade({ symbol: "TSLA260815C00320000" })], NOW); // dte≈24
+    expect(isInDteWindow(rows[0])).toBe(true);
   });
 
-  it("rechaza vencimientos de más de 5 días (LEAPS/swing)", () => {
-    const { rows } = classifyFlow([trade({ symbol: "TSLA260729C00320000" })], NOW); // dte=7
-    expect(isNearExpiration(rows[0])).toBe(false);
+  it("acepta justo en el borde superior (40 días)", () => {
+    const { rows } = classifyFlow([trade({ symbol: "TSLA260831C00320000" })], NOW); // dte=40
+    expect(isInDteWindow(rows[0])).toBe(true);
   });
 
-  it("rechaza contratos ya vencidos", () => {
-    const { rows } = classifyFlow([trade({ symbol: "TSLA260720C00320000" })], NOW); // dte=-2
-    expect(isNearExpiration(rows[0])).toBe(false);
+  it("rechaza vencimientos de más de 40 días (LEAPS/swing largo)", () => {
+    const { rows } = classifyFlow([trade({ symbol: "TSLA260901C00320000" })], NOW); // dte=41
+    expect(isInDteWindow(rows[0])).toBe(false);
   });
 
   it("respeta un umbral custom", () => {
-    const { rows } = classifyFlow([trade({ symbol: "TSLA260724C00320000" })], NOW); // dte=2
-    expect(isNearExpiration(rows[0], 1)).toBe(false);
-    expect(isNearExpiration(rows[0], 2)).toBe(true);
+    const { rows } = classifyFlow([trade({ symbol: "TSLA260815C00320000" })], NOW); // dte≈24
+    expect(isInDteWindow(rows[0], 30, 60)).toBe(false);
+    expect(isInDteWindow(rows[0], 20, 30)).toBe(true);
   });
 });
 
 describe("estimateTarget", () => {
-  it("para un call, el target real queda ARRIBA del spot con >50% de convicción", () => {
+  it("para un call, ambos targets quedan ARRIBA del spot, target2 más lejos que target1", () => {
     const { rows } = classifyFlow(
       [trade({ symbol: "TSLA260815C00320000", delta: 0.4, implied_volatility: 0.5, asset_price: 310 })],
       NOW,
     ); // dte ≈ 24
     const result = estimateTarget(rows[0], 310);
-    expect(result.target).not.toBeNull();
-    expect(result.target!).toBeGreaterThan(310);
-    expect(result.changePctToTarget!).toBeGreaterThan(0);
-    expect(result.convictionPct!).toBeGreaterThan(50);
-    expect(result.estUsdGain!).toBeGreaterThan(0);
+    expect(result.target1).not.toBeNull();
+    expect(result.target2).not.toBeNull();
+    expect(result.target1!).toBeGreaterThan(310);
+    expect(result.target2!).toBeGreaterThan(result.target1!);
+    expect(result.changePctToTarget1!).toBeGreaterThan(0);
+    expect(result.changePctToTarget2!).toBeGreaterThan(result.changePctToTarget1!);
+    expect(result.convictionPct1!).toBeGreaterThan(50);
+    expect(result.estUsdGain1!).toBeGreaterThan(0);
+    expect(result.estUsdGain2!).toBeGreaterThan(result.estUsdGain1!);
   });
 
-  it("para un put, el target real queda ABAJO del spot — no al revés de la apuesta", () => {
+  it("target2 tiene menor convicción que target1 (más lejos, menos probable)", () => {
+    const { rows } = classifyFlow(
+      [trade({ symbol: "TSLA260815C00320000", implied_volatility: 0.5, asset_price: 310 })],
+      NOW,
+    );
+    const result = estimateTarget(rows[0], 310);
+    expect(result.convictionPct2!).toBeLessThan(result.convictionPct1!);
+  });
+
+  it("para un put, ambos targets quedan ABAJO del spot — no al revés de la apuesta", () => {
     const { rows } = classifyFlow(
       [trade({ symbol: "TSLA260815P00320000", delta: -0.4, implied_volatility: 0.5, asset_price: 328 })],
       NOW,
     );
     const result = estimateTarget(rows[0], 328);
-    expect(result.target!).toBeLessThan(328);
-    expect(result.changePctToTarget!).toBeLessThan(0);
-    expect(result.convictionPct!).toBeGreaterThan(50);
+    expect(result.target1!).toBeLessThan(328);
+    expect(result.target2!).toBeLessThan(result.target1!);
+    expect(result.changePctToTarget1!).toBeLessThan(0);
+    expect(result.convictionPct1!).toBeGreaterThan(50);
   });
 
-  it("a más IV/DTE, el target queda más lejos y la convicción baja", () => {
+  it("a más IV/DTE, el target1 queda más lejos y la convicción baja", () => {
     const { rows: lowIv } = classifyFlow(
-      [trade({ symbol: "TSLA260724C00320000", implied_volatility: 0.3, asset_price: 310 })], // dte=2
+      [trade({ symbol: "TSLA260801C00320000", implied_volatility: 0.3, asset_price: 310 })], // dte=10
       NOW,
     );
     const { rows: highIv } = classifyFlow(
@@ -152,17 +155,15 @@ describe("estimateTarget", () => {
     );
     const low = estimateTarget(lowIv[0], 310);
     const high = estimateTarget(highIv[0], 310);
-    expect(high.target!).toBeGreaterThan(low.target!);
-    expect(high.convictionPct!).toBeLessThan(low.convictionPct!);
+    expect(high.target1!).toBeGreaterThan(low.target1!);
+    expect(high.convictionPct1!).toBeLessThan(low.convictionPct1!);
   });
 
-  it("null sin spot (ni en vivo ni al momento del trade)", () => {
+  it("null en todos los campos sin spot (ni en vivo ni al momento del trade)", () => {
     const { rows } = classifyFlow([trade({ symbol: "TSLA260815C00320000" })], NOW);
     expect(estimateTarget(rows[0], null)).toEqual({
-      target: null,
-      convictionPct: null,
-      changePctToTarget: null,
-      estUsdGain: null,
+      target1: null, convictionPct1: null, changePctToTarget1: null, estUsdGain1: null,
+      target2: null, convictionPct2: null, changePctToTarget2: null, estUsdGain2: null,
     });
   });
 
@@ -172,7 +173,7 @@ describe("estimateTarget", () => {
       NOW,
     );
     const result = estimateTarget(rows[0], null);
-    expect(result.target).not.toBeNull();
-    expect(result.target!).toBeGreaterThan(310);
+    expect(result.target1).not.toBeNull();
+    expect(result.target1!).toBeGreaterThan(310);
   });
 });

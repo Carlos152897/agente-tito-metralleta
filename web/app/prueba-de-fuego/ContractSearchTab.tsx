@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { buildLike, mergeLikes, upsertLike, type LikedContract } from "@/lib/contractSearchLikes";
 import { loadLikes, saveLikes } from "@/lib/contractSearchLikesLocal";
-import { EXCLUDED_TICKERS } from "@/lib/contractSearch";
 import {
   buildEntry,
   pruneExpired,
@@ -12,7 +11,9 @@ import {
   upsert,
   type ContractSearchFavoriteEntry,
 } from "@/lib/contractSearchFavorites";
-import { loadEntries, saveEntries } from "@/lib/contractSearchFavoritesLocal";
+import {
+  clearEntries, hasResetV2, loadEntries, markResetV2, saveEntries,
+} from "@/lib/contractSearchFavoritesLocal";
 import { marketDateStr } from "@/lib/occ";
 import type { ContractSearchSseEvent } from "./types";
 
@@ -131,7 +132,7 @@ export default function ContractSearchTab() {
         const now = new Date();
         let next = favRef.current;
         for (const c of d.favorites) {
-          if (dismissedRef.current.has(c.symbol) || EXCLUDED_TICKERS.has(c.ticker)) continue;
+          if (dismissedRef.current.has(c.symbol)) continue;
           const entry = buildEntry(c, now);
           if (entry) next = upsert(next, entry);
         }
@@ -151,19 +152,23 @@ export default function ContractSearchTab() {
     };
   }, [applyFavorites]);
 
-  // Al montar: los favoritos guardados aparecen de inmediato (sin esperar el
-  // escaneo), y luego se dispara el escaneo para sumar lo nuevo de hoy. Purga
-  // acá cualquier SPX/SPXW guardado de ANTES de excluirlo del escaneo (Carlos,
-  // 2026-07-30), y cualquier contrato YA VENCIDO (Carlos, 2026-07-30: "me
-  // estás dando expirados") — la "foto" de un favorito nunca se pisa sola,
-  // así que sin esta purga se quedaban visibles para siempre. Los 📌
+  // Al montar: si es la primera carga con el criterio nuevo (ago 2026 — S&P
+  // 500, single leg + acumulación en OI, 2 targets, catalizador de noticias),
+  // se limpian los favoritos de la versión vieja (día-trading, un solo
+  // target, gex/neighbor reference) UNA sola vez — ya no calzan con la forma
+  // de dato nueva. Después, los favoritos guardados aparecen de inmediato
+  // (sin esperar el escaneo), y luego se dispara el escaneo para sumar lo
+  // nuevo de hoy. Purga cualquier contrato YA VENCIDO (Carlos, 2026-07-30:
+  // "me estás dando expirados") — la "foto" de un favorito nunca se pisa
+  // sola, así que sin esta purga se quedaban visibles para siempre. Los 📌
   // Mantenidos no se purgan por vencimiento, a propósito (`pruneExpired`).
   useEffect(() => {
+    if (!hasResetV2()) {
+      clearEntries();
+      markResetV2();
+    }
     const today = marketDateStr(new Date());
-    const cleaned = pruneExpired(
-      loadEntries().filter((e) => !EXCLUDED_TICKERS.has(e.ticker)),
-      today,
-    );
+    const cleaned = pruneExpired(loadEntries(), today);
     applyFavorites(cleaned);
     scan();
     return () => esRef.current?.close();
@@ -175,12 +180,16 @@ export default function ContractSearchTab() {
       <div className="card" style={{ gap: 8 }}>
         <div style={{ fontWeight: 700, fontSize: 16 }}>Búsqueda de contratos</div>
         <p className="wheel-disclaimer" style={{ fontSize: 13, lineHeight: 1.6 }}>
-          Escanea TODO el mercado (no solo TSLA/SPX) buscando los 3-5 contratos con la compra más
-          agresiva al ask — dinero real entrando de golpe, no ruido. El target real (no el strike)
-          y la convicción salen del movimiento esperado por IV/DTE del propio trade; solo se
-          muestran contratos con más de 50% de convicción de llegar a ese target. La ganancia
-          proyectada usa el delta del trade como aproximación lineal, no un cálculo completo.
-          Los que encuentra se guardan solos, con la foto del momento — esa foto NUNCA se pisa.{" "}
+          Escanea las empresas del S&amp;P 500 buscando los 10 mejores contratos de acumulación
+          institucional real: una sola pata (nunca multileg), volumen del día que ya superó el
+          Open Interest existente (dinero nuevo repitiéndose, no rotación), comprado
+          agresivamente al ask, vencimiento entre 10 y 40 días, y premium mayor a $1,000,000. Cada
+          uno trae DOS targets reales (no el strike) desde el movimiento esperado por IV/DTE del
+          propio trade — Target 1 con más de 50% de convicción, Target 2 más lejos y más
+          ambicioso. Cuando hay noticias recientes de la empresa, se marca si confirman o
+          contradicen la apuesta. La ganancia proyectada usa el delta del trade como aproximación
+          lineal, no un cálculo completo. Los que encuentra se guardan solos, con la foto del
+          momento — esa foto NUNCA se pisa.{" "}
           <b>👍 Agregar a Robinhood</b> lo suma a tu watchlist de opciones real; <b>📌 Mantener</b>{" "}
           lo blinda de una futura limpieza automática; <b>👎 No me gusta</b> lo saca. Quedan
           guardados en este navegador aunque recargues la página.
@@ -210,7 +219,8 @@ export default function ContractSearchTab() {
               <div key={f.symbol} className="card" style={{ gap: 6 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
                   <div style={{ fontWeight: 700, fontSize: 15 }}>
-                    {f.ticker} — {f.type === "call" ? "call" : "put"} ${f.strike} ({f.expiration})
+                    {f.ticker}{f.companyName ? ` · ${f.companyName}` : ""} — {f.type === "call" ? "call" : "put"} ${f.strike}{" "}
+                    ({f.expiration}{f.dte != null ? `, ${f.dte}d` : ""})
                   </div>
                   <div style={{ display: "flex", gap: 6, flexShrink: 0, flexWrap: "wrap", justifyContent: "flex-end" }}>
                     <button
@@ -231,37 +241,60 @@ export default function ContractSearchTab() {
                 </div>
                 <div style={{ fontSize: 13, color: "var(--muted)" }}>
                   Precio del subyacente: ${f.assetPrice.toFixed(2)} · Premium: {money(f.premium)} · Tamaño: {f.size}
+                  {" · "}Volumen: {f.volume.toLocaleString("en-US")} · OI: {f.openInterest.toLocaleString("en-US")}
                 </div>
+
+                <div className="struct-sub">Target 1 — convicción ≥50%</div>
                 <div className="stats">
                   <div className="stat">
-                    <div className="stat-label">Target real</div>
-                    <div className="stat-value">{f.target != null ? `$${f.target.toFixed(2)}` : "—"}</div>
+                    <div className="stat-label">Target</div>
+                    <div className="stat-value">{f.target1 != null ? `$${f.target1.toFixed(2)}` : "—"}</div>
                   </div>
                   <div className="stat">
                     <div className="stat-label">Convicción</div>
-                    <div className="stat-value">{f.convictionPct != null ? `${f.convictionPct.toFixed(0)}%` : "—"}</div>
+                    <div className="stat-value">{f.convictionPct1 != null ? `${f.convictionPct1.toFixed(0)}%` : "—"}</div>
                   </div>
                   <div className="stat">
                     <div className="stat-label">Cambio al target</div>
-                    <div className="stat-value" style={{ color: (f.changePctToTarget ?? 0) >= 0 ? "#12b76a" : "#f04438" }}>
-                      {f.changePctToTarget != null ? pct(f.changePctToTarget) : "—"}
+                    <div className="stat-value" style={{ color: (f.changePctToTarget1 ?? 0) >= 0 ? "#12b76a" : "#f04438" }}>
+                      {f.changePctToTarget1 != null ? pct(f.changePctToTarget1) : "—"}
                     </div>
                   </div>
                   <div className="stat">
                     <div className="stat-label">Ganancia estimada (1 contrato)</div>
-                    <div className="stat-value">{f.estUsdGain != null ? money(f.estUsdGain) : "—"}</div>
+                    <div className="stat-value">{f.estUsdGain1 != null ? money(f.estUsdGain1) : "—"}</div>
                   </div>
                 </div>
-                {f.gexReference && (
-                  <p className="wheel-disclaimer" style={{ fontSize: 12 }}>
-                    📊 GEX de referencia: {f.gexReference.kingStrike != null ? `imán $${f.gexReference.kingStrike}` : "sin nodo claro"}
-                    {" · "}
-                    {f.gexReference.direction === "up" ? "sesgo alcista" : f.gexReference.direction === "down" ? "sesgo bajista" : "sin sesgo claro"}
-                    {" · "}
-                    régimen {f.gexReference.regime === "positive" ? "γ+ (revierte)" : "γ− (amplifica)"}
-                    {" · "}
-                    confianza {f.gexReference.confidence}% — no reemplaza el target, solo referencia.
-                  </p>
+
+                <div className="struct-sub" style={{ marginTop: 8 }}>Target 2 — movimiento esperado completo</div>
+                <div className="stats">
+                  <div className="stat">
+                    <div className="stat-label">Target</div>
+                    <div className="stat-value">{f.target2 != null ? `$${f.target2.toFixed(2)}` : "—"}</div>
+                  </div>
+                  <div className="stat">
+                    <div className="stat-label">Convicción</div>
+                    <div className="stat-value">{f.convictionPct2 != null ? `${f.convictionPct2.toFixed(0)}%` : "—"}</div>
+                  </div>
+                  <div className="stat">
+                    <div className="stat-label">Cambio al target</div>
+                    <div className="stat-value" style={{ color: (f.changePctToTarget2 ?? 0) >= 0 ? "#12b76a" : "#f04438" }}>
+                      {f.changePctToTarget2 != null ? pct(f.changePctToTarget2) : "—"}
+                    </div>
+                  </div>
+                  <div className="stat">
+                    <div className="stat-label">Ganancia estimada (1 contrato)</div>
+                    <div className="stat-value">{f.estUsdGain2 != null ? money(f.estUsdGain2) : "—"}</div>
+                  </div>
+                </div>
+
+                {f.newsFlag && f.newsFlag.kind !== "none" && (
+                  <div className={`news-flag ${f.newsFlag.kind}`}>
+                    <div className="news-flag-title">
+                      {f.newsFlag.kind === "conflict" ? "⚠ " : "✓ "}{f.newsFlag.title}
+                    </div>
+                    <div className="news-flag-detail">{f.newsFlag.detail}</div>
+                  </div>
                 )}
               </div>
             );
