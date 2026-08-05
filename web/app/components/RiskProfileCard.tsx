@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { THETA_BUDGET_PCT, budgetsOf, type RiskProfile } from "@/lib/risk";
+import { migrateLegacyKey } from "@/lib/legacyStorage";
 
-const KEY_ACCOUNT = "tito.risk.accountSize";
-const KEY_TOLERANCE = "tito.risk.tolerancePct";
+const KEY_ACCOUNT = "visionary.risk.accountSize";
+const KEY_TOLERANCE = "visionary.risk.tolerancePct";
 
 export const DEFAULT_PROFILE: RiskProfile = { accountSize: 10_000, tolerancePct: 4 };
 
@@ -15,6 +16,8 @@ const money = new Intl.NumberFormat("en-US", {
 /** Lee el perfil de localStorage. Solo cliente — el saldo nunca llega al servidor. */
 export function loadProfile(): RiskProfile {
   if (typeof window === "undefined") return DEFAULT_PROFILE;
+  migrateLegacyKey("tito.risk.accountSize", KEY_ACCOUNT);
+  migrateLegacyKey("tito.risk.tolerancePct", KEY_TOLERANCE);
   const account = Number(window.localStorage.getItem(KEY_ACCOUNT));
   const tolerance = Number(window.localStorage.getItem(KEY_TOLERANCE));
   return {

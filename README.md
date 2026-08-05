@@ -1,4 +1,4 @@
-# Agente Tito Metralleta
+# Visionary Trades
 
 Sistema **multi-agente de análisis de flujo de opciones** (options flow). Identifica actividad inusual en el mercado de opciones, la interpreta y la convierte en tres escenarios de precio con probabilidad.
 

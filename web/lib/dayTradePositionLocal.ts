@@ -3,12 +3,14 @@
 // que el servidor deba guardar por el usuario.
 
 import { isSameTradingDay, type DayTradePosition } from "./dayTradePosition";
+import { migrateLegacyPrefix } from "./legacyStorage";
 
-const KEY_PREFIX = "tito.pruebaDeFuego.position.";
+const KEY_PREFIX = "visionary.pruebaDeFuego.position.";
 
 /** null si no hay posición guardada, o si es de un día de mercado anterior (day-trading: caduca sola). */
 export function loadPosition(ticker: string, now: Date): DayTradePosition | null {
   if (typeof window === "undefined") return null;
+  migrateLegacyPrefix("tito.pruebaDeFuego.position.", KEY_PREFIX);
   try {
     const raw = window.localStorage.getItem(KEY_PREFIX + ticker);
     if (!raw) return null;

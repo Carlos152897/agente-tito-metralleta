@@ -1,7 +1,7 @@
 #!/bin/bash
 # Drenador del buzón de salida hacia el watchlist de opciones de Robinhood.
 #
-# Lo lanza launchd cada 15 min (ver com.tito.watchlist-sync.plist). También se puede
+# Lo lanza launchd cada 15 min (ver com.visionarytrades.watchlist-sync.plist). También se puede
 # correr a mano: bash scripts/sync-watchlist.sh
 #
 # Reparto de trabajo a propósito:
@@ -54,7 +54,7 @@ RECORTADO="$(printf '%s' "$LOTE" | python3 -c 'import json,sys; d=json.load(sys.
 [ "$RECORTADO" != "0" ] && registrar "tope" "{\"pendientes\":$RECORTADO,\"empujados\":$MAX_POR_PASE}"
 
 # 3. Resolver y empujar. El modelo solo ve el lote y solo puede llamar a esas 3 tools.
-PROMPT="Eres el drenador del watchlist de Tito. Empuja estos contratos al watchlist de
+PROMPT="Eres el drenador del watchlist de Visionary Trades. Empuja estos contratos al watchlist de
 opciones de Robinhood del usuario.
 
 Cola (JSON): $(printf '%s' "$LOTE" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["lote"]))')

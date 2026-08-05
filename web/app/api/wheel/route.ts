@@ -2,7 +2,7 @@
 //
 // Orquesta I/O y NADA de criterio: todo lo que decide vive en lib/wheel.ts.
 // El saldo NO llega aquí: la ruta devuelve candidatos con métricas y la
-// asequibilidad se calcula en el cliente con tito.risk.* de localStorage.
+// asequibilidad se calcula en el cliente con visionary.risk.* de localStorage.
 
 import { fetchWheelChain } from "@/lib/massive";
 import { fetchGreeksMap } from "@/lib/schwab";

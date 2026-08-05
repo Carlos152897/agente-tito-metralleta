@@ -2,11 +2,13 @@
 // lib/unusualSwingWatchlistLocal.ts: fuente de verdad para la UI, respuesta inmediata.
 
 import { sortLikes, type LikedContract } from "./contractSearchLikes";
+import { migrateLegacyKey } from "./legacyStorage";
 
-const KEY = "tito.contractSearch.likes";
+const KEY = "visionary.contractSearch.likes";
 
 export function loadLikes(): LikedContract[] {
   if (typeof window === "undefined") return [];
+  migrateLegacyKey("tito.contractSearch.likes", KEY);
   try {
     const raw = window.localStorage.getItem(KEY);
     if (!raw) return [];

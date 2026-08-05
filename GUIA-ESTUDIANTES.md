@@ -1,4 +1,4 @@
-# Tito Metralleta — Guía para estudiantes
+# Visionary Trades — Guía para estudiantes
 
 Qué estamos construyendo, cómo funciona y hacia dónde va. Este documento acompaña la app
 (`web/`) y sirve como material de estudio.
@@ -7,7 +7,7 @@ Qué estamos construyendo, cómo funciona y hacia dónde va. Este documento acom
 
 ## 1. Idea general
 
-**Tito Metralleta** es un sistema que analiza el **flujo de opciones** (options flow) de una acción
+**Visionary Trades** es un sistema que analiza el **flujo de opciones** (options flow) de una acción
 y lo resume en un **scorecard**: una tarjeta que puntúa una oportunidad de 0 a 100, combinando
 6 categorías. El objetivo no es traer "todo el tape", sino **producir un reporte** que diga qué tan
 fuerte e inusual es la actividad, y dónde está pegando el dinero grande.

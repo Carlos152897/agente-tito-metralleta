@@ -13,7 +13,7 @@ import { DEFAULT_PARAMS, evaluateEntry, noSetupReason, riskReward } from "@/lib/
 import { ZERO_DTE_TICKERS, DEFAULT_ZERO_DTE_TICKER, type ZeroDteTickerId } from "@/lib/zerodteTickers";
 import ZeroDteChart from "@/app/components/ZeroDteChart";
 
-const KEY_TICKER = "tito.zeroDte.ticker";
+const KEY_TICKER = "visionary.zeroDte.ticker";
 
 interface FlowState {
   cycles: number;

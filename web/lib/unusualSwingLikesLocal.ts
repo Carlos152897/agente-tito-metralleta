@@ -4,11 +4,13 @@
 // Búsqueda de contratos, cada pestaña con su propia cola pendiente.
 
 import { sortLikes, type LikedContract } from "./contractSearchLikes";
+import { migrateLegacyKey } from "./legacyStorage";
 
-const KEY = "tito.unusualSwing.robinhoodLikes";
+const KEY = "visionary.unusualSwing.robinhoodLikes";
 
 export function loadLikes(): LikedContract[] {
   if (typeof window === "undefined") return [];
+  migrateLegacyKey("tito.unusualSwing.robinhoodLikes", KEY);
   try {
     const raw = window.localStorage.getItem(KEY);
     if (!raw) return [];

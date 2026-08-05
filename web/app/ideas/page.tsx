@@ -25,10 +25,11 @@ import {
   saveBroker,
   saveEntries,
 } from "@/lib/watchlistLocal";
+import { migrateLegacyKey } from "@/lib/legacyStorage";
 import type { Idea, IdeasEvent, IdeasMeta } from "./types";
 
-const KEY_VIEW = "tito.view";
-const KEY_HORIZON = "tito.ideas.horizon";
+const KEY_VIEW = "visionary.view";
+const KEY_HORIZON = "visionary.ideas.horizon";
 
 const HORIZON_LABELS: Record<number, string> = {
   10: "Esta semana",
@@ -68,6 +69,8 @@ export default function IdeasPage() {
   // para no romper la hidratación del servidor.
   useEffect(() => {
     setProfile(loadProfile());
+    migrateLegacyKey("tito.view", KEY_VIEW);
+    migrateLegacyKey("tito.ideas.horizon", KEY_HORIZON);
     const v = window.localStorage.getItem(KEY_VIEW);
     if (v === "pro" || v === "estudiante") setView(v);
     const h = Number(window.localStorage.getItem(KEY_HORIZON));

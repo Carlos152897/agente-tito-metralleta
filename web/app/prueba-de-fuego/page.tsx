@@ -9,8 +9,9 @@ import SpxAmigaTab from "./SpxAmigaTab";
 import AgenteOdteTab from "./AgenteOdteTab";
 import ContractSearchTab from "./ContractSearchTab";
 import RegistroOperacionesTab from "./RegistroOperacionesTab";
+import { migrateLegacyKey } from "@/lib/legacyStorage";
 
-const KEY_TAB = "tito.pruebaDeFuego.tab";
+const KEY_TAB = "visionary.pruebaDeFuego.tab";
 
 type Tab = "TSLA" | "SPX" | "SPX_VECINOS" | "SPX_AMIGA" | "SPX_0DTE" | "buscar" | "registro";
 
@@ -18,6 +19,7 @@ export default function PruebaDeFuegoPage() {
   const [tab, setTab] = useState<Tab>("TSLA");
 
   useEffect(() => {
+    migrateLegacyKey("tito.pruebaDeFuego.tab", KEY_TAB);
     const saved = window.localStorage.getItem(KEY_TAB);
     if (
       saved === "TSLA" ||

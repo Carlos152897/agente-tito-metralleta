@@ -3,11 +3,13 @@
 // servidor de por medio (nadie más necesita leer esta lista).
 
 import { sortEntries, type ContractSearchFavoriteEntry } from "./contractSearchFavorites";
+import { migrateLegacyKey } from "./legacyStorage";
 
-const KEY = "tito.contractSearch.favorites";
+const KEY = "visionary.contractSearch.favorites";
 
 export function loadEntries(): ContractSearchFavoriteEntry[] {
   if (typeof window === "undefined") return [];
+  migrateLegacyKey("tito.contractSearch.favorites", KEY);
   try {
     const raw = window.localStorage.getItem(KEY);
     if (!raw) return [];

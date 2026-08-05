@@ -5,7 +5,7 @@
 
 ## Objetivo (texto del documento)
 
-Entender **cuánto tiempo ha pasado después de los flows** que hemos analizado dentro de cada tabla y compararlo con el documento **Guía GEx y Predicción de Tito Metralleta**.
+Entender **cuánto tiempo ha pasado después de los flows** que hemos analizado dentro de cada tabla y compararlo con el documento **Guía GEx y Predicción de Visionary Trades**.
 
 Lo que se verifica: cada vez que los diferentes agentes ven un flow, **cuánto tiempo ha tardado en desarrollarse ese movimiento, tanto al alza del contrato como a la baja**.
 

@@ -9,10 +9,11 @@ import NavTabs from "@/app/components/NavTabs";
 import { sortByAffordThenScore } from "@/lib/wheelAfford";
 import type { PresetId, WheelCandidate } from "@/lib/wheel";
 import type { RiskProfile } from "@/lib/risk";
+import { migrateLegacyKey } from "@/lib/legacyStorage";
 import type { WheelSseEvent } from "./types";
 
-const KEY_VIEW = "tito.view";
-const KEY_PRESET = "tito.wheel.preset";
+const KEY_VIEW = "visionary.view";
+const KEY_PRESET = "visionary.wheel.preset";
 
 type WheelMeta = { scanned: number; failed: number; withCandidates: number; degraded: boolean };
 
@@ -30,6 +31,8 @@ export default function WheelPage() {
 
   useEffect(() => {
     setProfile(loadProfile());
+    migrateLegacyKey("tito.view", KEY_VIEW);
+    migrateLegacyKey("tito.wheel.preset", KEY_PRESET);
     const v = window.localStorage.getItem(KEY_VIEW);
     if (v === "pro" || v === "estudiante") setView(v);
     const p = window.localStorage.getItem(KEY_PRESET);
