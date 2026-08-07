@@ -6,7 +6,8 @@ import { fetchFlow, MarketSnackError } from "@/lib/marketsnack";
 import { marketDateStr } from "@/lib/occ";
 import { zeroDteTickerConfig } from "@/lib/zerodteTickers";
 import {
-  accumulate, loadFlow, readAggressor, saveFlow, type AggressorRead,
+  accumulate, loadFlow, netAggressorTotals, readAggressor, saveFlow, volumeVelocity,
+  type AggressorRead,
 } from "@/lib/zerodteFlow";
 
 export const runtime = "nodejs";
@@ -36,6 +37,7 @@ export async function GET(request: Request) {
     return Response.json({
       ticker: TICKER, date, cycles: acc.cycles, updatedAt: acc.updatedAt,
       contracts: Object.keys(acc.buckets).length, tradesThisCycle: trades.length, reads,
+      netAggressor: netAggressorTotals(acc), velocity: volumeVelocity(acc),
     });
   } catch (err) {
     const message = err instanceof MarketSnackError ? err.message : "Error al acumular el flujo 0DTE.";

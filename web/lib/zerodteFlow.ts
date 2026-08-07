@@ -45,6 +45,15 @@ export interface AggBucket {
   ts: number;
 }
 
+/** Un ciclo de sondeo (~cada 60s, ver REFRESH_MS en AgenteOdteTab). */
+export interface CycleSample {
+  ts: number;
+  /** Contratos nuevos (ask+bid+mid) sumados en ESTE ciclo, no acumulado. */
+  added: number;
+  /** ask-bid nuevos de ESTE ciclo (signado) — insumo del sparkline de CVD reciente. */
+  net: number;
+}
+
 export interface FlowAccumulator {
   ticker: string;
   /** Fecha de mercado (ET). El acumulado es del día: no se arrastra. */
@@ -54,12 +63,17 @@ export interface FlowAccumulator {
   /** Clave "call:7450". */
   buckets: Record<string, AggBucket>;
   seenIds: number[];
+  /** Últimos ciclos, para "volumen del último minuto vs promedio de la ventana". */
+  recentCycles: CycleSample[];
 }
+
+/** Cuántos ciclos recientes se guardan para la velocidad de volumen y el sparkline de CVD. */
+export const RECENT_CYCLES_LIMIT = 15;
 
 export function emptyAccumulator(ticker: string, date: string): FlowAccumulator {
   return {
     ticker: ticker.toUpperCase(), date, updatedAt: new Date(0).toISOString(),
-    cycles: 0, buckets: {}, seenIds: [],
+    cycles: 0, buckets: {}, seenIds: [], recentCycles: [],
   };
 }
 
@@ -77,6 +91,8 @@ export function accumulate(
   const seen = new Set(acc.seenIds);
   const buckets: Record<string, AggBucket> = { ...acc.buckets };
   const fresh: number[] = [];
+  let cycleAdded = 0;
+  let cycleNet = 0;
 
   for (const t of trades) {
     if (seen.has(t.id)) continue;
@@ -98,10 +114,11 @@ export function accumulate(
     };
     const size = Number(t.size) || 0;
     const side = aggressionOf(t.side);
-    if (side === "ask") b.ask += size;
-    else if (side === "bid") b.bid += size;
+    if (side === "ask") { b.ask += size; cycleNet += size; }
+    else if (side === "bid") { b.bid += size; cycleNet -= size; }
     else if (side === "mid") b.mid += size;
     b.trades += 1;
+    cycleAdded += size;
 
     if (Number.isFinite(t.volume)) b.volume = Math.max(b.volume, t.volume);
     if (Number.isFinite(t.open_interest)) b.oi = Math.max(b.oi, t.open_interest);
@@ -117,8 +134,11 @@ export function accumulate(
     buckets[key] = { ...b };
   }
 
+  const recentCycles = [...acc.recentCycles, { ts: now.getTime(), added: cycleAdded, net: cycleNet }]
+    .slice(-RECENT_CYCLES_LIMIT);
+
   return {
-    ...acc, updatedAt: now.toISOString(), cycles: acc.cycles + 1, buckets,
+    ...acc, updatedAt: now.toISOString(), cycles: acc.cycles + 1, buckets, recentCycles,
     seenIds: [...acc.seenIds, ...fresh].slice(-SEEN_LIMIT),
   };
 }
@@ -166,6 +186,74 @@ export function readAggressor(
     return { side: "mid", pct: pMid, trades: b.trades, contracts: total, meaning: "sin agresor claro" };
   }
   return { side: "mixto", pct: Math.max(pAsk, pBid), trades: b.trades, contracts: total, meaning: "" };
+}
+
+// ------------------------------------------------- agresor neto (CVD) + velocidad
+
+/** Mínimo de contratos en el libro para que el CVD y la velocidad signifiquen algo. */
+export const MIN_SAMPLE_TOTAL = 30;
+
+export interface NetAggressorTotals {
+  ask: number;
+  bid: number;
+  mid: number;
+  /** ask - bid, TODO el día acumulado. Negativo = domina la venta. */
+  net: number;
+  total: number;
+  enough: boolean;
+}
+
+/** Suma cruda de compra/venta/mid de TODOS los strikes — el "libro" completo del día. */
+export function netAggressorTotals(acc: FlowAccumulator): NetAggressorTotals {
+  let ask = 0;
+  let bid = 0;
+  let mid = 0;
+  for (const b of Object.values(acc.buckets)) {
+    ask += b.ask;
+    bid += b.bid;
+    mid += b.mid;
+  }
+  const total = ask + bid + mid;
+  return { ask, bid, mid, net: ask - bid, total, enough: total >= MIN_SAMPLE_TOTAL };
+}
+
+export interface VolumeVelocity {
+  /** Contratos nuevos en el ciclo más reciente (~último minuto). */
+  lastAdded: number;
+  /** Promedio de contratos nuevos por ciclo en el resto de la ventana. */
+  windowAvg: number;
+  /** lastAdded / windowAvg. null si todavía no hay suficiente historia. */
+  ratio: number | null;
+  /** Serie de "added" por ciclo, más viejo primero — para el mini gráfico de barras. */
+  series: number[];
+  /** Serie de CVD acumulado DENTRO de la ventana reciente (no el del día completo) — para el sparkline. */
+  cvdSeries: number[];
+}
+
+/**
+ * Compara el último ciclo (~1 min) contra el promedio de los ciclos anteriores de la
+ * ventana. PURA. Necesita ≥2 ciclos para dar un ratio; con uno solo no hay contra qué comparar.
+ */
+export function volumeVelocity(acc: FlowAccumulator): VolumeVelocity {
+  const cycles = acc.recentCycles;
+  const series = cycles.map((c) => c.added);
+  const cvdSeries: number[] = [];
+  let running = 0;
+  for (const c of cycles) {
+    running += c.net;
+    cvdSeries.push(running);
+  }
+
+  if (cycles.length === 0) return { lastAdded: 0, windowAvg: 0, ratio: null, series, cvdSeries };
+
+  const last = cycles[cycles.length - 1];
+  const rest = cycles.slice(0, -1);
+  if (rest.length === 0) {
+    return { lastAdded: last.added, windowAvg: 0, ratio: null, series, cvdSeries };
+  }
+  const windowAvg = rest.reduce((s, c) => s + c.added, 0) / rest.length;
+  const ratio = windowAvg > 0 ? last.added / windowAvg : null;
+  return { lastAdded: last.added, windowAvg, ratio, series, cvdSeries };
 }
 
 // ----------------------------------------------- superposición en tiempo real

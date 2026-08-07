@@ -2,7 +2,10 @@
 // Agente ODTE — cadena del vencimiento del día, ordenada por volumen. Ver
 // Agente Principal/Proceso 0DTE.md (compartido por Carlos). Genérico por
 // ticker (ver lib/zerodteTickers.ts para el selector SPX/SPY/QQQ/ES/NQ).
-// Reutiliza `getAccessToken` real de Schwab vía zerodteSchwab.ts; no toca
+// Cadena de opciones vía tastytrade (tastytradeChain.ts, ago 2026 — reemplazó
+// a Schwab por dar tiempo real de fábrica en vez de isDelayed=true). Las
+// barras intradía del subyacente siguen en Schwab (zerodteSchwab.ts) —
+// tastytrade no tiene REST de velas, solo DXLink. No toca
 // `lib/schwab.ts`/`lib/types.ts`/`lib/gex.ts` reales — ver plan de port.
 // ============================================================================
 
@@ -10,10 +13,11 @@ import { marketDateStr } from "./occ";
 import { expectedMove, probTouch } from "./expectedMove";
 import { bsCharm, bsVanna, chainIV, MAX_SANE_IV } from "./zerodteGex";
 import { evaluateEntry, noSetupReason, riskReward, type EntryDecision } from "./zerodteStrategy";
-import { fetchZeroDteChain } from "./zerodteSchwab";
+import { fetchZeroDteChain } from "./tastytradeChain";
 import type { ContractType, ZRow } from "./zerodteTypes";
-import { loadFlow, overlayRealtime } from "./zerodteFlow";
+import { loadFlow, netAggressorTotals, overlayRealtime } from "./zerodteFlow";
 import { INDEX_UNDERLYINGS } from "./zerodteTickers";
+import { buildSuggestions, type ZeroDteSuggestions } from "./zerodteSuggestions";
 
 /** Cuántos strikes se toman de cada lado. */
 export const TOP_N = 10;
@@ -558,6 +562,7 @@ export interface ZeroDteResult {
   entry: EntryDecision | null;
   entryRR: number | null;
   noSetup: string | null;
+  suggestions: ZeroDteSuggestions | null;
   asOf: string;
 }
 
@@ -580,12 +585,17 @@ export async function fetchZeroDte(
   let rows = parsed.rows;
   let realtimeStrikes = 0;
   let realtimeAgeSec: number | null = null;
+  let netAggressorSign = 0;
   if (isToday) {
     const acc = await loadFlow(ticker, day).catch(() => null);
     const ov = overlayRealtime(parsed.rows, acc);
     rows = ov.rows;
     realtimeStrikes = ov.realtimeStrikes;
     if (ov.newestTs > 0) realtimeAgeSec = Math.max(0, Math.round((now.getTime() - ov.newestTs) / 1000));
+    if (acc) {
+      const totals = netAggressorTotals(acc);
+      if (totals.enough) netAggressorSign = Math.sign(totals.net);
+    }
   }
 
   const lines = buildChainTable(rows);
@@ -597,6 +607,10 @@ export async function fetchZeroDte(
 
   const entry = isToday && spot != null
     ? evaluateEntry(spot, gex.regime, gex.kingStrike, gex.flipStrike)
+    : null;
+
+  const suggestions = isToday && spot != null
+    ? buildSuggestions(rows, spot, iv, hoursToClose(now), entry, netAggressorSign)
     : null;
 
   return {
@@ -618,6 +632,7 @@ export async function fetchZeroDte(
     entry,
     entryRR: entry ? riskReward(entry) : null,
     noSetup: isToday && !entry && spot != null ? noSetupReason(spot, gex.regime, gex.kingStrike) : null,
+    suggestions,
     asOf: now.toISOString(),
   };
 }

@@ -1,21 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
 import { timeGreeting } from "@/lib/greeting";
 import { isMarketOpen } from "@/lib/marketHours";
 import { loadProfile } from "@/app/components/RiskProfileCard";
 
 const CHIP_COLORS = ["#34d399", "#22d3ee", "#fb923c", "#60a5fa", "#c084fc"];
 const CHIPS = ["SPX", "SPY", "TSLA", "NVDA", "AAPL"];
-
-const QUICK_LINKS = [
-  { href: "/prueba-de-fuego", icon: "📊", label: "Day Trading", desc: "Charts, setups and execution." },
-  { href: "/ideas", icon: "💡", label: "Ideas", desc: "High probability plays and watchlist." },
-  { href: "/wheel", icon: "🎡", label: "Wheel", desc: "Cash secured puts strategy." },
-  { href: "/flow", icon: "⚡", label: "Time & Sales", desc: "Real-time flow and volume." },
-  { href: "/unusual-swing", icon: "🦄", label: "Unusual Swing Trades", desc: "Unusual options activity scanner." },
-];
 
 export default function HeroLanding({ onSearch }: { onSearch: (t: string) => void }) {
   const [q, setQ] = useState("");
@@ -86,16 +77,6 @@ export default function HeroLanding({ onSearch }: { onSearch: (t: string) => voi
           >
             {s}
           </button>
-        ))}
-      </div>
-
-      <div className="hero-grid">
-        {QUICK_LINKS.map((l) => (
-          <Link key={l.href} href={l.href} className="hero-card">
-            <div className="hero-card-icon">{l.icon}</div>
-            <div className="hero-card-title">{l.label}</div>
-            <div className="hero-card-desc">{l.desc}</div>
-          </Link>
         ))}
       </div>
 

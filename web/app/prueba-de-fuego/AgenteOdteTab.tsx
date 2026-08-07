@@ -8,7 +8,8 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChainLine, ZeroDteResult } from "@/lib/zerodte";
-import type { AggressorRead } from "@/lib/zerodteFlow";
+import type { AggressorRead, NetAggressorTotals, VolumeVelocity } from "@/lib/zerodteFlow";
+import type { ZeroDteSuggestions } from "@/lib/zerodteSuggestions";
 import { DEFAULT_PARAMS, evaluateEntry, noSetupReason, riskReward } from "@/lib/zerodteStrategy";
 import { ZERO_DTE_TICKERS, DEFAULT_ZERO_DTE_TICKER, type ZeroDteTickerId } from "@/lib/zerodteTickers";
 import ZeroDteChart from "@/app/components/ZeroDteChart";
@@ -19,6 +20,8 @@ interface FlowState {
   cycles: number;
   contracts: number;
   reads: Record<string, AggressorRead>;
+  netAggressor?: NetAggressorTotals;
+  velocity?: VolumeVelocity;
   error?: string;
 }
 
@@ -41,6 +44,8 @@ const REFRESH_MS = 60 * 1000;
 const nf = new Intl.NumberFormat("en-US");
 const num = (v: number | null | undefined) => (v == null ? "—" : nf.format(v));
 const dec = (v: number | null | undefined, d = 2) => (v == null ? "—" : v.toFixed(d));
+const money = (v: number | null | undefined) =>
+  v == null ? "—" : `${v < 0 ? "-" : ""}$${nf.format(Math.abs(Math.round(v)))}`;
 
 function pctIn(o: { rangeLow: number; rangeHigh: number }, price: number): number {
   const span = o.rangeHigh - o.rangeLow;
@@ -238,12 +243,12 @@ export default function AgenteOdteTab() {
           <span className="z-time">
             {new Date(data.asOf).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour12: false })} ET
           </span>
-          {data.realtimeStrikes > 0 ? (
-            <span className="z-fresh" title="Gamma/OI/volumen de MarketSnack sobre los strikes activos; el resto es Schwab (15 min)">
-              ⚡ {data.realtimeStrikes} strikes en tiempo real{data.realtimeAgeSec != null ? ` (${data.realtimeAgeSec}s)` : ""}
+          {!data.delayed ? (
+            <span className="z-fresh" title="Cotizaciones, griegos y open interest en vivo de tastytrade — toda la cadena, no solo lo que operó.">
+              ⚡ cadena en tiempo real
             </span>
           ) : (
-            data.delayed && <span className="z-flag">cadena Schwab (retraso ~15 min)</span>
+            <span className="z-flag">cadena con retraso</span>
           )}
         </div>
       )}
@@ -293,6 +298,10 @@ export default function AgenteOdteTab() {
             ejecutas. No es una orden ni un consejo.
           </p>
         </section>
+      )}
+
+      {data?.isToday && flow && !flow.error && (
+        <LiveVolumeCvd flow={flow} direction={live?.direction ?? null} />
       )}
 
       {data?.outlook && (
@@ -471,6 +480,8 @@ export default function AgenteOdteTab() {
           </div>
         </section>
       )}
+
+      {data?.isToday && data.suggestions && <SpreadSuggestions s={data.suggestions} />}
 
       {data && (
         <p className="z-caveat">
@@ -671,6 +682,196 @@ function Aggr({ read, itm }: { read: AggressorRead | null; itm: boolean }) {
       <b>{label}</b> {(read.pct * 100).toFixed(0)}%
       <small>{read.trades}</small>
     </td>
+  );
+}
+
+/** "LIVE VOLUME · VELOCITY + CVD" — velocidad de volumen (último ciclo vs promedio de
+ * la ventana) + agresor neto acumulado del día (CVD), con nota de si favorece el
+ * LONG/SHORT que sugiere "Mejor trade ahora". */
+function LiveVolumeCvd({ flow, direction }: { flow: FlowState; direction: "long" | "short" | null }) {
+  const agg = flow.netAggressor;
+  const vel = flow.velocity;
+  if (!agg || !vel) return null;
+
+  if (!agg.enough) {
+    return (
+      <section className="z-cvd">
+        <header className="z-cvd-head">
+          <span className="z-cvd-title">Volumen en vivo · velocidad + CVD</span>
+          <span className="z-cvd-count">{num(agg.total)} contratos</span>
+        </header>
+        <p className="z-cvd-note">Muestra insuficiente todavía — sigue acumulando cinta.</p>
+      </section>
+    );
+  }
+
+  const pressure: "venta" | "compra" | "neutral" = agg.net < 0 ? "venta" : agg.net > 0 ? "compra" : "neutral";
+  const pillLabel = pressure === "venta" ? "▼ presión vendedora" : pressure === "compra" ? "▲ presión compradora" : "◆ neutral";
+
+  const ratio = vel.ratio;
+  const ratioLabel = ratio == null ? "—" : `${ratio.toFixed(1)}×`;
+  const ratioClamped = ratio == null ? 0 : Math.max(0, Math.min(3, ratio));
+
+  const velocityWord =
+    ratio == null ? "Calculando volumen"
+    : ratio < 0.7 ? "Volumen bajo"
+    : ratio < 1.3 ? "Volumen tranquilo"
+    : ratio < 2 ? "Volumen elevado"
+    : "Volumen explosivo";
+
+  const aggressorWord =
+    pressure === "venta" ? "agresor vendiendo" : pressure === "compra" ? "agresor comprando" : "sin agresor claro";
+
+  let directionNote = "";
+  if (direction === "short") {
+    directionNote = pressure === "venta" ? " A favor de tu CORTO — el imán tiene combustible."
+      : pressure === "compra" ? " En contra de tu CORTO — cuidado." : "";
+  } else if (direction === "long") {
+    directionNote = pressure === "compra" ? " A favor de tu LARGO — el imán tiene combustible."
+      : pressure === "venta" ? " En contra de tu LARGO — cuidado." : "";
+  }
+
+  const maxBar = Math.max(1, ...vel.series);
+  const sliderPct = 50 + (agg.net / Math.max(agg.total, 1)) * 50;
+
+  const cvdMax = Math.max(1, ...vel.cvdSeries.map((v) => Math.abs(v)));
+  const sparkPoints = vel.cvdSeries.length > 1
+    ? vel.cvdSeries
+        .map((v, i) => {
+          const x = (i / (vel.cvdSeries.length - 1)) * 140;
+          const y = 15 - (v / cvdMax) * 13;
+          return `${x.toFixed(1)},${y.toFixed(1)}`;
+        })
+        .join(" ")
+    : "";
+
+  return (
+    <section className="z-cvd">
+      <header className="z-cvd-head">
+        <span className="z-cvd-title">Volumen en vivo · velocidad + CVD</span>
+        <span className={`z-cvd-pill z-cvd-pill-${pressure}`}>{pillLabel}</span>
+        <span className="z-cvd-count">{num(agg.total)} contratos</span>
+      </header>
+
+      <div className="z-cvd-grid">
+        <div className="z-cvd-col">
+          <span className="z-cvd-lbl">Velocidad de volumen</span>
+          <b className="z-cvd-big">{ratioLabel}</b>
+          <span className="z-cvd-sub">último minuto vs promedio de la ventana</span>
+          <div className="z-cvd-track"><i style={{ width: `${(ratioClamped / 3) * 100}%` }} /></div>
+          <div className="z-cvd-scale"><span>0×</span><span>1×</span><span>2×</span><span>3×</span></div>
+          <div className="z-cvd-bars">
+            {vel.series.map((v, i) => (
+              <i key={i} style={{ height: `${Math.max(10, (v / maxBar) * 100)}%` }} />
+            ))}
+          </div>
+        </div>
+
+        <div className="z-cvd-col">
+          <span className="z-cvd-lbl">Agresor neto (CVD)</span>
+          <b className={`z-cvd-big z-cvd-net-${pressure}`}>{agg.net >= 0 ? "+" : ""}{num(agg.net)}</b>
+          <span className="z-cvd-sub">
+            {pressure === "venta" ? "domina la venta" : pressure === "compra" ? "domina la compra" : "sin dominancia clara"}
+          </span>
+          <div className="z-cvd-slider">
+            <i className={`z-cvd-slider-mark z-cvd-slider-${pressure}`} style={{ left: `${Math.max(3, Math.min(97, sliderPct))}%` }} />
+          </div>
+          <div className="z-cvd-scale"><span>venta</span><span>0</span><span>compra</span></div>
+          <svg className="z-cvd-spark" viewBox="0 0 140 30" preserveAspectRatio="none">
+            <line x1="0" y1="15" x2="140" y2="15" className="z-cvd-spark-base" />
+            {sparkPoints && <polyline points={sparkPoints} className={`z-cvd-spark-line z-cvd-spark-${pressure}`} />}
+          </svg>
+        </div>
+      </div>
+
+      <p className="z-cvd-note">{velocityWord}, {aggressorWord}.{directionNote}</p>
+    </section>
+  );
+}
+
+/** Sugerencias de spreads del día — vertical de débito (direccional), credit call
+ * e iron condor (neutrales), armados con strikes reales cotizados (bid/ask). */
+function SpreadSuggestions({ s }: { s: ZeroDteSuggestions }) {
+  const biasLabel =
+    s.bias === "alcista" ? `▲ sesgo alcista (${s.biasSource === "pin" ? "imán" : "agresor"})`
+    : s.bias === "bajista" ? `▼ sesgo bajista (${s.biasSource === "pin" ? "imán" : "agresor"})`
+    : "▬ sin sesgo claro";
+
+  return (
+    <section className="z-spreads">
+      <header>
+        <h2>Sugerencias de spreads</h2>
+        <span className={`z-spreads-bias z-spreads-bias-${s.bias}`}>{biasLabel}</span>
+      </header>
+
+      <div className="z-spreads-grid">
+        <div className="z-spread-card">
+          <span className="z-sum-lbl">Vertical de débito</span>
+          {s.vertical ? (
+            <>
+              <b>{s.vertical.kind === "bull_call" ? "Bull Call" : "Bear Put"}</b>
+              <span className="z-spread-legs">
+                Compra {s.vertical.longStrike} · Vende {s.vertical.shortStrike}
+              </span>
+              <div className="z-spread-nums">
+                <div><span>Débito</span><b>{money(s.vertical.debit)}</b></div>
+                <div><span>Máx. ganancia</span><b className="z-spread-good">{money(s.vertical.maxProfit)}</b></div>
+                <div><span>Breakeven</span><b>{dec(s.vertical.breakeven)}</b></div>
+              </div>
+            </>
+          ) : (
+            <p className="z-spread-empty">
+              {s.bias === "lateral" ? "Sin sesgo direccional claro — no se arma." : "Sin strikes cotizados suficientes."}
+            </p>
+          )}
+        </div>
+
+        <div className="z-spread-card">
+          <span className="z-sum-lbl">Credit Call</span>
+          {s.creditCall ? (
+            <>
+              <b>Bear Call</b>
+              <span className="z-spread-legs">
+                Vende {s.creditCall.shortCall} · Compra {s.creditCall.longCall}
+              </span>
+              <div className="z-spread-nums">
+                <div><span>Crédito</span><b className="z-spread-good">{money(s.creditCall.credit)}</b></div>
+                <div><span>Máx. pérdida</span><b>{money(s.creditCall.maxLoss)}</b></div>
+                <div><span>Breakeven</span><b>{dec(s.creditCall.breakeven)}</b></div>
+              </div>
+            </>
+          ) : (
+            <p className="z-spread-empty">Sin strikes cotizados suficientes arriba del rango.</p>
+          )}
+        </div>
+
+        <div className="z-spread-card">
+          <span className="z-sum-lbl">Iron Condor</span>
+          {s.ironCondor ? (
+            <>
+              <b>{s.ironCondor.shortPut}P / {s.ironCondor.shortCall}C</b>
+              <span className="z-spread-legs">
+                Alas: {s.ironCondor.longPut}P · {s.ironCondor.longCall}C
+              </span>
+              <div className="z-spread-nums">
+                <div><span>Crédito</span><b className="z-spread-good">{money(s.ironCondor.credit)}</b></div>
+                <div><span>Rango seguro</span><b>{dec(s.ironCondor.beLow)} – {dec(s.ironCondor.beHigh)}</b></div>
+              </div>
+            </>
+          ) : (
+            <p className="z-spread-empty">Sin strikes cotizados suficientes en ambos lados del rango.</p>
+          )}
+        </div>
+      </div>
+
+      <p className="z-spreads-note">
+        Vertical: apunta al imán del GEX si hay setup de pin, o al borde de 1σ si no lo hay (ahí el
+        sesgo sale del agresor neto/CVD). Credit Call e Iron Condor venden el borde de 1σ del
+        movimiento esperado y compran el de 2σ como protección — spreads con riesgo definido, ambas
+        patas. Precios de débito/crédito al ask/bid real de cada pata — pueden no llenarse a ese precio
+        exacto. Dinero simulado, no es consejo financiero.
+      </p>
+    </section>
   );
 }
 
@@ -935,4 +1136,74 @@ const CSS = `
 .z-top-put .z-tag { left: 8px; background: var(--red-bg); color: #b42318; }
 .z-top-call span { padding-left: 4px; }
 .z-toprow .z-bar { height: 5px; }
+
+.z-cvd { border: 1px solid var(--border); border-left: 4px solid var(--accent); background: var(--panel);
+  border-radius: 12px; padding: 16px 18px 0; margin: 0 0 16px; overflow: hidden; }
+.z-cvd-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-bottom: 14px; }
+.z-cvd-title { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.z-cvd-pill { font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 999px; }
+.z-cvd-pill-venta { background: var(--red-bg); color: #b42318; }
+.z-cvd-pill-compra { background: var(--green-bg); color: var(--green-dark); }
+.z-cvd-pill-neutral { background: var(--panel-2); color: var(--muted); }
+.z-cvd-count { margin-left: auto; font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+
+.z-cvd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+.z-cvd-col { display: flex; flex-direction: column; gap: 3px; padding-bottom: 14px; }
+.z-cvd-lbl { font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+.z-cvd-big { font-size: 26px; letter-spacing: -0.4px; font-variant-numeric: tabular-nums; color: var(--text); margin-top: 2px; }
+.z-cvd-net-venta { color: #b42318; }
+.z-cvd-net-compra { color: var(--green-dark); }
+.z-cvd-sub { font-size: 11.5px; color: var(--faint); margin-bottom: 8px; }
+
+.z-cvd-track { position: relative; height: 6px; border-radius: 3px; background: var(--border-soft); overflow: hidden; }
+.z-cvd-track i { position: absolute; inset: 0 auto 0 0; background: var(--accent); border-radius: 3px; }
+.z-cvd-scale { display: flex; justify-content: space-between; font-size: 10px; color: var(--faint); margin: 4px 0 10px; }
+
+.z-cvd-bars { display: flex; align-items: flex-end; gap: 6px; height: 46px; }
+.z-cvd-bars i { flex: 1; background: var(--border); border-radius: 3px 3px 0 0; min-height: 4px; }
+
+.z-cvd-slider { position: relative; height: 6px; border-radius: 3px; background: var(--border-soft); }
+.z-cvd-slider-mark { position: absolute; top: -3px; width: 14px; height: 12px; margin-left: -7px;
+  border-radius: 3px; }
+.z-cvd-slider-venta { background: #d92d20; }
+.z-cvd-slider-compra { background: #12b76a; }
+.z-cvd-slider-neutral { background: var(--muted); }
+
+.z-cvd-spark { width: 100%; height: 30px; margin-top: 4px; overflow: visible; }
+.z-cvd-spark-base { stroke: var(--border); stroke-width: 1; stroke-dasharray: 3 3; }
+.z-cvd-spark-line { fill: none; stroke-width: 1.6; }
+.z-cvd-spark-venta { stroke: #d92d20; }
+.z-cvd-spark-compra { stroke: #12b76a; }
+.z-cvd-spark-neutral { stroke: var(--muted); }
+
+.z-cvd-note { margin: 0 -18px 0; padding: 10px 18px; background: var(--panel-2); font-size: 12.5px;
+  color: var(--text); line-height: 1.5; border-top: 1px solid var(--border-soft); }
+
+@media (max-width: 640px) {
+  .z-cvd-grid { grid-template-columns: 1fr; gap: 14px; }
+}
+
+.z-spreads { border: 1px solid var(--border); background: var(--panel);
+  border-radius: 10px; padding: 16px; margin: 0 0 16px; }
+.z-spreads header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.z-spreads h2 { margin: 0; font-size: 15px; }
+.z-spreads-bias { font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 999px;
+  background: var(--panel-2); color: var(--muted); }
+.z-spreads-bias-alcista { background: var(--green-bg); color: var(--green-dark); }
+.z-spreads-bias-bajista { background: var(--red-bg); color: #b42318; }
+
+.z-spreads-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--space-md); }
+.z-spread-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 4px; background: var(--panel-2); }
+.z-spread-card b { font-size: 17px; letter-spacing: -0.2px; }
+.z-spread-legs { font-size: 12px; color: var(--muted); }
+.z-spread-empty { margin: 4px 0 0; font-size: 12px; color: var(--faint); line-height: 1.5; }
+.z-spread-nums { display: flex; flex-direction: column; gap: 3px; margin-top: 8px;
+  padding-top: 8px; border-top: 1px solid var(--border-soft); }
+.z-spread-nums > div { display: flex; justify-content: space-between; font-size: 12.5px; }
+.z-spread-nums span { color: var(--muted); }
+.z-spread-nums b { font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.z-spread-good { color: var(--green-dark); }
+
+.z-spreads-note { margin: 14px 0 0; font-size: 11.5px; color: var(--faint); line-height: 1.5; }
 `;
