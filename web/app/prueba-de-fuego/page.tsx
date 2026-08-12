@@ -5,15 +5,14 @@ import BrandMark from "@/app/components/BrandMark";
 import NavTabs from "@/app/components/NavTabs";
 import TickerLiveTab from "./TickerLiveTab";
 import SpxVecinosTab from "./SpxVecinosTab";
-import SpxAmigaTab from "./SpxAmigaTab";
 import AgenteOdteTab from "./AgenteOdteTab";
+import ContratosVecinos2Tab from "./ContratosVecinos2Tab";
 import ContractSearchTab from "./ContractSearchTab";
-import SimulacionTab from "./SimulacionTab";
 import { migrateLegacyKey } from "@/lib/legacyStorage";
 
 const KEY_TAB = "visionary.pruebaDeFuego.tab";
 
-type Tab = "TSLA" | "SPX" | "SPX_VECINOS" | "SPX_AMIGA" | "SPX_0DTE" | "buscar" | "simulacion";
+type Tab = "TSLA" | "SPX" | "SPX_VECINOS" | "SPX_0DTE" | "VECINOS_2" | "buscar";
 
 export default function PruebaDeFuegoPage() {
   const [tab, setTab] = useState<Tab>("TSLA");
@@ -25,10 +24,9 @@ export default function PruebaDeFuegoPage() {
       saved === "TSLA" ||
       saved === "SPX" ||
       saved === "SPX_VECINOS" ||
-      saved === "SPX_AMIGA" ||
       saved === "SPX_0DTE" ||
-      saved === "buscar" ||
-      saved === "simulacion"
+      saved === "VECINOS_2" ||
+      saved === "buscar"
     ) {
       setTab(saved);
     }
@@ -58,17 +56,14 @@ export default function PruebaDeFuegoPage() {
             <button className={tab === "SPX_VECINOS" ? "active" : ""} onClick={() => pickTab("SPX_VECINOS")}>
               SPX vecinos
             </button>
-            <button className={tab === "SPX_AMIGA" ? "active" : ""} onClick={() => pickTab("SPX_AMIGA")}>
-              SPX amiga
-            </button>
             <button className={tab === "SPX_0DTE" ? "active" : ""} onClick={() => pickTab("SPX_0DTE")}>
               Agente ODTE
             </button>
+            <button className={tab === "VECINOS_2" ? "active" : ""} onClick={() => pickTab("VECINOS_2")}>
+              Contratos vecinos 2.0
+            </button>
             <button className={tab === "buscar" ? "active" : ""} onClick={() => pickTab("buscar")}>
               Búsqueda de contratos
-            </button>
-            <button className={tab === "simulacion" ? "active" : ""} onClick={() => pickTab("simulacion")}>
-              Simulación
             </button>
           </div>
         </div>
@@ -76,10 +71,9 @@ export default function PruebaDeFuegoPage() {
         {tab === "TSLA" && <SpxVecinosTab ticker="TSLA" />}
         {tab === "SPX" && <TickerLiveTab ticker="SPX" />}
         {tab === "SPX_VECINOS" && <SpxVecinosTab ticker="SPX" />}
-        {tab === "SPX_AMIGA" && <SpxAmigaTab />}
         {tab === "SPX_0DTE" && <AgenteOdteTab />}
+        {tab === "VECINOS_2" && <ContratosVecinos2Tab />}
         {tab === "buscar" && <ContractSearchTab />}
-        {tab === "simulacion" && <SimulacionTab />}
       </div>
     </main>
   );

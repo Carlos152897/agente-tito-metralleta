@@ -139,3 +139,81 @@ export async function fetchUnderlyingQuote(symbol: string, isIndex: boolean): Pr
   const n = (v: string | undefined) => (v != null && Number.isFinite(Number(v)) ? Number(v) : null);
   return n(q.last) ?? n(q.mark) ?? null;
 }
+
+// ── Futuros (ES/NQ) — Carlos pidió datos reales de /ES y /NQ para poder
+// operar mientras el mercado de acciones/índice está cerrado (CME cotiza
+// casi 24/5). Verificado en vivo (ago 2026): /instruments/futures da el
+// contrato "activo" (más líquido) de un producto, market-data/by-type?future=
+// da su cotización real, y /futures-option-chains/{producto}/nested da SUS
+// PROPIAS opciones diarias (0DTE reales de CME, no una cadena de índice
+// reetiquetada) — siguen cotizando de noche, a diferencia de las opciones de
+// SPX/NDX que cierran a las 16:00 ET. MarketSnack NO cubre CME (comprobado:
+// "ES" ahí es la acción Eversource Energy, no el futuro), así que no hay net
+// premium real para estos — ver lib/magnetWall.ts `hasFlowCoverage`.
+
+export interface TastyFutureInstrument {
+  symbol: string;
+  "product-code": string;
+  "expiration-date": string;
+  "active-month": boolean;
+  "next-active-month": boolean;
+}
+
+/** El contrato de futuro "activo" (más líquido/rolado) de un producto (ej. "ES", "NQ"). */
+export async function fetchActiveFuture(productCode: string): Promise<TastyFutureInstrument | null> {
+  const params = new URLSearchParams();
+  params.append("product-code[]", productCode.toUpperCase());
+  const data = await tastyGet<{ items: TastyFutureInstrument[] }>("/instruments/futures", params);
+  const items = data.items ?? [];
+  return items.find((i) => i["active-month"]) ?? items[0] ?? null;
+}
+
+/** Cotización real de un contrato de futuro concreto (ej. "/ESU6"). */
+export async function fetchFuturesQuote(symbol: string): Promise<number | null> {
+  const params = new URLSearchParams({ future: symbol });
+  const data = await tastyGet<{ items: TastyQuote[] }>("/market-data/by-type", params);
+  const q = data.items?.[0];
+  if (!q) return null;
+  const n = (v: string | undefined) => (v != null && Number.isFinite(Number(v)) ? Number(v) : null);
+  return n(q.mark) ?? n(q.last) ?? null;
+}
+
+export interface FuturesOptionStrike {
+  "strike-price": string;
+  call: string;
+  put: string;
+}
+
+export interface FuturesOptionExpiration {
+  /** El contrato de futuro contra el que liquida esta expiración (ej. "/ESU6"). */
+  "underlying-symbol": string;
+  "expiration-date": string;
+  "days-to-expiration": number;
+  "expiration-type": string;
+  "stops-trading-at": string;
+  strikes: FuturesOptionStrike[];
+}
+
+/** Cadena anidada COMPLETA de opciones sobre futuros de un producto (ej. "ES"). */
+export async function fetchNestedFuturesOptionChain(productCode: string): Promise<FuturesOptionExpiration[]> {
+  const data = await tastyGet<{ "option-chains": { expirations: FuturesOptionExpiration[] }[] }>(
+    `/futures-option-chains/${encodeURIComponent(productCode.toUpperCase())}/nested`,
+  );
+  return data["option-chains"]?.[0]?.expirations ?? [];
+}
+
+/** Cotizaciones en bloque de OPCIONES SOBRE FUTUROS — símbolo propio de tastytrade (con espacios, ya URL-encoded por URLSearchParams). */
+export async function fetchFuturesOptionQuotesByType(symbols: string[]): Promise<Map<string, TastyQuote>> {
+  const out = new Map<string, TastyQuote>();
+  const batches = chunk([...new Set(symbols)], CHUNK_SIZE);
+  await Promise.all(
+    batches.map(async (batch) => {
+      if (batch.length === 0) return;
+      const params = new URLSearchParams();
+      for (const s of batch) params.append("future-option[]", s);
+      const data = await tastyGet<{ items: TastyQuote[] }>("/market-data/by-type", params);
+      for (const q of data.items ?? []) out.set(q.symbol, q);
+    }),
+  );
+  return out;
+}

@@ -15,8 +15,6 @@ export type DayTradeSseEvent =
       confidence?: number;
       suggestion: ContractSuggestion | null;
       marketOpen: boolean;
-      /** Por qué no hay sugerencia todavía aunque no sea error (ej. "primeros 15 min"). */
-      waitingReason?: string | null;
     }
   | { type: "error"; message: string };
 
@@ -62,4 +60,18 @@ export interface SpxLevelsResponse {
   gexStats: GexStatsBucket | null;
   rows: SpxLevelRow[];
   topVolume: { calls: TopVolumeContract[]; puts: TopVolumeContract[] };
+}
+
+// ── "Contratos vecinos 2.0" — mapa del GEX estilo option-chain (app/api/magnet-wall) ──
+
+export interface GexChainSide {
+  volume: number;
+  openInterest: number;
+  delta: number | null;
+}
+
+export interface GexChainLine {
+  strike: number;
+  call: GexChainSide | null;
+  put: GexChainSide | null;
 }

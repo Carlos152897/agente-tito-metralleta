@@ -20,7 +20,7 @@ import { toRow } from "@/lib/compute";
 import { cachedDailyBars } from "@/lib/barsStore";
 import { MIN_DTE, maxDteFor, resolveLiveSpot, suggestWallContract, type ContractSuggestion } from "@/lib/dayTrade";
 import { candidateStrikesForSide } from "@/lib/backtest";
-import { isMarketOpen, isWithinOpeningMinutes } from "@/lib/marketHours";
+import { isMarketOpen } from "@/lib/marketHours";
 import { fetchCompany, fetchOptionChain, MassiveError } from "@/lib/massive";
 import { fetchAssetPrice, fetchContractPremiumSummaries, fetchFlow, MarketSnackError } from "@/lib/marketsnack";
 import { daysToExpiration } from "@/lib/occ";
@@ -31,10 +31,6 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const SUPPORTED_TICKERS = new Set(["SPX", "TSLA"]);
-// Pedido explícito de Carlos (2026-08-03): no operar recién abierto — se salta
-// TODO el pipeline (cadena de Massive, flujo de MarketSnack) durante esta
-// ventana, no solo se descarta la sugerencia al final.
-const OPENING_GATE_MINUTES = 15;
 
 function sse(event: DayTradeSseEvent): string {
   return `data: ${JSON.stringify(event)}\n\n`;
@@ -52,19 +48,6 @@ export async function GET(request: Request) {
       const send = (e: DayTradeSseEvent) => controller.enqueue(encoder.encode(sse(e)));
 
       try {
-        if (isWithinOpeningMinutes(now, OPENING_GATE_MINUTES)) {
-          send({
-            type: "done",
-            spot: 0,
-            target: null,
-            direction: null,
-            suggestion: null,
-            marketOpen: isMarketOpen(now),
-            waitingReason: `Esperando los primeros ${OPENING_GATE_MINUTES} minutos tras la apertura (9:30–9:45 ET) — todavía no se opera.`,
-          });
-          return;
-        }
-
         send({ type: "step", label: `Buscando precio en vivo de ${TICKER}…` });
         const company = await fetchCompany(TICKER);
 

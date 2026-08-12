@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: visionary-trades
+    runtime: node
+    rootDir: web
+    plan: starter
+    buildCommand: npm install && npm run build
+    startCommand: npx next start -p $PORT
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: WEB_PASSWORD
+        sync: false
+      - key: MASSIVE_API_KEY
+        sync: false
+      - key: MASSIVE_MAX_PAGES
+        value: "40"
+      - key: MARKETSNACK_COOKIE
+        sync: false
+      - key: SCHWAB_CLIENT_ID
+        sync: false
+      - key: SCHWAB_CLIENT_SECRET
+        sync: false
+      - key: SCHWAB_REDIRECT_URI
+        sync: false

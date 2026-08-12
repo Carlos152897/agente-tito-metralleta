@@ -31,7 +31,6 @@ export default function SpxVecinosTab({ ticker = "SPX" }: { ticker?: "SPX" | "TS
   const [error, setError] = useState<string | null>(null);
   const [marketOpen, setMarketOpen] = useState(false);
   const [suggestion, setSuggestion] = useState<ContractSuggestion | null>(null);
-  const [waitingReason, setWaitingReason] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   const esRef = useRef<EventSource | null>(null);
@@ -50,7 +49,6 @@ export default function SpxVecinosTab({ ticker = "SPX" }: { ticker?: "SPX" | "TS
       if (d.type === "step") {
         setSteps((s) => [...s.slice(-6), d.label]);
       } else if (d.type === "done") {
-        setWaitingReason(d.waitingReason ?? null);
         setMarketOpen(d.marketOpen);
         setSuggestion(d.suggestion);
         setBusy(false);
@@ -101,9 +99,7 @@ export default function SpxVecinosTab({ ticker = "SPX" }: { ticker?: "SPX" | "TS
       )}
       {error && <div className="error">⚠ {error}</div>}
 
-      {!busy && !error && waitingReason && <div className="card wheel-empty">⏳ {waitingReason}</div>}
-
-      {!busy && !error && !waitingReason && !suggestion && (
+      {!busy && !error && !suggestion && (
         <div className="card wheel-empty">Sin pared clara ahora mismo — no hay desbalance real confirmado.</div>
       )}
 
@@ -161,7 +157,7 @@ export default function SpxVecinosTab({ ticker = "SPX" }: { ticker?: "SPX" | "TS
 
       <div className="disclaimer">
         Day-trading en vivo, dinero simulado — no es consejo financiero. Se actualiza solo cada 5 minutos (o al
-        tocar el botón de arriba) y no opera durante los primeros 15 minutos tras la apertura (9:30–9:45 ET).
+        tocar el botón de arriba).
       </div>
     </div>
   );

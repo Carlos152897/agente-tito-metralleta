@@ -48,32 +48,22 @@ export function isMarketCloseNear(now: Date = new Date(), minutesBefore = 15): b
 }
 
 /**
- * ¿Todavía dentro de los primeros `minutesAfter` minutos desde la apertura
- * (9:30 ET)? Pedido explícito de Carlos para "SPX vecinos" (2026-08-03): no
- * operar recién abierto — los primeros minutos suelen tener spot/flujo más
- * erráticos, antes de que el net premium real tenga tiempo de asentarse.
- * `false` con el mercado cerrado (antes de que abra no aplica "recién abrió").
+ * ¿Está abierto el mercado de FUTUROS de CME (ES/NQ, sesión "Globex")? Casi
+ * 24/5, a diferencia de las opciones de índice de arriba — pedido explícito
+ * de Carlos: poder operar /ES y /NQ mientras el mercado de acciones está
+ * cerrado. Abierto de domingo 18:00 ET a viernes 17:00 ET, con una pausa de
+ * mantenimiento diaria de 17:00 a 18:00 ET. Sin calendario de feriados
+ * (misma limitación declarada que el resto de este archivo).
  */
-export function isWithinOpeningMinutes(now: Date = new Date(), minutesAfter = 15): boolean {
+export function isFuturesMarketOpen(now: Date = new Date()): boolean {
   const { weekday, hour, minute } = partsET(now);
-  if (weekday === "Sat" || weekday === "Sun") return false;
   const minutesSinceMidnight = hour * 60 + minute;
-  const openMinutes = 9 * 60 + 30;
-  return minutesSinceMidnight >= openMinutes && minutesSinceMidnight < openMinutes + minutesAfter;
+  const maintenanceStart = 17 * 60;
+  const maintenanceEnd = 18 * 60;
+  if (weekday === "Sat") return false;
+  if (weekday === "Sun" && minutesSinceMidnight < maintenanceEnd) return false;
+  if (weekday === "Fri" && minutesSinceMidnight >= maintenanceStart) return false;
+  if (minutesSinceMidnight >= maintenanceStart && minutesSinceMidnight < maintenanceEnd) return false;
+  return true;
 }
 
-/**
- * Minutos que faltan hasta el cierre (16:00 ET). Para greeks de un contrato
- * 0DTE (SPX amiga: charm/vanna, escenarios hasta el cierre) el tiempo a
- * vencimiento NUNCA puede ser "0 días" literal — dividiría por ~0 en las
- * fórmulas de Black-Scholes. 0 fuera de la sesión (fin de semana o fuera de
- * 9:30-16:00 ET) — el llamador debe gatear en `isMarketOpen` antes de usar
- * esto como T, no asumir que un 0 acá significa "casi cierra".
- */
-export function minutesUntilClose(now: Date = new Date()): number {
-  const { weekday, hour, minute } = partsET(now);
-  if (weekday === "Sat" || weekday === "Sun") return 0;
-  const minutesSinceMidnight = hour * 60 + minute;
-  const closeMinutes = 16 * 60;
-  return Math.max(0, closeMinutes - minutesSinceMidnight);
-}
