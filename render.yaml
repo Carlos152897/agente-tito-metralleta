@@ -3,7 +3,7 @@ services:
     name: visionary-trades
     runtime: node
     rootDir: web
-    plan: starter
+    plan: free
     buildCommand: npm install && npm run build
     startCommand: npx next start -p $PORT
     envVars:
