@@ -23,3 +23,7 @@ services:
         sync: false
       - key: SCHWAB_REDIRECT_URI
         sync: false
+      - key: TASTYTRADE_CLIENT_SECRET
+        sync: false
+      - key: TASTYTRADE_REFRESH_TOKEN
+        sync: false

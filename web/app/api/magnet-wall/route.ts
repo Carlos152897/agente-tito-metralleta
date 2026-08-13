@@ -31,13 +31,65 @@ import { fetchActiveFuturesOptionChain } from "@/lib/futuresChain";
 import { TastytradeError } from "@/lib/tastytrade";
 import { fetchContractPremiumSummaries, MarketSnackError } from "@/lib/marketsnack";
 import { isFuturesMarketOpen, isMarketOpen } from "@/lib/marketHours";
-import { magnetWallSignal, MAGNET_WALL_NEIGHBOR_COUNT, type CrossMarketFlow } from "@/lib/magnetWall";
+import {
+  magnetWallSignal, wallEntrySignalFromPositioning, MAGNET_WALL_NEIGHBOR_COUNT,
+  type CrossMarketFlow,
+} from "@/lib/magnetWall";
+import { probTouch } from "@/lib/expectedMove";
 import { candidateStrikesForSide } from "@/lib/backtest";
 import { zeroDteTickerConfig } from "@/lib/zerodteTickers";
-import { wallEntrySignal, WALL_NEIGHBOR_COUNT, type StrikePremiums } from "@/lib/neighborContracts";
+import { wallEntrySignal, WALL_NEIGHBOR_COUNT, type StrikePremiums, type WallEntrySignal, type WallTarget } from "@/lib/neighborContracts";
 import type { ZRow } from "@/lib/zerodteTypes";
 import type { MagnetWallSignal } from "@/lib/magnetWall";
 import type { GexChainLine, GexChainSide } from "@/app/prueba-de-fuego/types";
+
+/**
+ * "Mejor entrada" — pedido explícito de Carlos (ago 2026): un segundo veredicto
+ * independiente del imán del GEX ("porque a veces el imán se mueve"), la MISMA
+ * pared de dinero que ya usa "SPX vecinos" (`wallEntrySignal`), pero con
+ * probabilidad de toque agregada (estadística pura — distancia + IV + horas al
+ * cierre, sin el ajuste por agresividad/régimen que sí lleva el imán, a
+ * propósito: son dos lecturas distintas para comparar, no la misma pesada dos
+ * veces). Para ES/NQ (pedido explícito de Carlos, sin cobertura de
+ * MarketSnack en CME) usa `wallEntrySignalFromPositioning` — misma geometría,
+ * pero Open Interest × gamma real de tastytrade en vez de net premium; el
+ * campo `source` le dice a la UI cuál de las dos fue.
+ */
+interface BestEntrySource {
+  type: "call" | "put";
+  wallStrike: number;
+  wallMagnitude: number;
+  resistance: WallTarget | null;
+  support: WallTarget | null;
+  target1: WallTarget | null;
+  target2: WallTarget | null;
+  reason: string;
+}
+
+export interface BestEntry extends BestEntrySource {
+  source: "flow" | "positioning";
+  target1Probability: number | null;
+  target2Probability: number | null;
+  resistanceProbability: number | null;
+  supportProbability: number | null;
+}
+
+function withTouchProbabilities(
+  entry: BestEntrySource,
+  spot: number, iv: number, hoursLeft: number,
+  source: "flow" | "positioning",
+): BestEntry {
+  const days = hoursLeft / 24;
+  const prob = (t: WallTarget | null) => (t ? probTouch(spot, t.strike, iv, days) : null);
+  return {
+    ...entry,
+    source,
+    target1Probability: prob(entry.target1),
+    target2Probability: prob(entry.target2),
+    resistanceProbability: prob(entry.resistance),
+    supportProbability: prob(entry.support),
+  };
+}
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -170,6 +222,9 @@ async function buildIndexResponse(TICKER: string, now: Date) {
 
   const chainLines = buildGexChainLines(rows, pickDisplayStrikes(gex.nodes.map((n) => n.strike), spot, signal));
 
+  const wallEntry = wallEntrySignal({ strikes, spot, strikePremiums });
+  const bestEntry = wallEntry ? withTouchProbabilities(wallEntry, spot, iv, hrs, "flow") : null;
+
   return Response.json({
     ticker: TICKER,
     asOf: now.toISOString(),
@@ -181,6 +236,7 @@ async function buildIndexResponse(TICKER: string, now: Date) {
     gex,
     signal,
     chainLines,
+    bestEntry,
   });
 }
 
@@ -224,6 +280,15 @@ async function buildFuturesResponse(productCode: string, now: Date) {
 
   const chainLines = buildGexChainLines(chain.rows, pickDisplayStrikes(gex.nodes.map((n) => n.strike), spot, signal));
 
+  // Sin MarketSnack para CME, "Mejor entrada" usa la MISMA geometría de pared
+  // (lib/neighborContracts.ts → wallGeometryFromLevels) pero sobre Open
+  // Interest × gamma real de tastytrade en vez de net premium ejecutado —
+  // pedido explícito de Carlos: "en ES y NQ puedes usar tastytrade y darme la
+  // mejor entrada, según la información dada". `positioningLevels` ya está
+  // armado arriba para el respaldo del panel del imán; se reusa tal cual.
+  const positioningEntry = wallEntrySignalFromPositioning({ strikes, spot, positioningLevels });
+  const bestEntry = positioningEntry ? withTouchProbabilities(positioningEntry, spot, iv, hrs, "positioning") : null;
+
   return Response.json({
     ticker: `/${productCode}`,
     asOf: now.toISOString(),
@@ -235,6 +300,7 @@ async function buildFuturesResponse(productCode: string, now: Date) {
     gex,
     signal,
     chainLines,
+    bestEntry,
     futureSymbol: chain.futureSymbol,
     expirationDate: chain.expirationDate,
   });

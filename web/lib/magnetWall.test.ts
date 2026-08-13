@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { classifyLevel, classifyPositioning, magnetWallSignal, strikeStep, targetProbability } from "./magnetWall";
+import {
+  classifyLevel, classifyPositioning, magnetWallSignal, strikeStep, targetProbability,
+  wallEntrySignalFromPositioning,
+} from "./magnetWall";
 import type { CrossMarketFlow, PositioningLevel } from "./magnetWall";
 import type { StrikePremiums } from "./neighborContracts";
 
@@ -406,5 +409,100 @@ describe("magnetWallSignal", () => {
     // Con pared propia confirmada, el mensaje es el "normal" (no el de "sin pared propia").
     expect(signal?.reason).toMatch(/confirmado por net premium real/);
     expect(signal?.reason).toMatch(/Confirmado además por el flujo real de SPX/);
+  });
+});
+
+describe("wallEntrySignalFromPositioning", () => {
+  const posLevels = (entries: [number, number, number][]) =>
+    new Map<number, PositioningLevel>(entries.map(([strike, callGex, putGex]) => [strike, { strike, callGex, putGex }]));
+
+  // count=6 (default) → el vecindario son 5 strikes por lado desde el más
+  // cercano al spot (7730 exacto): abajo 7725/7720/7715/7710/7705, arriba
+  // 7735/7740/7745/7750/7755. Los datos de cada test se ubican DENTRO de esa
+  // ventana a propósito.
+  it("bug real (reportado por Carlos, ES en vivo): la pared más grande cae del lado CONTRARIO al de la ganancia — el target nunca puede quedar del lado equivocado del spot", () => {
+    const strikes = Array.from({ length: 25 }, (_, i) => 7690 + i * 5);
+    const spot = 7730;
+    // La pared más grande de TODO el vecindario es un soporte de puts ABAJO
+    // del spot (7705) — eso fija la dirección CALL (alcista). Pero antes del
+    // fix, la caminata hacia arriba (lado de la ganancia de un CALL) no
+    // encontraba nada que "confirmara con el mismo signo" ahí, y caía al
+    // respaldo de usar la pared misma (7705, abajo del spot) como target1 —
+    // exactamente el bug que reportó Carlos ("COMPRÁ CALL" con target debajo
+    // del precio actual). Además: el target NUNCA puede coincidir con la
+    // resistencia (pedido explícito de Carlos, ago 2026) — acá la resistencia
+    // real es $7755 (la pared más grande de todo el lado de arriba), así que
+    // los targets tienen que ser los OTROS dos muros reales intermedios
+    // ($7735/$7745), nunca $7755.
+    const positioningLevels = posLevels([
+      [7705, 0, 900_000], // pared real más grande — soporte, ABAJO del spot
+      [7710, 1_000, 2_000], [7720, 3_000, 4_000], [7740, 5_000, 6_000], [7750, 7_000, 8_000], // ruido chico
+      [7715, 9_000, 10_000], [7725, 11_000, 12_000], // más ruido chico
+      [7735, 350_000, 0], // target1: primera resistencia real intermedia, ARRIBA del spot
+      [7745, 450_000, 0], // target2: segunda resistencia real intermedia, más arriba
+      [7755, 550_000, 0], // resistencia real MÁS GRANDE — nunca puede ser un target
+    ]);
+
+    const entry = wallEntrySignalFromPositioning({ strikes, spot, positioningLevels });
+
+    expect(entry?.type).toBe("call");
+    expect(entry?.wallStrike).toBe(7705); // la pared que fija la dirección sigue siendo la real más grande
+    // El target SIEMPRE tiene que quedar del lado de la ganancia de un CALL: arriba del spot.
+    expect(entry!.target1!.strike).toBeGreaterThan(spot);
+    expect(entry?.target1?.strike).toBe(7735);
+    expect(entry?.target2?.strike).toBe(7745);
+    expect(entry?.resistance?.strike).toBe(7755);
+    // Los targets nunca pueden ser el mismo strike que la resistencia.
+    expect(entry?.target1?.strike).not.toBe(entry?.resistance?.strike);
+    expect(entry?.target2?.strike).not.toBe(entry?.resistance?.strike);
+    expect(entry?.source).toBe("positioning");
+    expect(entry?.reason).toMatch(/Sin flujo real de MarketSnack en CME/);
+  });
+
+  it("mismo caso pero dirección PUT (pared grande ARRIBA del spot) — el target debe quedar abajo, y nunca ser el mismo strike que el soporte", () => {
+    const strikes = Array.from({ length: 25 }, (_, i) => 7690 + i * 5);
+    const spot = 7730;
+    const positioningLevels = posLevels([
+      [7755, 900_000, 0], // pared real más grande — resistencia, ARRIBA del spot (fija dirección PUT)
+      [7710, 1_000, 2_000], [7720, 3_000, 4_000], [7740, 5_000, 6_000], [7750, 7_000, 8_000], // ruido chico
+      [7735, 9_000, 10_000], [7745, 11_000, 12_000], // más ruido chico
+      [7725, 0, 350_000], // target1: soporte real intermedio, ABAJO del spot
+      [7715, 0, 450_000], // target2: segundo soporte real intermedio, más abajo
+      [7705, 0, 550_000], // soporte real MÁS GRANDE — nunca puede ser un target
+    ]);
+
+    const entry = wallEntrySignalFromPositioning({ strikes, spot, positioningLevels });
+
+    expect(entry?.type).toBe("put");
+    expect(entry?.wallStrike).toBe(7755);
+    expect(entry!.target1!.strike).toBeLessThan(spot);
+    expect(entry?.target1?.strike).toBe(7725);
+    expect(entry?.target2?.strike).toBe(7715);
+    expect(entry?.support?.strike).toBe(7705);
+    expect(entry?.target1?.strike).not.toBe(entry?.support?.strike);
+    expect(entry?.target2?.strike).not.toBe(entry?.support?.strike);
+  });
+
+  it("sin ninguna pared real intermedia del lado de la ganancia (más allá de la resistencia/soporte), el target es null — no se reusa resistencia/soporte", () => {
+    const strikes = Array.from({ length: 25 }, (_, i) => 7690 + i * 5);
+    const spot = 7730;
+    const positioningLevels = posLevels([
+      [7705, 0, 900_000], // pared real, dirección CALL
+      [7710, 1_000, 2_000], [7715, 3_000, 4_000], [7720, 5_000, 6_000], [7725, 7_000, 8_000], // ruido chico
+      // Nada arriba del spot — el lado de la ganancia queda sin ninguna pared real.
+    ]);
+
+    const entry = wallEntrySignalFromPositioning({ strikes, spot, positioningLevels });
+    expect(entry?.type).toBe("call");
+    expect(entry?.target1).toBeNull();
+    expect(entry?.target2).toBeNull();
+    expect(entry?.reason).toMatch(/no hay target intermedio confirmado/);
+  });
+
+  it("null sin ninguna pared real en el vecindario (solo ruido bajo el piso)", () => {
+    const strikes = Array.from({ length: 25 }, (_, i) => 7690 + i * 5);
+    const positioningLevels = posLevels([[7735, 1_000, 0]]);
+    const entry = wallEntrySignalFromPositioning({ strikes, spot: 7730, positioningLevels });
+    expect(entry).toBeNull();
   });
 });

@@ -287,7 +287,7 @@ export interface WallEntrySignal {
   reason: string;
 }
 
-function biggestWallAmong(strikes: number[], levels: WallLevel[]): WallTarget | null {
+export function biggestWallAmong(strikes: number[], levels: WallLevel[]): WallTarget | null {
   let best: WallLevel | null = null;
   for (const strike of strikes) {
     const l = levels.find((x) => x.strike === strike);
@@ -297,33 +297,29 @@ function biggestWallAmong(strikes: number[], levels: WallLevel[]): WallTarget | 
   return best ? { strike: best.strike, netPremium: Math.abs(best.imbalance) } : null;
 }
 
+export interface WallGeometry {
+  type: "call" | "put";
+  wallStrike: number;
+  wallMagnitude: number;
+  resistance: WallTarget | null;
+  support: WallTarget | null;
+  target1: WallTarget;
+  target2: WallTarget | null;
+}
+
 /**
- * Dirección y targets por la pared de dinero más grande del vecindario, no por
- * quién gana en el strike centro. `null` sin vecindario o si la pared más
- * grande tiene desbalance $0 (sin datos) — misma regla de "ante la duda, no
- * operar" que el resto del agente.
+ * La parte PURAMENTE geométrica de `wallEntrySignal`: dada una lista de
+ * `WallLevel` ya armada (de donde sea que salga el desbalance — net premium
+ * real de MarketSnack, u Open Interest × gamma real para productos sin
+ * cobertura de flujo como ES/NQ), encuentra la pared más grande, la dirección
+ * que fija, y camina hacia afuera confirmando hasta 2 targets. Extraído para
+ * que `wallEntrySignal` (flujo) y `wallEntrySignalFromPositioning` (posición,
+ * lib/magnetWall.ts) compartan exactamente la misma lógica de caminata — solo
+ * cambia CÓMO se arma `levels`, no qué se hace con ella. `null` sin
+ * vecindario o si la pared más grande tiene desbalance $0 (sin datos).
  */
-export function wallEntrySignal(input: {
-  strikes: number[];
-  spot: number;
-  strikePremiums: Map<number, StrikePremiums>;
-  count?: number;
-}): WallEntrySignal | null {
-  const { strikes, spot, strikePremiums } = input;
-  const count = input.count ?? WALL_NEIGHBOR_COUNT;
-  if (strikes.length === 0) return null;
-
-  const above = candidateStrikesForSide(strikes, spot, "above", count);
-  const below = candidateStrikesForSide(strikes, spot, "below", count);
-  const neighborhood = [...new Set([...above, ...below])];
-  if (neighborhood.length === 0) return null;
-
-  const levels: WallLevel[] = neighborhood.map((strike) => {
-    const level = strikePremiums.get(strike) ?? null;
-    const callNet = level?.call?.netPremium ?? 0;
-    const putNet = level?.put?.netPremium ?? 0;
-    return { strike, callNet, putNet, imbalance: callNet - putNet };
-  });
+export function wallGeometryFromLevels(neighborhood: number[], spot: number, levels: WallLevel[]): WallGeometry | null {
+  if (neighborhood.length === 0 || levels.length === 0) return null;
 
   let wall = levels[0];
   for (const l of levels) if (Math.abs(l.imbalance) > Math.abs(wall.imbalance)) wall = l;
@@ -366,16 +362,54 @@ export function wallEntrySignal(input: {
   const resistance = biggestWallAmong(strictlyAbove, levels);
   const support = biggestWallAmong(strictlyBelow, levels);
 
+  return {
+    type, wallStrike: wall.strike, wallMagnitude: Math.abs(wall.imbalance),
+    resistance, support, target1, target2,
+  };
+}
+
+/**
+ * Dirección y targets por la pared de dinero más grande del vecindario, no por
+ * quién gana en el strike centro. `null` sin vecindario o si la pared más
+ * grande tiene desbalance $0 (sin datos) — misma regla de "ante la duda, no
+ * operar" que el resto del agente.
+ */
+export function wallEntrySignal(input: {
+  strikes: number[];
+  spot: number;
+  strikePremiums: Map<number, StrikePremiums>;
+  count?: number;
+}): WallEntrySignal | null {
+  const { strikes, spot, strikePremiums } = input;
+  const count = input.count ?? WALL_NEIGHBOR_COUNT;
+  if (strikes.length === 0) return null;
+
+  const above = candidateStrikesForSide(strikes, spot, "above", count);
+  const below = candidateStrikesForSide(strikes, spot, "below", count);
+  const neighborhood = [...new Set([...above, ...below])];
+  if (neighborhood.length === 0) return null;
+
+  const levels: WallLevel[] = neighborhood.map((strike) => {
+    const level = strikePremiums.get(strike) ?? null;
+    const callNet = level?.call?.netPremium ?? 0;
+    const putNet = level?.put?.netPremium ?? 0;
+    return { strike, callNet, putNet, imbalance: callNet - putNet };
+  });
+
+  const geo = wallGeometryFromLevels(neighborhood, spot, levels);
+  if (!geo) return null;
+  const { type, wallStrike, wallMagnitude, resistance, support, target1, target2 } = geo;
+
   const sideWord = type === "call" ? "calls" : "puts";
   const sideLabel = type === "call" ? "call" : "put";
   const reason =
-    `La pared más grande del vecindario está en $${wall.strike} (${sideLabel} domina con ` +
-    `$${Math.abs(wall.imbalance).toFixed(0)} de desbalance real). Primer strike que confirma ${sideWord}: ` +
+    `La pared más grande del vecindario está en $${wallStrike} (${sideLabel} domina con ` +
+    `$${wallMagnitude.toFixed(0)} de desbalance real). Primer strike que confirma ${sideWord}: ` +
     `$${target1.strike} ($${target1.netPremium.toFixed(0)})` +
     (target2 ? `, y si rompe eso, el siguiente es $${target2.strike} ($${target2.netPremium.toFixed(0)}).` : ".");
 
   return {
-    type, wallStrike: wall.strike, wallMagnitude: Math.abs(wall.imbalance),
+    type, wallStrike, wallMagnitude,
     resistance, support, target1, target2, levels, reason,
   };
 }

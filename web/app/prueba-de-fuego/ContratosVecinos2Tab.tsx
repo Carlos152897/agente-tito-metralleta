@@ -11,11 +11,27 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import type { ZeroDteGex } from "@/lib/zerodte";
 import type { MagnetLevel, MagnetTarget, MagnetWallSignal } from "@/lib/magnetWall";
+import type { WallTarget } from "@/lib/neighborContracts";
 import { ZERO_DTE_TICKERS, DEFAULT_ZERO_DTE_TICKER, type ZeroDteTickerId } from "@/lib/zerodteTickers";
 import type { GexChainLine } from "./types";
 
 const REFRESH_MS = 60 * 1000;
 const KEY_TICKER = "visionary.contratosVecinos2.ticker";
+
+interface BestEntry {
+  type: "call" | "put";
+  resistance: WallTarget | null;
+  support: WallTarget | null;
+  target1: WallTarget | null;
+  target2: WallTarget | null;
+  reason: string;
+  /** "flow" = net premium real de MarketSnack (SPX/SPY/QQQ); "positioning" = Open Interest × gamma real de tastytrade, sin flujo (ES/NQ, CME). */
+  source: "flow" | "positioning";
+  target1Probability: number | null;
+  target2Probability: number | null;
+  resistanceProbability: number | null;
+  supportProbability: number | null;
+}
 
 interface MagnetWallResult {
   ticker: string;
@@ -28,12 +44,14 @@ interface MagnetWallResult {
   gex: ZeroDteGex;
   signal: MagnetWallSignal | null;
   chainLines: GexChainLine[];
+  bestEntry: BestEntry | null;
 }
 
 const dec = (v: number | null | undefined, d = 2) => (v == null ? "—" : v.toFixed(d));
 const pct = (v: number) => `${(v * 100).toFixed(0)}%`;
 const nf = new Intl.NumberFormat("en-US");
 const num = (v: number | null | undefined) => (v == null ? "—" : nf.format(v));
+const money0 = (n: number) => `${n < 0 ? "-" : ""}$${Math.abs(n).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
 const etTime = () =>
   new Date().toLocaleTimeString("en-US", { timeZone: "America/New_York", hour12: false });
 
@@ -185,6 +203,8 @@ export default function ContratosVecinos2Tab() {
         </div>
       )}
 
+      {data && hasTimeLeft && <BestEntryBox bestEntry={data.bestEntry} spot={data.spot} />}
+
       <p className="mw-foot">
         Se actualiza sola cada minuto. Dinero simulado — no es consejo financiero. La probabilidad de
         toque combina el movimiento esperado estadístico (IV + tiempo al cierre) con la agresividad real
@@ -257,6 +277,93 @@ function TargetsBox({
             </li>
           ))}
         </ul>
+      )}
+    </section>
+  );
+}
+
+/**
+ * "Mejor entrada" — pedido explícito de Carlos (ago 2026): un segundo
+ * veredicto, independiente del imán del GEX ("porque a veces el imán se
+ * mueve"), sobre la MISMA pared de dinero que ya usa "SPX vecinos"
+ * (`wallEntrySignal` en `lib/neighborContracts.ts`, walk de dominancia local
+ * por magnitud de net premium) — con probabilidad de toque agregada. Vive acá
+ * a propósito, al lado del panel del imán, para poder comparar las dos
+ * lecturas de un vistazo (ninguna pisa a la otra).
+ *
+ * En ES/NQ (pedido explícito de Carlos, ago 2026: "puedes usar tastytrade y
+ * darme la mejor entrada") `bestEntry.source` viene `"positioning"` — misma
+ * geometría, pero Open Interest × gamma real de tastytrade en vez de net
+ * premium ejecutado (MarketSnack no cubre CME) — se avisa explícito en vez de
+ * mezclarlo con la lectura de flujo real de SPX/SPY/QQQ.
+ */
+function BestEntryBox({ bestEntry, spot }: { bestEntry: BestEntry | null; spot: number }) {
+  return (
+    <section className="mw-entry">
+      <header>
+        <h2>Mejor entrada</h2>
+        <span className="mw-entry-hint">
+          Pared de dinero más fuerte del vecindario — independiente del imán, no se mueve si el imán se corre.
+        </span>
+      </header>
+
+      {!bestEntry ? (
+        <p className="mw-entry-empty">Sin pared clara ahora mismo — no hay desbalance real confirmado.</p>
+      ) : (
+        <>
+          <div className={`mw-entry-head mw-entry-head-${bestEntry.type}`}>
+            {bestEntry.type === "call" ? "🟢 COMPRÁ CALL" : "🔴 COMPRÁ PUT"}
+            {bestEntry.source === "positioning" && (
+              <span className="mw-entry-source" title="Sin flujo real de MarketSnack en CME — pared de Open Interest × gamma real de tastytrade, no compra/venta ejecutada.">
+                📐 posicionamiento (OI × gamma), sin flujo
+              </span>
+            )}
+          </div>
+
+          <div className="mw-entry-grid">
+            <div className="mw-entry-stat">
+              <div className="mw-entry-stat-label">Precio del activo</div>
+              <div className="mw-entry-stat-value">${dec(spot)}</div>
+            </div>
+            <div className="mw-entry-stat">
+              <div className="mw-entry-stat-label">Resistencia (techo)</div>
+              <div className="mw-entry-stat-value">{bestEntry.resistance ? `$${bestEntry.resistance.strike}` : "—"}</div>
+              {bestEntry.resistance && <div className="mw-entry-stat-sub">{money0(bestEntry.resistance.netPremium)}</div>}
+              {bestEntry.resistanceProbability != null && (
+                <div className="mw-entry-prob">{pct(bestEntry.resistanceProbability)} de tocarlo</div>
+              )}
+            </div>
+            <div className="mw-entry-stat">
+              <div className="mw-entry-stat-label">Soporte (piso)</div>
+              <div className="mw-entry-stat-value">{bestEntry.support ? `$${bestEntry.support.strike}` : "—"}</div>
+              {bestEntry.support && <div className="mw-entry-stat-sub">{money0(bestEntry.support.netPremium)}</div>}
+              {bestEntry.supportProbability != null && (
+                <div className="mw-entry-prob">{pct(bestEntry.supportProbability)} de tocarlo</div>
+              )}
+            </div>
+          </div>
+
+          <div className="mw-entry-grid">
+            <div className="mw-entry-stat">
+              <div className="mw-entry-stat-label">Target 1</div>
+              <div className="mw-entry-stat-value">{bestEntry.target1 ? `$${bestEntry.target1.strike}` : "—"}</div>
+              {bestEntry.target1 && <div className="mw-entry-stat-sub">{money0(bestEntry.target1.netPremium)}</div>}
+              {bestEntry.target1Probability != null && (
+                <div className="mw-entry-prob">{pct(bestEntry.target1Probability)} de tocarlo</div>
+              )}
+            </div>
+            <div className="mw-entry-stat">
+              <div className="mw-entry-stat-label">Target 2</div>
+              <div className="mw-entry-stat-value">{bestEntry.target2 ? `$${bestEntry.target2.strike}` : "—"}</div>
+              {bestEntry.target2 && <div className="mw-entry-stat-sub">{money0(bestEntry.target2.netPremium)}</div>}
+              {bestEntry.target2Probability != null && (
+                <div className="mw-entry-prob">{pct(bestEntry.target2Probability)} de tocarlo</div>
+              )}
+            </div>
+          </div>
+
+          <p className="mw-entry-reason">{bestEntry.reason}</p>
+        </>
       )}
     </section>
   );
@@ -491,4 +598,22 @@ const CSS = `
 .mw-target p { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.4; }
 
 .mw-foot { color: var(--faint); font-size: 12px; margin-top: 8px; line-height: 1.5; }
+
+.mw-entry { border: 1px solid var(--border); background: var(--panel); border-radius: 12px; padding: 16px 18px; margin: 0 0 16px; }
+.mw-entry header { margin-bottom: 12px; }
+.mw-entry h2 { margin: 0 0 2px; font-size: 15px; }
+.mw-entry-hint { font-size: 12px; color: var(--muted); }
+.mw-entry-empty { color: var(--faint); font-size: 13px; margin: 0; }
+.mw-entry-head { font-weight: 800; font-size: 18px; margin-bottom: 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mw-entry-head-call { color: var(--green-dark); }
+.mw-entry-head-put { color: #b42318; }
+.mw-entry-source { font-size: 11px; font-weight: 700; color: var(--muted); background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 999px; padding: 3px 9px; letter-spacing: 0; }
+.mw-entry-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 12px; }
+.mw-entry-stat { background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: 8px; padding: 10px 12px; }
+.mw-entry-stat-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin-bottom: 4px; }
+.mw-entry-stat-value { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.mw-entry-stat-sub { font-size: 11.5px; color: var(--faint); margin-top: 2px; }
+.mw-entry-prob { font-size: 11.5px; font-weight: 700; color: var(--accent); margin-top: 3px; }
+.mw-entry-reason { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
 `;

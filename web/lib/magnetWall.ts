@@ -18,7 +18,10 @@
 
 import { candidateStrikesForSide } from "./backtest";
 import { probTouch } from "./expectedMove";
-import type { StrikePremiums } from "./neighborContracts";
+import {
+  biggestWallAmong, profitSideOf, WALL_NEIGHBOR_COUNT,
+  type StrikePremiums, type WallLevel, type WallTarget,
+} from "./neighborContracts";
 
 /** "Al menos 10 contratos arriba y abajo" — pedido explícito de Carlos. */
 export const MAGNET_WALL_NEIGHBOR_COUNT = 10;
@@ -185,6 +188,142 @@ export function classifyPositioning(strike: number, level: PositioningLevel | nu
   const netCall = callSignal === "resistance" ? callGex : 0;
   const netPut = putSignal === "support" ? putGex : 0;
   return { strike, callNet: -netCall, putNet: -netPut, callSignal, putSignal, netBias: netPut - netCall, source: "positioning" };
+}
+
+// No extiende WallEntrySignal a propósito: acá target1 puede ser `null`
+// (pedido explícito de Carlos — ver más abajo, los targets NUNCA pueden ser
+// el mismo strike que resistencia/soporte), cosa que WallEntrySignal no
+// permite (ese contrato es de la pared de flujo real, ya validada en
+// producción — no se toca).
+export interface PositioningWallEntrySignal {
+  type: "call" | "put";
+  wallStrike: number;
+  wallMagnitude: number;
+  resistance: WallTarget | null;
+  support: WallTarget | null;
+  target1: WallTarget | null;
+  target2: WallTarget | null;
+  levels: WallLevel[];
+  reason: string;
+  /** Marca que esta "Mejor entrada" salió de Open Interest × gamma real (sin flujo de MarketSnack), no de net premium ejecutado — para que la UI aclare que es estructura, no compra/venta confirmada. */
+  source: "positioning";
+}
+
+/**
+ * "Mejor entrada" para productos SIN cobertura de MarketSnack (ES/NQ, CME) —
+ * pedido explícito de Carlos: "en futuros ES y NQ puedes usar tastytrade y
+ * darme la mejor entrada, según la información dada". Mismo concepto que
+ * `wallEntrySignal` (lib/neighborContracts.ts, "SPX vecinos"): la pared de
+ * dinero más fuerte del vecindario fija la dirección, independiente de dónde
+ * esté el imán del GEX. Acá "pared" es Open Interest × gamma real de
+ * tastytrade (`PositioningLevel`, los mismos nodos que ya calcula
+ * `zeroDteGex`) en vez de net premium ejecutado — mismo convenio de signo que
+ * ya usa `classifyPositioning`/`magnetWallSignal` para el respaldo de ES/NQ
+ * del panel del imán: más Open Interest de PUTS que de CALLS en un strike =
+ * soporte estructural = sesgo alcista (CALL); más Open Interest de CALLS que
+ * de PUTS = resistencia estructural = sesgo bajista (PUT). Mismo piso de
+ * ruido por percentil que ya usa esa ruta (`POSITIONING_WALL_PERCENTILE`) —
+ * sin él, cualquier strike con algo de Open Interest (casi todos) "confirma".
+ *
+ * NO reusa `wallGeometryFromLevels` para los targets (a diferencia de la
+ * pared de flujo real) — bug real encontrado en vivo (reportado por Carlos:
+ * "COMPRÁ CALL $7750" con el precio en $7774, target por DEBAJO del spot). La
+ * caminata de `wallEntrySignal` confirma targets por MISMO SIGNO que la pared
+ * (tiene sentido con flujo: más compra agresiva del mismo lado más lejos =
+ * momentum). Con posicionamiento no hay compra/venta — un chain normal SIEMPRE
+ * tiene más gamma de calls arriba del spot y de puts abajo, así que ese mismo
+ * chequeo casi nunca encuentra confirmación en el lado de la ganancia, y caía
+ * al respaldo de usar la pared misma como target — que puede estar del lado
+ * CONTRARIO al de la ganancia (el soporte que arma la tesis alcista, por
+ * definición, queda abajo del spot). Acá el target es la PRÓXIMA pared real
+ * (de cualquier lado — call o put, lo que importa es que haya fricción real
+ * ahí) caminando en el lado de la ganancia — nunca puede salir del lado
+ * contrario al spot.
+ */
+export function wallEntrySignalFromPositioning(input: {
+  strikes: number[];
+  spot: number;
+  positioningLevels: Map<number, PositioningLevel>;
+  count?: number;
+}): PositioningWallEntrySignal | null {
+  const { strikes, spot, positioningLevels } = input;
+  const count = input.count ?? WALL_NEIGHBOR_COUNT;
+  if (strikes.length === 0) return null;
+
+  const above = candidateStrikesForSide(strikes, spot, "above", count);
+  const below = candidateStrikesForSide(strikes, spot, "below", count);
+  const neighborhood = [...new Set([...above, ...below])];
+  if (neighborhood.length === 0) return null;
+
+  const magnitudes = neighborhood
+    .map((s) => positioningLevels.get(s))
+    .filter((p): p is PositioningLevel => p != null)
+    .flatMap((p) => [p.callGex, p.putGex])
+    .filter((v) => v > 0);
+  const threshold = percentile(magnitudes, POSITIONING_WALL_PERCENTILE);
+
+  const levels: WallLevel[] = neighborhood.map((strike) => {
+    const level = positioningLevels.get(strike) ?? null;
+    const callGex = (level?.callGex ?? 0) > threshold ? level!.callGex : 0;
+    const putGex = (level?.putGex ?? 0) > threshold ? level!.putGex : 0;
+    // Mismo convenio de signo que classifyPositioning: callNet/putNet negativos
+    // (como si fueran "venta") porque OI no dice compra/venta real, solo pared
+    // estructural. `imbalance = putGex - callGex` > 0 → soporte de puts domina → alcista.
+    return { strike, callNet: -callGex, putNet: -putGex, imbalance: putGex - callGex };
+  });
+
+  let wall = levels[0];
+  for (const l of levels) if (Math.abs(l.imbalance) > Math.abs(wall.imbalance)) wall = l;
+  if (wall.imbalance === 0) return null;
+  const type: "call" | "put" = wall.imbalance > 0 ? "call" : "put";
+
+  const strictlyAbove = neighborhood.filter((s) => s > spot).sort((a, b) => a - b);
+  const strictlyBelow = neighborhood.filter((s) => s < spot).sort((a, b) => b - a);
+  const resistance = biggestWallAmong(strictlyAbove, levels);
+  const support = biggestWallAmong(strictlyBelow, levels);
+
+  const profitSide = profitSideOf(type);
+  const sideStrikesOutward = profitSide === "above" ? strictlyAbove : strictlyBelow;
+  // El strike de resistencia/soporte NUNCA puede ser también un target —
+  // pedido explícito de Carlos ("no quiero que los targets sean los soportes
+  // y resistencias... quiero que los targets estén entre ellos"). Se excluye
+  // de la caminata: solo cuenta una pared REALMENTE intermedia, entre el spot
+  // y esa frontera.
+  const boundaryStrike = profitSide === "above" ? resistance?.strike : support?.strike;
+  const checkpoints: WallLevel[] = [];
+  for (const strike of sideStrikesOutward) {
+    if (strike === boundaryStrike) continue;
+    const l = levels.find((x) => x.strike === strike);
+    if (!l || l.imbalance === 0) continue; // sin pared real ahí (por debajo del piso de ruido)
+    checkpoints.push(l);
+    if (checkpoints.length >= 2) break;
+  }
+
+  // Sin pared intermedia real, `null` — mejor decir "sin target confirmado"
+  // que reusar resistencia/soporte como si fuera otra cosa (eso es justo lo
+  // que se pidió sacar).
+  const target1: WallTarget | null = checkpoints[0]
+    ? { strike: checkpoints[0].strike, netPremium: Math.abs(checkpoints[0].imbalance) }
+    : null;
+  const target2: WallTarget | null = checkpoints[1]
+    ? { strike: checkpoints[1].strike, netPremium: Math.abs(checkpoints[1].imbalance) }
+    : null;
+
+  const wallLabel = type === "call" ? "Open Interest de puts (soporte)" : "Open Interest de calls (resistencia)";
+  const reason =
+    `La pared de posicionamiento (Open Interest × gamma real de tastytrade) más fuerte del vecindario está en ` +
+    `$${wall.strike} (${wallLabel}, gamma $${Math.abs(wall.imbalance).toFixed(0)}). ` +
+    (target1
+      ? `Próxima pared real camino a la ganancia: $${target1.strike} (gamma $${target1.netPremium.toFixed(0)})` +
+        (target2 ? `, y más allá $${target2.strike} (gamma $${target2.netPremium.toFixed(0)}).` : ".")
+      : "Sin ninguna pared real entre el spot y ese nivel — no hay target intermedio confirmado todavía.") +
+    ` Sin flujo real de MarketSnack en CME — esto es estructura de Open Interest, no compra/venta confirmada.`;
+
+  return {
+    type, wallStrike: wall.strike, wallMagnitude: Math.abs(wall.imbalance),
+    resistance, support, target1, target2, levels, reason,
+    source: "positioning",
+  };
 }
 
 function reasonFor(lvl: MagnetLevel, dir: "call" | "put"): string {
