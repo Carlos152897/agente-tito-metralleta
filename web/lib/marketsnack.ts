@@ -6,6 +6,8 @@
 
 import type { RawTrade } from "./flow";
 import { loadCookie } from "./marketsnackCookie";
+import type { ActivitySummary } from "./contratosVecinos3";
+import { summarizeActivity } from "./contratosVecinos3";
 import type { ContractPremiumSummary, TradeSummaryBucket } from "./neighborContracts";
 import { summarizeTradeBuckets } from "./neighborContracts";
 import type { ExtendedChainContract, GexStatsBucket } from "./spxLevels";
@@ -331,6 +333,36 @@ export async function fetchContractPremiumSummaries(
       chunk.map(async (symbol) => {
         const buckets = await fetchContractTradeSummary(symbol, { period: opts.period });
         return [symbol, summarizeTradeBuckets(buckets)] as const;
+      }),
+    );
+    for (const [symbol, summary] of results) out.set(symbol, summary);
+  }
+
+  return out;
+}
+
+/**
+ * Igual que `fetchContractPremiumSummaries`, pero para "Contratos vecinos
+ * 3.0" (lib/contratosVecinos3.ts): resume con `summarizeActivity` en vez de
+ * `summarizeTradeBuckets` — a diferencia de esa, acá el `mid_premium` SÍ
+ * cuenta (es "Premium Traded" total, no solo la dirección) y se conserva una
+ * tendencia reciente (mitad más nueva de los buckets de hoy vs. la más
+ * vieja).
+ */
+export async function fetchContractActivitySummaries(
+  occSymbols: string[],
+  opts: { period?: string; concurrency?: number } = {},
+): Promise<Map<string, ActivitySummary>> {
+  const unique = [...new Set(occSymbols)];
+  const concurrency = opts.concurrency ?? 8;
+  const out = new Map<string, ActivitySummary>();
+
+  for (let i = 0; i < unique.length; i += concurrency) {
+    const chunk = unique.slice(i, i + concurrency);
+    const results = await Promise.all(
+      chunk.map(async (symbol) => {
+        const buckets = await fetchContractTradeSummary(symbol, { period: opts.period });
+        return [symbol, summarizeActivity(buckets)] as const;
       }),
     );
     for (const [symbol, summary] of results) out.set(symbol, summary);
