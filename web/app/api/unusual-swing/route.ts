@@ -13,7 +13,13 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const MIN_PREMIUM = 5_000_000;
-const MAX_PAGES = 8;
+// 8 páginas (~400 trades) truncaba el escaneo antes de terminar el flujo del
+// día en cuanto un ticker muy activo (ej. XSP) concentraba las operaciones
+// grandes más recientes — dejaba fuera todo lo demás sin avisar (ver
+// meta.truncated en page.tsx). Sin límite de tiempo de función serverless acá
+// (corre local, sin maxDuration/Vercel), así que el único costo de subirlo es
+// una espera más larga en el escaneo, no un riesgo de timeout.
+const MAX_PAGES = 25;
 const PERIOD = "1d";
 
 function sse(event: UnusualSwingSseEvent): string {
@@ -35,6 +41,12 @@ export async function GET() {
           period: PERIOD,
           minPremium: MIN_PREMIUM,
           maxPages: MAX_PAGES,
+          // isUnusualSwingCandidate ya exige aggression==="ask" (comprados
+          // agresivamente al ask) — pedirlo server-side (probado en vivo:
+          // "ASKSIDE" agrupa ASKSIDE+AT_ASK+ABOVE_ASK) saca del medio a la
+          // mitad de los trades (bid/mid) sin cambiar el criterio en nada,
+          // así el cupo de MAX_PAGES rinde el doble.
+          side: ["ASKSIDE"],
           onPage: (page, accumulated) => {
             send({ type: "step", label: `Página ${page} — ${accumulated} operaciones grandes` });
           },

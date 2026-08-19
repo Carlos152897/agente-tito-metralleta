@@ -17,6 +17,10 @@ export default function UnusualSwingPage() {
   const [busy, setBusy] = useState(false);
   const [steps, setSteps] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // Si el escaneo se corta antes de terminar el flujo del día (MAX_PAGES en la
+  // ruta), Carlos no tiene forma de saberlo salvo por esto — un ticker muy
+  // activo puede consumir el cupo de páginas y dejar afuera a todos los demás.
+  const [scanMeta, setScanMeta] = useState<{ scanned: number; pages: number; truncated: boolean } | null>(null);
   // OI EN VIVO por símbolo, para comparar contra el OI del momento en que se
   // detectó — así Carlos puede ver al día siguiente si el volumen de verdad se
   // sumó al Open Interest (posiciones nuevas reales) o si quedó en nada.
@@ -63,6 +67,7 @@ export default function UnusualSwingPage() {
           next = upsert(next, buildEntry(c, now));
         }
         applyFavorites(next);
+        setScanMeta(d.meta);
         setBusy(false);
         es.close();
       } else if (d.type === "error") {
@@ -119,6 +124,17 @@ export default function UnusualSwingPage() {
     },
     [applyFavorites],
   );
+
+  // Vacía toda la lista acumulada de una — para cuando quedó angosta (ej. un
+  // solo ticker) y Carlos prefiere arrancar de cero en vez de ir sacando de a
+  // uno con 👎. También limpia lo "descartado en esta sesión" para que un
+  // ticker recién vaciado pueda volver a aparecer si el próximo escaneo lo trae.
+  const clearAll = useCallback(() => {
+    if (favRef.current.length === 0) return;
+    if (!window.confirm(`¿Vaciar los ${favRef.current.length} contratos guardados? Esto no se puede deshacer.`)) return;
+    dismissedRef.current = new Set();
+    applyFavorites([]);
+  }, [applyFavorites]);
 
   const pin = useCallback(
     (symbol: string) => {
@@ -207,9 +223,14 @@ export default function UnusualSwingPage() {
           </p>
         </div>
 
-        <button className="rescan" onClick={scan} disabled={busy}>
-          {busy ? "Escaneando…" : "↻ Buscar más"}
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="rescan" onClick={scan} disabled={busy}>
+            {busy ? "Escaneando…" : "↻ Buscar más"}
+          </button>
+          <button className="rescan" onClick={clearAll} disabled={busy || favorites.length === 0}>
+            🗑 Vaciar lista
+          </button>
+        </div>
 
         {busy && (
           <div className="card wheel-empty">
@@ -217,6 +238,15 @@ export default function UnusualSwingPage() {
           </div>
         )}
         {error && <div className="error">⚠ {error}</div>}
+
+        {!busy && scanMeta?.truncated && (
+          <div className="error">
+            ⚠ El último escaneo se cortó a las {scanMeta.pages} páginas ({scanMeta.scanned.toLocaleString("en-US")}{" "}
+            operaciones ≥$5M) sin llegar al final del flujo del día — probablemente un ticker muy
+            activo concentró la mayoría de las operaciones grandes y le comió el cupo de páginas a
+            los demás. Puede haber contratos inusuales de otros tickers que este escaneo no llegó a ver.
+          </div>
+        )}
 
         {favorites.length === 0 && !busy && (
           <div className="card wheel-empty">Sin contratos guardados todavía.</div>

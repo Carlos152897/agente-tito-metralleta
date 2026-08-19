@@ -74,6 +74,13 @@ export interface FetchFlowOptions {
   /** Ventana de fecha exacta (YYYY-MM-DD, inclusive) — para reconstruir un día histórico. */
   dateGte?: string;
   dateLte?: string;
+  /**
+   * Filtro server-side por lado de ejecución — probado en vivo (2026-08-18):
+   * "ASKSIDE" ya agrupa ASKSIDE + AT_ASK + ABOVE_ASK (no hace falta pedir los 3).
+   * Reduce a la mitad los trades a paginar cuando el caller solo le interesa
+   * compra agresiva al ask (ej. unusual-swing) — mismo criterio, menos páginas.
+   */
+  side?: string[];
   onPage?: (page: number, accumulated: number) => void | Promise<void>;
 }
 
@@ -134,6 +141,9 @@ async function paginate(
     }
     if (opts.dateGte) params.set("filter[date][gte]", opts.dateGte);
     if (opts.dateLte) params.set("filter[date][lte]", opts.dateLte);
+    if (opts.side && opts.side.length > 0) {
+      for (const s of opts.side) params.append("filter[side][]", s);
+    }
     if (token) params.set("next_page_token", token);
     const url = `${BASE_URL}/api/flow_feed?${params.toString()}`;
 
