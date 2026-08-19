@@ -218,6 +218,13 @@ function SignalBox({ signal }: { signal: PersistentSignal }) {
             <div className="c3-chip-sub">venta de {signal.supportingWall.type === "call" ? "calls" : "puts"} · refuerza la tesis</div>
           </div>
         )}
+        {signal.breakoutWatch && (
+          <div className="c3-chip c3-chip-breakout">
+            <div className="c3-chip-label">Vigilar detrás de la pared</div>
+            <div className="c3-chip-value">${signal.breakoutWatch.strike}</div>
+            <div className="c3-chip-sub">compra real · necesita que ${signal.wallStrike} ceda primero</div>
+          </div>
+        )}
       </div>
       <p>{signal.reason}</p>
     </section>
@@ -236,7 +243,7 @@ function TargetChip({ label, target }: { label: string; target: Target | null })
 
 function ActivityTable({ title, levels, signal }: { title: string; levels: ActivityLevel[]; signal: ContratosVecinos3Signal | null }) {
   const keyStrikes = new Set(
-    [signal?.target1?.strike, signal?.target2?.strike, signal?.wallStrike, signal?.stopLoss?.strike].filter(
+    [signal?.target1?.strike, signal?.target2?.strike, signal?.wallStrike, signal?.stopLoss?.strike, signal?.breakoutWatch?.strike].filter(
       (s): s is number => s != null,
     ),
   );
@@ -327,6 +334,7 @@ const CSS = `
 .c3-chip-sub { font-size: 11.5px; color: var(--faint); margin-top: 2px; }
 .c3-chip-stop { border-color: var(--amber-border); }
 .c3-chip-support { border-color: var(--accent); }
+.c3-chip-breakout { border-color: var(--border-soft); border-style: dashed; }
 
 .c3-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; margin: 0 0 16px; }
 .c3-box { border: 1px solid var(--border); background: var(--panel); border-radius: 12px; padding: 16px 18px; }

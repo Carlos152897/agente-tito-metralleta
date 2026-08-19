@@ -199,21 +199,92 @@ describe("contratosVecinos3Signal — pared del lado contrario refuerza la tesis
   });
 });
 
+describe("contratosVecinos3Signal — compra real detrás de la pared del lado GANADOR (breakoutWatch)", () => {
+  it("sigue mirando detrás de la pared y expone la compra real como breakoutWatch, sin ascenderla a target", () => {
+    // Mismos números reales del caso de abajo (SPX 2026-08-14, 10:05 ET),
+    // pero con `above` vacío para aislar el comportamiento de UN solo lado
+    // (para que ese lado gane trivialmente, sin entrar en pickWinner).
+    const below: ActivityLevel[] = [
+      level(7805, "put", 11_355_381, -703_519), // pared: mucha plata, vendida
+      level(7800, "put", 13_608_254, 36_778), // detrás de la pared: compra real
+    ];
+    const signal = contratosVecinos3Signal({ spot: 7807.01, above: [], below });
+    expect(signal.type).toBe("put");
+    expect(signal.wallStrike).toBe(7805);
+    expect(signal.target1).toBeNull(); // sigue sin ser un target — la pared no se rompió
+    expect(signal.breakoutWatch?.strike).toBe(7800);
+    expect(signal.breakoutWatch?.netPremium).toBe(36_778);
+  });
+
+  it("sin compra real detrás de la pared, breakoutWatch queda null (comportamiento de antes, sin cambios)", () => {
+    const above: ActivityLevel[] = [
+      level(105, "call", 500_000, -300_000), // pared
+      level(110, "call", 400_000, -200_000), // también vendida, no confirma nada
+    ];
+    const signal = contratosVecinos3Signal({ spot: 100, above, below: [] });
+    expect(signal.wallStrike).toBe(105);
+    expect(signal.breakoutWatch).toBeNull();
+  });
+
+  it("con un target ya confirmado antes de la pared, breakoutWatch se sigue exponiendo aparte", () => {
+    const above: ActivityLevel[] = [
+      level(105, "call", 500_000, 300_000), // target confirmado
+      level(110, "call", 400_000, -250_000), // pared después del target
+      level(115, "call", 350_000, 150_000), // compra real detrás de esa pared
+    ];
+    const signal = contratosVecinos3Signal({ spot: 100, above, below: [] });
+    expect(signal.target1?.strike).toBe(105);
+    expect(signal.wallStrike).toBe(110);
+    expect(signal.breakoutWatch?.strike).toBe(115);
+  });
+});
+
+describe("contratosVecinos3Signal — compra real detrás de la pared del lado PERDEDOR (reversalWatch)", () => {
+  // Caso real: SPX 2026-08-14, 10:05 ET, spot $7807.01. El motor elige CALL
+  // porque la pared en $7810 (calls) acumuló más dólares ($14.2M) que la
+  // pared en $7805 (puts, $11.3M) — ninguno de los dos lados tenía target
+  // confirmado, así que ganó por magnitud de la pared. Pero DETRÁS de la
+  // pared de puts, en $7800, ya había compra real y CRECIENTE (net
+  // +$36,778, subió a +$425,017 hacia las 10:15) — antes esto era invisible
+  // porque solo se miraba el lado ganador.
+  it("expone la compra real del lado perdedor como reversalWatch, sin cambiar el veredicto principal", () => {
+    const above: ActivityLevel[] = [level(7810, "call", 14_221_439, -67_351)]; // gana por magnitud de la pared
+    const below: ActivityLevel[] = [
+      level(7805, "put", 11_355_381, -703_519), // pared del lado perdedor
+      level(7800, "put", 13_608_254, 36_778), // compra real detrás de ESA pared
+    ];
+    const signal = contratosVecinos3Signal({ spot: 7807.01, above, below });
+    expect(signal.type).toBe("call"); // el veredicto no cambia
+    expect(signal.wallStrike).toBe(7810);
+    expect(signal.breakoutWatch).toBeNull(); // el lado ganador no tiene nada detrás de su propia pared
+    expect(signal.reversalWatch?.strike).toBe(7800);
+    expect(signal.reversalWatch?.type).toBe("put");
+    expect(signal.reversalWatch?.netPremium).toBe(36_778);
+  });
+
+  it("sin compra real detrás de la pared del perdedor, reversalWatch queda null", () => {
+    const above: ActivityLevel[] = [level(105, "call", 500_000, -300_000)]; // gana, sin nada raro
+    const below: ActivityLevel[] = [level(95, "put", 400_000, -200_000)]; // pierde, pared sin compra detrás
+    const signal = contratosVecinos3Signal({ spot: 100, above, below });
+    expect(signal.reversalWatch).toBeNull();
+  });
+});
+
 describe("applyPersistence", () => {
   const call: ContratosVecinos3Signal = {
     type: "call", target1: { strike: 105, totalPremium: 500_000, netPremium: 300_000 }, target2: null,
-    capStrike: null, wallStrike: null, stopLoss: null, supportingWall: null, reason: "call",
+    capStrike: null, wallStrike: null, stopLoss: null, supportingWall: null, breakoutWatch: null, reversalWatch: null, reason: "call",
   };
   const callUpgraded: ContratosVecinos3Signal = {
     ...call, target1: { strike: 110, totalPremium: 480_000, netPremium: 250_000 },
   };
   const put: ContratosVecinos3Signal = {
     type: "put", target1: { strike: 95, totalPremium: 500_000, netPremium: 300_000 }, target2: null,
-    capStrike: null, wallStrike: null, stopLoss: null, supportingWall: null, reason: "put",
+    capStrike: null, wallStrike: null, stopLoss: null, supportingWall: null, breakoutWatch: null, reversalWatch: null, reason: "put",
   };
   const noTarget: ContratosVecinos3Signal = {
     type: null, target1: null, target2: null, capStrike: null, wallStrike: null, stopLoss: null,
-    supportingWall: null, reason: "nada",
+    supportingWall: null, breakoutWatch: null, reversalWatch: null, reason: "nada",
   };
 
   it(`con menos de ${PERSISTENCE_REQUIRED} lecturas, nunca está confirmado`, () => {

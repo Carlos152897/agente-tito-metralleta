@@ -126,6 +126,16 @@ interface SideWalk {
   targets: ContratosVecinos3Target[];
   /** Strike donde la pared de venta (actividad alta + net premium en contra) frenó el camino, si pasó. */
   wallStrike: number | null;
+  /**
+   * Compra real (actividad alta + net premium positivo) encontrada DETRÁS de
+   * la primera pared — no se promueve a target porque el precio necesita
+   * romper la pared antes de llegar ahí, pero es evidencia real que vale la
+   * pena vigilar. Caso real: SPX 2026-08-14, 10:05 ET, spot $7807 — el put
+   * $7805 (más cercano) era pared vendida y frenaba el camino, pero el put
+   * $7800, un strike más atrás, tenía compra agresiva real y CRECIENTE
+   * (net premium +$36,778 y subiendo cada 5 min) que antes quedaba invisible.
+   */
+  beyondWall: ContratosVecinos3Target | null;
   /** Strike donde el Premium Traded empezó a caer justo después del último target — probable máximo. */
   capStrike: number | null;
   /** Primer strike de actividad baja (posible stop-loss), confirmado con net premium negativo ahí. */
@@ -155,7 +165,9 @@ interface SideWalk {
  * serlo respecto a dónde está el dinero de verdad.
  */
 function walkSide(levels: ActivityLevel[], type: "call" | "put", globalMaxPremium: number): SideWalk {
-  const empty: SideWalk = { type, targets: [], wallStrike: null, capStrike: null, lowActivity: null, leadPremium: 0 };
+  const empty: SideWalk = {
+    type, targets: [], wallStrike: null, beyondWall: null, capStrike: null, lowActivity: null, leadPremium: 0,
+  };
   if (levels.length === 0) return empty;
 
   const maxPremium = Math.max(...levels.map((l) => l.activity.totalPremium));
@@ -163,6 +175,7 @@ function walkSide(levels: ActivityLevel[], type: "call" | "put", globalMaxPremiu
 
   const targets: ContratosVecinos3Target[] = [];
   let wallStrike: number | null = null;
+  let beyondWall: ContratosVecinos3Target | null = null;
   let leadPremium = 0;
   let stopIndex = -1;
 
@@ -173,15 +186,24 @@ function walkSide(levels: ActivityLevel[], type: "call" | "put", globalMaxPremiu
     if (leadPremium === 0) leadPremium = lvl.activity.totalPremium;
 
     if (lvl.activity.netPremium > 0) {
-      targets.push({ strike: lvl.strike, totalPremium: lvl.activity.totalPremium, netPremium: lvl.activity.netPremium });
-      stopIndex = i;
-      if (targets.length >= MAX_TARGETS) break;
-    } else {
+      if (wallStrike == null) {
+        targets.push({ strike: lvl.strike, totalPremium: lvl.activity.totalPremium, netPremium: lvl.activity.netPremium });
+        stopIndex = i;
+        if (targets.length >= MAX_TARGETS) break;
+      } else {
+        // Ya pasamos una pared real — esto NO es un target (el precio
+        // primero tiene que romper la pared), pero es compra real que antes
+        // quedaba invisible porque el camino frenaba en la primera pared.
+        beyondWall = { strike: lvl.strike, totalPremium: lvl.activity.totalPremium, netPremium: lvl.activity.netPremium };
+        break;
+      }
+    } else if (wallStrike == null) {
       // Actividad alta pero vendida agresivamente = pared real (resistencia si
-      // es call, soporte si es put) — frena el camino, no confirma como target.
+      // es call, soporte si es put). Antes esto frenaba el camino del todo;
+      // ahora solo deja de contar targets nuevos — se sigue mirando un poco
+      // más allá por si hay compra real detrás (`beyondWall`).
       wallStrike = lvl.strike;
       stopIndex = i;
-      break;
     }
   }
 
@@ -210,7 +232,7 @@ function walkSide(levels: ActivityLevel[], type: "call" | "put", globalMaxPremiu
     }
   }
 
-  return { type, targets, wallStrike, capStrike, lowActivity, leadPremium };
+  return { type, targets, wallStrike, beyondWall, capStrike, lowActivity, leadPremium };
 }
 
 export interface SupportingWall {
@@ -218,6 +240,11 @@ export interface SupportingWall {
   type: "call" | "put";
   label: "resistencia" | "soporte";
   netPremium: number;
+}
+
+/** Compra real detrás de la pared del lado PERDEDOR (ver `ContratosVecinos3Signal.reversalWatch`). */
+export interface ReversalWatch extends ContratosVecinos3Target {
+  type: "call" | "put";
 }
 
 export interface ContratosVecinos3Signal {
@@ -240,6 +267,23 @@ export interface ContratosVecinos3Signal {
    * real del lado contrario todavía.
    */
   supportingWall: SupportingWall | null;
+  /**
+   * Compra real detrás de la primera pared del lado GANADOR (ver
+   * `SideWalk.beyondWall`) — informativo, no un target: el precio necesita
+   * romper la pared antes de que este nivel sea alcanzable.
+   */
+  breakoutWatch: ContratosVecinos3Target | null;
+  /**
+   * Compra real detrás de la pared del lado PERDEDOR — caso real: SPX
+   * 2026-08-14, 10:05 ET, spot $7807.01. El lado CALL ganó (pared en $7810
+   * con más dólares acumulados que la pared PUT en $7805), pero detrás de esa
+   * pared PUT ya había compra real y CRECIENTE en $7800 (net premium
+   * +$36,778, subiendo cada 5 min) — invisible antes porque solo se miraba
+   * el lado ganador. Distinto de `supportingWall` (que es una pared VENDIDA
+   * del lado perdedor, reforzando la tesis actual): esto es compra real del
+   * lado perdedor, una posible reversión gestándose.
+   */
+  reversalWatch: ReversalWatch | null;
   reason: string;
 }
 
@@ -290,7 +334,7 @@ export function contratosVecinos3Signal(input: ContratosVecinos3Input): Contrato
   if (above.leadPremium <= 0 && below.leadPremium <= 0) {
     return {
       type: null, target1: null, target2: null, capStrike: null, wallStrike: null, stopLoss: null,
-      supportingWall: null,
+      supportingWall: null, breakoutWatch: null, reversalWatch: null,
       reason: "Sin actividad real (Premium Traded) suficiente en el vecindario todavía — no operar.",
     };
   }
@@ -329,10 +373,19 @@ export function contratosVecinos3Signal(input: ContratosVecinos3Input): Contrato
   if (stopLoss) {
     reason += ` Zona de baja actividad en $${stopLoss.strike} (${stopLoss.type === "call" ? "calls" : "puts"}) con net premium negativo — referencia de stop-loss.`;
   }
+  if (winner.beyondWall) {
+    reason += ` Detrás de la pared, ya hay compra real acumulándose en $${winner.beyondWall.strike} — vigilar si la pared en $${winner.wallStrike} cede.`;
+  }
+  const reversalWatch: ReversalWatch | null = loser.beyondWall ? { ...loser.beyondWall, type: loser.type } : null;
+  if (reversalWatch) {
+    const loserSideWord = loser.type === "call" ? "calls" : "puts";
+    reason += ` Ojo: del otro lado, detrás de su propia pared, ya hay compra real de ${loserSideWord} en $${reversalWatch.strike} — posible reversión gestándose.`;
+  }
 
   return {
     type: winner.type, target1: t1, target2: t2,
-    capStrike: winner.capStrike, wallStrike: winner.wallStrike, stopLoss, supportingWall, reason,
+    capStrike: winner.capStrike, wallStrike: winner.wallStrike, stopLoss, supportingWall,
+    breakoutWatch: winner.beyondWall, reversalWatch, reason,
   };
 }
 
@@ -363,7 +416,7 @@ export interface PersistentSignal extends ContratosVecinos3Signal {
 
 const EMPTY_SIGNAL: ContratosVecinos3Signal = {
   type: null, target1: null, target2: null, capStrike: null, wallStrike: null, stopLoss: null,
-  supportingWall: null, reason: "Sin lecturas todavía.",
+  supportingWall: null, breakoutWatch: null, reversalWatch: null, reason: "Sin lecturas todavía.",
 };
 
 /**
