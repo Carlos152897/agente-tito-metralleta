@@ -6,6 +6,7 @@ import type { ConePoint } from "@/lib/expectedMove";
 import { buildScales, packLabels, smartDomain } from "@/lib/chartGeometry";
 import type { Padding } from "@/lib/chartGeometry";
 import ChartCrosshair, { type HoverInfo } from "./ChartCrosshair";
+import { useLocale } from "@/lib/i18n";
 import { px } from "../../format";
 
 /** Una ruta proyectada (escenario). Los puntos van de t=0 al horizonte, equiespaciados. */
@@ -109,6 +110,7 @@ export default function PriceChart({
   theme, height, animate = false, showCone1 = false, showSpot = true,
 }: PriceChartProps) {
   const uid = useId().replace(/[^a-zA-Z0-9]/g, "");
+  const { t: tr } = useLocale();
   const t = THEMES[theme];
   const hostRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -159,7 +161,7 @@ export default function PriceChart({
     const items = targets.map((x) => ({ ...x, y: scales.yOfPrice(x.price) }));
     if (showSpot && spot > 0) {
       items.push({
-        key: "__spot", price: spot, label: "Ahora", sublabel: undefined,
+        key: "__spot", price: spot, label: tr("chart.now"), sublabel: undefined,
         color: theme === "dark" ? "#8593ad" : "#667085", weight: 0,
         bandColor: undefined, y: scales.yOfPrice(spot),
       });
@@ -253,7 +255,7 @@ export default function PriceChart({
             stroke={t.divider} strokeWidth={1} strokeDasharray="3 3"
           />
           <text className="pc-now" x={scales.xNow + 5} y={scales.plotTop + 9} fill={t.nowText}>
-            AHORA
+            {tr("chart.now").toUpperCase()}
           </text>
 
           {/* 3 · bandas de heatmap por target (solo Pro) */}

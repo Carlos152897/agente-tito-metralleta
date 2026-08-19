@@ -1,6 +1,7 @@
 "use client";
 
 import type { AggressionScore, ConvictionScore } from "@/lib/flow";
+import { useLocale } from "@/lib/i18n";
 
 interface Category {
   key: string;
@@ -30,13 +31,14 @@ export default function ScorecardPanel({
   ivContext?: { score: number } | null;
   validation?: { score: number } | null;
 }) {
+  const { t } = useLocale();
   const categories: Category[] = [
-    { key: "agr", name: "Agresividad", weight: 20, question: "¿Compran al ask con fuerza?", score: aggression?.score ?? null },
-    { key: "con", name: "Convicción", weight: 20, question: "¿Cuánto dinero real entró?", score: conviction?.score ?? null },
-    { key: "inu", name: "Inusualidad", weight: 20, question: "¿Es flujo anormal?", score: unusuality?.score ?? null },
-    { key: "est", name: "Estructura", weight: 15, question: "¿Strike/DTE de convicción o lotería?", score: structure?.score ?? null },
-    { key: "iv", name: "Contexto IV", weight: 10, question: "¿IV limpia o inflada?", score: ivContext?.score ?? null },
-    { key: "cnf", name: "Confirmación de Precio", weight: 15, question: "¿El precio valida o absorbe?", score: validation?.score ?? null },
+    { key: "agr", name: t("categories.agrName"), weight: 20, question: t("categories.agrQ"), score: aggression?.score ?? null },
+    { key: "con", name: t("categories.conName"), weight: 20, question: t("categories.conQ"), score: conviction?.score ?? null },
+    { key: "inu", name: t("categories.inuName"), weight: 20, question: t("categories.inuQ"), score: unusuality?.score ?? null },
+    { key: "est", name: t("categories.estName"), weight: 15, question: t("categories.estQ"), score: structure?.score ?? null },
+    { key: "iv", name: t("categories.ivName"), weight: 10, question: t("categories.ivQ"), score: ivContext?.score ?? null },
+    { key: "cnf", name: t("categories.cnfName"), weight: 15, question: t("categories.cnfQ"), score: validation?.score ?? null },
   ];
 
   const active = categories.filter((c) => c.score != null);
@@ -46,14 +48,14 @@ export default function ScorecardPanel({
   return (
     <section className="scpanel">
       <div className="scpanel-head">
-        <h2>Options Flow Scorecard</h2>
+        <h2>{t("scorecard.title")}</h2>
         <div className="scpanel-total">
           {active.length === categories.length ? (
-            <>Total <b>{Math.round(activePts)}</b> / 100</>
+            <>{t("scorecard.totalOf", { n: Math.round(activePts) })}</>
           ) : (
             <span className="muted">
-              — / 100 · <b>{active.length}/{categories.length}</b> categorías activas
-              {active.length > 0 && <> · {Math.round(activePts)}/{activeWeight} pts activos</>}
+              — / 100 · <b>{t("scorecard.activeCategories", { active: active.length, total: categories.length })}</b>
+              {active.length > 0 && <>{t("scorecard.activePts", { pts: Math.round(activePts), weight: activeWeight })}</>}
             </span>
           )}
         </div>
@@ -69,10 +71,10 @@ export default function ScorecardPanel({
               {on ? (
                 <div className="sccat-score">
                   {c.score}<span className="sccat-den">/10</span>
-                  <span className="sccat-pts">→ {pts!.toFixed(1)}/{c.weight} pts</span>
+                  <span className="sccat-pts">{t("scorecard.ptsOf", { pts: pts!.toFixed(1), weight: c.weight })}</span>
                 </div>
               ) : (
-                <div className="sccat-score pending">— <span className="sccat-den">pendiente</span></div>
+                <div className="sccat-score pending">— <span className="sccat-den">{t("scorecard.pending")}</span></div>
               )}
             </div>
           );

@@ -1,16 +1,17 @@
 "use client";
 
 import type { IvContextScore } from "@/lib/ivcontext";
+import { useLocale, type LocaleCtx } from "@/lib/i18n";
 import { int, money, px } from "../format";
 
-const REGIME_LABEL: Record<string, string> = {
-  dormida: "Acción dormida",
-  compresion: "Volatilidad comprimida",
-  expansion: "Volatilidad estirada",
-  inflada: "Prima inflada",
-  normal: "Volatilidad normal",
-  desconocido: "Sin contexto",
-};
+function regimeLabel(r: string, t: LocaleCtx["t"]): string {
+  const key = ({
+    dormida: "ivContext.regimeDormida", compresion: "ivContext.regimeCompresion",
+    expansion: "ivContext.regimeExpansion", inflada: "ivContext.regimeInflada",
+    normal: "ivContext.regimeNormal", desconocido: "ivContext.regimeDesconocido",
+  } as Record<string, string>)[r];
+  return key ? t(key) : r;
+}
 
 function ivColor(ivPct: number): string {
   if (ivPct >= 90) return "#f04438";
@@ -30,6 +31,7 @@ function expLabel(expiration: string | null, dte: number | null): string {
  * por vencimiento y los contratos de mayor IV, más el IV Rank y su régimen.
  */
 export default function IvContextCard({ s }: { s: IvContextScore }) {
+  const { t } = useLocale();
   const cls = s.score >= 7 ? "up" : s.score <= 3 ? "down" : "neutral";
   const maxIvExp = Math.max(...s.byExpiration.map((e) => e.avgIv), 1);
 
@@ -37,28 +39,28 @@ export default function IvContextCard({ s }: { s: IvContextScore }) {
     <>
       <section className="scorecard cv-card">
         <div className="score-main">
-          <div className="score-cat">Contexto IV</div>
+          <div className="score-cat">{t("ivContext.title")}</div>
           <div className={`score-num ${cls}`}>{s.score}<span className="score-den">/10</span></div>
-          <div className="score-q">¿IV limpia o inflada?</div>
+          <div className="score-q">{t("ivContext.q")}</div>
         </div>
 
         <div className="score-detail">
-          <div className={`score-verdict ${cls}`}>{REGIME_LABEL[s.regime] ?? s.regime}</div>
+          <div className={`score-verdict ${cls}`}>{regimeLabel(s.regime, t)}</div>
 
           <div className="cv-metrics">
             <div className="cv-metric">
-              <div className="cv-metric-label">IV actual</div>
+              <div className="cv-metric-label">{t("ivContext.currentIv")}</div>
               <div className="cv-metric-value" style={{ color: s.iv.current != null ? ivColor(s.iv.current) : undefined }}>
                 {s.iv.current != null ? `${s.iv.current.toFixed(1)}%` : "—"}
               </div>
               <div className="cv-metric-pts">{s.iv.points}<span className="muted">/10</span></div>
               <div className="cv-metric-hint muted">
-                {s.iv.band} · ponderada por premium
+                {s.iv.band} {t("ivContext.weighted")}
               </div>
             </div>
 
             <div className="cv-metric">
-              <div className="cv-metric-label">IV Rank</div>
+              <div className="cv-metric-label">{t("ivContext.ivRank")}</div>
               <div className="cv-metric-value">
                 {s.rank.value != null ? `${s.rank.value.toFixed(0)}%` : "—"}
               </div>
@@ -66,19 +68,19 @@ export default function IvContextCard({ s }: { s: IvContextScore }) {
               <div className="cv-metric-hint muted">
                 {s.rank.band}
                 {s.rank.low != null && s.rank.high != null &&
-                  ` · rango ${s.rank.low.toFixed(0)}-${s.rank.high.toFixed(0)}%`}
+                  t("ivContext.range", { lo: s.rank.low.toFixed(0), hi: s.rank.high.toFixed(0) })}
               </div>
             </div>
 
             <div className="cv-metric">
-              <div className="cv-metric-label">Skew del frente</div>
+              <div className="cv-metric-label">{t("ivContext.frontSkew")}</div>
               <div className="cv-metric-value" style={{ color: (s.frontSkew ?? 0) > 10 ? "#f04438" : undefined }}>
                 {s.frontSkew != null ? `${s.frontSkew >= 0 ? "+" : ""}${s.frontSkew.toFixed(1)} pts` : "—"}
               </div>
               <div className="cv-metric-hint muted">
                 {s.frontSkew != null && s.frontSkew > 10
-                  ? "el vencimiento cercano cotiza mucho más caro: evento encima"
-                  : "vencimiento cercano vs el resto"}
+                  ? t("ivContext.frontSkewHint")
+                  : t("ivContext.frontSkewNormal")}
               </div>
             </div>
           </div>
@@ -87,23 +89,19 @@ export default function IvContextCard({ s }: { s: IvContextScore }) {
 
           {s.iv.special && (
             <div className="iv-special">
-              ⚠ <b>Categoría especial del documento:</b> IV ≥100%. La prima está tan inflada
-              que el movimiento suele estar ya descontado — comprar aquí es apostar a que
-              el movimiento supere lo que el mercado ya pagó.
+              ⚠ <b>{t("ivContext.specialTitle")}</b>{t("ivContext.specialDetail")}
             </div>
           )}
 
           <div className="iv-source muted">
-            IV Rank calculado con{" "}
+            {t("ivContext.rankSourceLead")}{" "}
             {s.rank.source === "iv-history"
-              ? <><b>historial propio de IV</b> — {s.rank.days} días acumulados</>
+              ? <><b>{t("ivContext.rankHistory")}</b>{t("ivContext.rankHistoryDays", { n: s.rank.days })}</>
               : s.rank.source === "realized-proxy"
                 ? <>
-                    <b>proxy de volatilidad realizada</b> ({s.rank.days} días del subyacente).
-                    Ninguna fuente nos vende 52 semanas de IV histórica, así que se guarda una
-                    foto diaria: a los 60 días el rank real reemplaza al proxy.
+                    <b>{t("ivContext.rankProxy")}</b>{t("ivContext.rankProxyDetail", { n: s.rank.days })}
                   </>
-                : "sin historia suficiente"}
+                : t("ivContext.rankNone")}
           </div>
         </div>
       </section>
@@ -111,19 +109,19 @@ export default function IvContextCard({ s }: { s: IvContextScore }) {
       {s.byExpiration.length > 0 && (
         <div className="clusters">
           <h2 className="clusters-title">
-            IV promedio por fecha de vencimiento
-            <span className="muted"> — {s.iv.contracts} contratos con IV</span>
+            {t("ivContext.byExpiration")}
+            <span className="muted">{t("ivContext.contractsWithIv", { n: s.iv.contracts })}</span>
           </h2>
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Vencimiento</th>
-                  <th className="num">Trades</th>
-                  <th className="num">IV promedio</th>
-                  <th className="num">IV máxima</th>
-                  <th className="num">Premium</th>
-                  <th>Nivel</th>
+                  <th>{t("ivContext.expiration")}</th>
+                  <th className="num">{t("ivContext.trades")}</th>
+                  <th className="num">{t("ivContext.avgIv")}</th>
+                  <th className="num">{t("ivContext.maxIv")}</th>
+                  <th className="num">{t("ivContext.premium")}</th>
+                  <th>{t("ivContext.level")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -152,19 +150,19 @@ export default function IvContextCard({ s }: { s: IvContextScore }) {
       {s.topContracts.length > 0 && (
         <div className="clusters">
           <h2 className="clusters-title">
-            Contratos con mayor IV
-            <span className="muted"> — donde el mercado paga más por el movimiento</span>
+            {t("ivContext.topContracts")}
+            <span className="muted">{t("ivContext.topContractsSub")}</span>
           </h2>
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Contrato</th>
-                  <th>Tipo</th>
-                  <th>Vencimiento</th>
+                  <th>{t("ivContext.contract")}</th>
+                  <th>{t("ivContext.type")}</th>
+                  <th>{t("ivContext.expiration")}</th>
                   <th className="num">IV</th>
-                  <th className="num">Contratos</th>
-                  <th className="num">Premium</th>
+                  <th className="num">{t("optionChain.contracts")}</th>
+                  <th className="num">{t("ivContext.premium")}</th>
                 </tr>
               </thead>
               <tbody>

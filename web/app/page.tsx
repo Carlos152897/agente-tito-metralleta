@@ -344,12 +344,12 @@ export default function Dashboard() {
 
   // Los promedios de cada sub-agente = las señales del sentiment (y de Prediction Pro).
   const sentimentParts: SentimentPart[] = [
-    { name: "Agresividad", note: "¿Compran al ask con fuerza?", score: aggScore?.score ?? null, weight: 20 },
-    { name: "Convicción", note: "¿Cuánto dinero real entró?", score: conviction?.score ?? null, weight: 20 },
-    { name: "Inusualidad", note: "¿Es flujo anormal? (griegos)", score: unusuality?.score ?? null, weight: 20 },
-    { name: "Estructura", note: "¿Dónde se acumula el dinero?", score: structure?.score ?? null, weight: 15 },
-    { name: "Contexto IV", note: "¿IV limpia o inflada?", score: ivContext?.score ?? null, weight: 10 },
-    { name: "Confirmación de Precio", note: "¿El precio valida o absorbe?", score: validation?.score ?? null, weight: 15 },
+    { name: t("categories.agrName"), note: t("categories.agrQ"), score: aggScore?.score ?? null, weight: 20 },
+    { name: t("categories.conName"), note: t("categories.conQ"), score: conviction?.score ?? null, weight: 20 },
+    { name: t("categories.inuName"), note: t("categories.inuQ"), score: unusuality?.score ?? null, weight: 20 },
+    { name: t("categories.estName"), note: t("categories.estQ"), score: structure?.score ?? null, weight: 15 },
+    { name: t("categories.ivName"), note: t("categories.ivQ"), score: ivContext?.score ?? null, weight: 10 },
+    { name: t("categories.cnfName"), note: t("categories.cnfQ"), score: validation?.score ?? null, weight: 15 },
   ];
 
   return (

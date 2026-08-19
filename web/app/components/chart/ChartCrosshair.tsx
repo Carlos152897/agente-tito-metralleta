@@ -1,6 +1,7 @@
 "use client";
 
 import type { TfBar } from "@/lib/types";
+import { useLocale } from "@/lib/i18n";
 import { px } from "../../format";
 
 export interface HoverInfo {
@@ -36,6 +37,7 @@ export default function ChartCrosshair({
   plotLeft: number;
   plotRight: number;
 }) {
+  const { t } = useLocale();
   if (!hover) return null;
   const flip = hover.x > (plotLeft + plotRight) / 2;
 
@@ -58,16 +60,16 @@ export default function ChartCrosshair({
           <>
             <div className="pc-tip-head">{dayLabel(hover.bar.time)}</div>
             <div className="pc-tip-grid">
-              <span>A</span><b>${px.format(hover.bar.open)}</b>
-              <span>M</span><b>${px.format(hover.bar.high)}</b>
-              <span>m</span><b>${px.format(hover.bar.low)}</b>
-              <span>C</span><b>${px.format(hover.bar.close)}</b>
+              <span>{t("chart.ohlcO")}</span><b>${px.format(hover.bar.open)}</b>
+              <span>{t("chart.ohlcH")}</span><b>${px.format(hover.bar.high)}</b>
+              <span>{t("chart.ohlcL")}</span><b>${px.format(hover.bar.low)}</b>
+              <span>{t("chart.ohlcC")}</span><b>${px.format(hover.bar.close)}</b>
             </div>
           </>
         ) : (
           <>
             <div className="pc-tip-head">
-              {hover.tDays != null ? `en ${Math.round(hover.tDays)} días` : "proyección"}
+              {hover.tDays != null ? t("chart.inDays", { n: Math.round(hover.tDays) }) : t("chart.projection")}
             </div>
             <div className="pc-tip-price">${px.format(hover.price)}</div>
           </>

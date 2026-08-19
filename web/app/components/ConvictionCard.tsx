@@ -1,14 +1,14 @@
 "use client";
 
 import { EXECUTION_LABEL, spreadPct, type ConvictionScore, type ExecutionLevel, type FlowRow } from "@/lib/flow";
+import { useLocale, type LocaleCtx } from "@/lib/i18n";
 import { int, money, px } from "../format";
 
-const STATUS_LABEL: Record<FlowRow["expiryStatus"], string> = {
-  expirado: "Expirado",
-  expira_hoy: "Expira hoy",
-  vigente: "Vigente",
-  desconocido: "—",
-};
+function statusLabel(s: FlowRow["expiryStatus"], t: LocaleCtx["t"]): string {
+  return s === "expirado" ? t("conviction.expired")
+    : s === "expira_hoy" ? t("conviction.expiresToday")
+    : s === "vigente" ? t("conviction.active") : "—";
+}
 
 const ASK = "#3fd07a";
 const BID = "#ff6b6b";
@@ -33,26 +33,27 @@ function Metric({ label, value, points, hint }: { label: string; value: string; 
 }
 
 export default function ConvictionCard({ conviction }: { conviction: ConvictionScore }) {
+  const { t } = useLocale();
   const { score, spread, dominance, execution, n } = conviction;
-  const domSide = dominance.side === "ask" ? "compra" : "venta";
+  const domSide = dominance.side === "ask" ? t("conviction.buy") : t("conviction.sell");
   const domColor = dominance.side === "ask" ? ASK : BID;
 
   const cls = score >= 7 ? "up" : score <= 3 ? "down" : "neutral";
   const verdict =
-    n === 0 ? "Sin datos"
-      : score >= 8 ? "Convicción muy alta"
-        : score >= 6 ? "Convicción alta"
-          : score >= 4 ? "Convicción media"
-            : "Convicción baja";
+    n === 0 ? t("conviction.noData")
+      : score >= 8 ? t("conviction.veryHigh")
+        : score >= 6 ? t("conviction.high")
+          : score >= 4 ? t("conviction.mid")
+            : t("conviction.low");
 
   const totalLevels = LEVEL_ORDER.reduce((s, l) => s + execution.counts[l], 0);
 
   return (
     <section className="scorecard cv-card">
       <div className="score-main">
-        <div className="score-cat">Convicción</div>
+        <div className="score-cat">{t("conviction.title")}</div>
         <div className={`score-num ${cls}`}>{score}<span className="score-den">/10</span></div>
-        <div className="score-q">¿Cuánto dinero real entró?</div>
+        <div className="score-q">{t("conviction.q")}</div>
       </div>
 
       <div className="score-detail">
@@ -60,22 +61,22 @@ export default function ConvictionCard({ conviction }: { conviction: ConvictionS
 
         <div className="cv-metrics">
           <Metric
-            label="Spread"
+            label={t("conviction.spread")}
             value={spread.avgPct != null ? `${spread.avgPct.toFixed(2)}%` : "—"}
             points={spread.points}
-            hint={spread.avgPct == null ? "sin quotes" : spread.avgPct < 2 ? "muy líquido" : spread.avgPct <= 5 ? "aceptable" : "ancho"}
+            hint={spread.avgPct == null ? t("conviction.noQuotes") : spread.avgPct < 2 ? t("conviction.veryLiquid") : spread.avgPct <= 5 ? t("conviction.acceptable") : t("conviction.wide")}
           />
           <Metric
-            label={`Dominancia ${domSide}`}
+            label={t("conviction.dominance", { side: domSide })}
             value={`${dominance.dominantPct.toFixed(0)}%`}
             points={dominance.points}
-            hint={`${dominance.askPct.toFixed(0)}% compra · ${dominance.bidPct.toFixed(0)}% venta`}
+            hint={t("conviction.dominanceHint", { ask: dominance.askPct.toFixed(0), bid: dominance.bidPct.toFixed(0) })}
           />
           <Metric
-            label="Fuerza de ejecución"
+            label={t("conviction.execStrength")}
             value={execution.avgRaw.toFixed(1)}
             points={execution.points}
-            hint="qué tan agresivas fueron las órdenes"
+            hint={t("conviction.execHint")}
           />
         </div>
 
@@ -98,7 +99,7 @@ export default function ConvictionCard({ conviction }: { conviction: ConvictionS
                   {EXECUTION_LABEL[l]} <b>{execution.counts[l]}</b>
                 </span>
               ))}
-              <span className="muted">· {int.format(n)} trades</span>
+              <span className="muted">· {t("conviction.trades", { n: int.format(n) })}</span>
             </div>
           </>
         )}
@@ -106,8 +107,8 @@ export default function ConvictionCard({ conviction }: { conviction: ConvictionS
         {spread.wideCount > 0 && (
           <div className="cv-alert">
             <div className="cv-alert-head">
-              ⚠ {spread.wideCount} trade{spread.wideCount > 1 ? "s" : ""} con spread &gt; 10%
-              <span className="cv-alert-sub"> — apartados del promedio, revisar a fondo</span>
+              ⚠ {t("conviction.wideAlert", { n: spread.wideCount, plural: spread.wideCount > 1 ? "s" : "" })}
+              <span className="cv-alert-sub"> {t("conviction.wideAlertSub")}</span>
             </div>
             {spread.wideAlert.length > 0 && (
               <div className="cv-alert-list">
@@ -119,19 +120,19 @@ export default function ConvictionCard({ conviction }: { conviction: ConvictionS
                         <b className="cv-alert-contract">
                           {r.underlying} {r.strike != null ? px.format(r.strike) : "?"}{r.type === "call" ? "C" : "P"}
                         </b>
-                        <span className={`pill st-${r.expiryStatus}`}>{STATUS_LABEL[r.expiryStatus]}</span>
+                        <span className={`pill st-${r.expiryStatus}`}>{statusLabel(r.expiryStatus, t)}</span>
                         <span className="cv-alert-money">{money.format(r.premium)}</span>
                       </div>
                       <div className="cv-alert-row2">
-                        Vence <b>{r.expiration ?? "—"}</b>
-                        {r.dte != null && <> ({r.dte >= 0 ? `en ${r.dte}d` : `hace ${Math.abs(r.dte)}d`})</>}
+                        {t("conviction.expires", { exp: "" })}<b>{r.expiration ?? "—"}</b>
+                        {r.dte != null && <> ({r.dte >= 0 ? t("conviction.inDays", { n: r.dte }) : t("conviction.agoDays", { n: Math.abs(r.dte) })})</>}
                         {" · "}bid {px.format(r.bid)} / ask {px.format(r.ask)}
                         {sp != null && <> · spread <b>{sp.toFixed(1)}%</b></>}
                       </div>
                     </div>
                   );
                 })}
-                {spread.wideAlert.length > 3 && <div className="muted">+{spread.wideAlert.length - 3} más…</div>}
+                {spread.wideAlert.length > 3 && <div className="muted">{t("conviction.more", { n: spread.wideAlert.length - 3 })}</div>}
               </div>
             )}
           </div>

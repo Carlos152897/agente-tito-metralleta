@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { GexHeatmap, HeatCell } from "@/lib/gexHeatmap";
+import { useLocale, Rich } from "@/lib/i18n";
 import { money, px } from "../format";
 
 /** Verde = gamma positiva (dealer estabiliza) · morado = negativa (amplifica). */
@@ -25,6 +26,7 @@ function fmtGex(v: number): string {
  * es donde se ve qué vencimiento sostiene cada muro.
  */
 export default function GexHeatmapCard({ h }: { h: GexHeatmap }) {
+  const { t } = useLocale();
   const [hover, setHover] = useState<HeatCell | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const spotRef = useRef<HTMLDivElement>(null);
@@ -55,35 +57,31 @@ export default function GexHeatmapCard({ h }: { h: GexHeatmap }) {
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div className="pro-title">GEX Heatmap — por strike y vencimiento</div>
+            <div className="pro-title">{t("gexHeatmap.title")}</div>
             <span className="pro-badge">PRO</span>
           </div>
-          <div className="pro-sub">
-            Cada celda es el dinero de gamma en ese precio para esa fecha. <b>Verde</b> = el
-            dealer estabiliza (el precio tiende a revertir); <b>morado</b> = amplifica (el
-            movimiento acelera). Cuanto más intenso, más dinero hay ahí.
-          </div>
+          <Rich className="pro-sub" text={t("gexHeatmap.sub")} />
         </div>
         <div className="pro-legend" style={{ paddingTop: 4 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ width: 10, height: 10, borderRadius: 3, background: "rgba(16,185,129,0.9)" }} />γ+ estabiliza
+            <span style={{ width: 10, height: 10, borderRadius: 3, background: "rgba(16,185,129,0.9)" }} />{t("gexHeatmap.stabilizes")}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ width: 10, height: 10, borderRadius: 3, background: "rgba(139,92,246,0.9)" }} />γ− amplifica
+            <span style={{ width: 10, height: 10, borderRadius: 3, background: "rgba(139,92,246,0.9)" }} />{t("gexHeatmap.amplifies")}
           </div>
         </div>
       </div>
 
       <div className="heat-scroll" ref={scrollRef}>
         <div className="heat-grid" style={{ gridTemplateColumns: cols }}>
-          <div className="heat-corner">Strike</div>
+          <div className="heat-corner">{t("gexHeatmap.strike")}</div>
           {h.expirations.map((e) => (
             <div key={e.expiration} className="heat-colhead">
               <div>{e.expiration}</div>
               <div className="heat-dte">{e.dte}d</div>
             </div>
           ))}
-          <div className="heat-colhead"><div>Total</div><div className="heat-dte">strike</div></div>
+          <div className="heat-colhead"><div>{t("gexHeatmap.total")}</div><div className="heat-dte">{t("gexHeatmap.totalStrike")}</div></div>
 
           {h.strikes.map((s) => {
             const isSpot = s.strike === spotStrike.strike;
@@ -121,20 +119,20 @@ export default function GexHeatmapCard({ h }: { h: GexHeatmap }) {
 
       <div className="heat-foot">
         <div>
-          <span className="muted">GEX neto total: </span>
+          <span className="muted">{t("gexHeatmap.netGex")}</span>
           <b style={{ color: h.totalNetGex >= 0 ? "#34d399" : "#a78bfa" }}>{fmtGex(h.totalNetGex)}</b>
           <span className="muted">
-            {" "}— régimen {h.totalNetGex >= 0 ? "γ+ (rango: conviene desvanecer extremos)" : "γ− (tendencia: conviene seguir el movimiento)"}
+            {" "}{h.totalNetGex >= 0 ? t("gexHeatmap.regimeRange") : t("gexHeatmap.regimeTrend")}
           </span>
         </div>
         {hover ? (
           <div className="heat-hover">
-            <b>${px.format(hover.strike)}</b> · vence {hover.expiration} · GEX{" "}
+            <b>${px.format(hover.strike)}</b> · {t("gexHeatmap.expires", { exp: hover.expiration })} · GEX{" "}
             <b>{fmtGex(hover.netGex)}</b> · calls {fmtGex(hover.callGex)} · puts {fmtGex(-hover.putGex)}
             {" "}· OI {money.format(hover.openInterest).replace("$", "")}
           </div>
         ) : (
-          <div className="muted" style={{ fontSize: 11 }}>Pasa el cursor por una celda para ver el detalle.</div>
+          <div className="muted" style={{ fontSize: 11 }}>{t("gexHeatmap.hoverHint")}</div>
         )}
       </div>
     </section>

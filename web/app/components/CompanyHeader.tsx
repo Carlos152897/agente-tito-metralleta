@@ -1,6 +1,7 @@
 "use client";
 
 import type { CompanyInfo } from "@/lib/types";
+import { useLocale } from "@/lib/i18n";
 import { int, money, px, pct } from "../format";
 
 function Stat({ label, value }: { label: string; value: string }) {
@@ -13,6 +14,7 @@ function Stat({ label, value }: { label: string; value: string }) {
 }
 
 export default function CompanyHeader({ company }: { company: CompanyInfo }) {
+  const { t } = useLocale();
   return (
     <section className="company">
       <div className="company-head">
@@ -47,19 +49,19 @@ export default function CompanyHeader({ company }: { company: CompanyInfo }) {
       </div>
 
       <div className="stats">
-        <Stat label="Stock Price" value={company.price != null ? px.format(company.price) : "—"} />
-        <Stat label="Market Cap" value={company.marketCap != null ? money.format(company.marketCap) : "—"} />
-        <Stat label="Volumen (día)" value={company.dayVolume != null ? int.format(company.dayVolume) : "—"} />
+        <Stat label={t("companyHeader.stockPrice")} value={company.price != null ? px.format(company.price) : "—"} />
+        <Stat label={t("companyHeader.marketCap")} value={company.marketCap != null ? money.format(company.marketCap) : "—"} />
+        <Stat label={t("companyHeader.volume")} value={company.dayVolume != null ? int.format(company.dayVolume) : "—"} />
         <Stat
-          label="Rango del día"
+          label={t("companyHeader.dayRange")}
           value={
             company.dayLow != null && company.dayHigh != null
               ? `${px.format(company.dayLow)} – ${px.format(company.dayHigh)}`
               : "—"
           }
         />
-        <Stat label="Cierre previo" value={company.prevClose != null ? px.format(company.prevClose) : "—"} />
-        <Stat label="Empleados" value={company.employees != null ? int.format(company.employees) : "—"} />
+        <Stat label={t("companyHeader.prevClose")} value={company.prevClose != null ? px.format(company.prevClose) : "—"} />
+        <Stat label={t("companyHeader.employees")} value={company.employees != null ? int.format(company.employees) : "—"} />
       </div>
     </section>
   );

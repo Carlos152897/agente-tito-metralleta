@@ -3,19 +3,20 @@
 import type { ProPrediction, Scenario } from "@/lib/prediction";
 import { HORIZONS } from "@/lib/prediction";
 import type { FlowRow } from "@/lib/flow";
+import { useLocale, type LocaleCtx } from "@/lib/i18n";
 import { money, px } from "../format";
 
-const KIND: Record<Scenario["kind"], { label: string; color: string; bg: string }> = {
-  bear: { label: "Bear case", color: "#d92d20", bg: "#fef3f2" },
-  base: { label: "Base case", color: "#101828", bg: "#f8f9fb" },
-  bull: { label: "Bull case", color: "#027a48", bg: "#f6fef9" },
+const KIND: Record<Scenario["kind"], { key: string; color: string; bg: string }> = {
+  bear: { key: "prediction.bearCase", color: "#d92d20", bg: "#fef3f2" },
+  base: { key: "prediction.baseCase", color: "#101828", bg: "#f8f9fb" },
+  bull: { key: "prediction.bullCase", color: "#027a48", bg: "#f6fef9" },
 };
 
-function ScenarioBox({ s }: { s: Scenario }) {
+function ScenarioBox({ s, t }: { s: Scenario; t: LocaleCtx["t"] }) {
   const k = KIND[s.kind];
   return (
     <div className="sc-box" style={{ background: k.bg, borderColor: `${k.color}22` }}>
-      <div className="sc-head" style={{ color: k.color }}>{k.label}</div>
+      <div className="sc-head" style={{ color: k.color }}>{t(k.key)}</div>
       <div className="sc-target" style={{ color: k.color }}>${px.format(s.target)}</div>
       <div className="sc-chg" style={{ color: k.color }}>
         {s.changePct >= 0 ? "+" : ""}{s.changePct.toFixed(1)}%
@@ -24,7 +25,7 @@ function ScenarioBox({ s }: { s: Scenario }) {
         <div className="sc-prob-bar">
           <div style={{ width: `${Math.round(s.probability * 100)}%`, background: k.color }} />
         </div>
-        <span>{(s.probability * 100).toFixed(0)}% de tocarlo</span>
+        <span>{t("prediction.touchChance", { pct: (s.probability * 100).toFixed(0) })}</span>
       </div>
       <div className="sc-driver">{s.driver}</div>
     </div>
@@ -48,17 +49,15 @@ export default function PredictionCard({
   onHorizon: (d: number) => void;
   topFlows: FlowRow[];
 }) {
+  const { t } = useLocale();
   return (
     <section className="card">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
         <div>
           <div className="card-title">
-            Prediction Pro <span className="pro-badge" style={{ marginLeft: 6 }}>PRO</span>
+            {t("prediction.title")} <span className="pro-badge" style={{ marginLeft: 6 }}>PRO</span>
           </div>
-          <div className="card-sub">
-            Los tres escenarios de {ticker} según dónde está el dinero y cuánto puede moverse
-            el precio por volatilidad.
-          </div>
+          <div className="card-sub">{t("prediction.sub", { ticker })}</div>
         </div>
         <div className="hz-tabs">
           {HORIZONS.map((h) => (
@@ -75,21 +74,20 @@ export default function PredictionCard({
       </div>
 
       {!prediction ? (
-        <div className="feed-empty">Calculando escenarios…</div>
+        <div className="feed-empty">{t("prediction.calculating")}</div>
       ) : (
         <>
           <div className="sc-grid">
-            <ScenarioBox s={prediction.bear} />
-            <ScenarioBox s={prediction.base} />
-            <ScenarioBox s={prediction.bull} />
+            <ScenarioBox s={prediction.bear} t={t} />
+            <ScenarioBox s={prediction.base} t={t} />
+            <ScenarioBox s={prediction.bull} t={t} />
           </div>
 
           <div className="pred-summary">
             <div className="pred-summary-head">
-              Resumen del agente
+              {t("prediction.summaryHead")}
               <span className="pred-conf">
-                confianza {prediction.confidence}% · señales {prediction.score}/100 ·{" "}
-                {prediction.active}/6 sub-agentes
+                {t("prediction.confMeta", { conf: prediction.confidence, score: prediction.score, active: prediction.active })}
               </span>
             </div>
             <p>{prediction.summary}</p>
@@ -98,7 +96,7 @@ export default function PredictionCard({
 
           {topFlows.length > 0 && (
             <div>
-              <div className="news-head">Top 3 flows notables</div>
+              <div className="news-head">{t("prediction.topFlows")}</div>
               <div className="tf-list">
                 {topFlows.slice(0, 3).map((f) => {
                   const alcista =
@@ -113,16 +111,16 @@ export default function PredictionCard({
                         <div className="tf-title">
                           ${f.strike != null ? px.format(f.strike) : "?"}
                           <span className="muted">
-                            {" "}· vence {f.expiration ?? "—"}
+                            {" "}{t("prediction.expires", { exp: f.expiration ?? "—" })}
                             {f.dte != null && ` (${f.dte}d)`}
                           </span>
                         </div>
                         <div className="tf-sub">
-                          {f.aggression === "ask" ? "Compra agresiva al ask" :
-                            f.aggression === "bid" ? "Venta al bid" : "Ejecutado al medio"}
+                          {f.aggression === "ask" ? t("prediction.buyAggressive") :
+                            f.aggression === "bid" ? t("prediction.sellBid") : t("prediction.executedMid")}
                           {" · "}
                           <b style={{ color: alcista ? "#027a48" : "#d92d20" }}>
-                            {alcista ? "apuesta alcista" : "apuesta bajista"}
+                            {alcista ? t("prediction.bullishBet") : t("prediction.bearishBet")}
                           </b>
                         </div>
                       </div>

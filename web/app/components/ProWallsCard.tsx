@@ -7,6 +7,7 @@ import type { TfBar } from "@/lib/types";
 import type { LevelsReport } from "@/lib/levels";
 import { conePoints, expectedMove, levelProbabilities, predictionPath } from "@/lib/expectedMove";
 import PriceChart, { type ChartTarget } from "./chart/PriceChart";
+import { useLocale, Rich } from "@/lib/i18n";
 import { px } from "../format";
 
 /** Bandas del heatmap: dorado = muro de calls · morado = muro de puts. */
@@ -38,6 +39,7 @@ export default function ProWallsCard({
   horizonDays: number;
   levels?: LevelsReport | null;
 }) {
+  const { t } = useLocale();
   const [bars, setBars] = useState<TfBar[] | null>(null);
 
   useEffect(() => {
@@ -101,8 +103,8 @@ export default function ProWallsCard({
   );
 
   const dirLabel = magnet
-    ? magnet.strike > spot * 1.002 ? "al alza"
-      : magnet.strike < spot * 0.998 ? "a la baja" : "lateral"
+    ? magnet.strike > spot * 1.002 ? t("proWalls.up")
+      : magnet.strike < spot * 0.998 ? t("proWalls.down") : t("proWalls.sideways")
     : "—";
 
   return (
@@ -110,38 +112,34 @@ export default function ProWallsCard({
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div className="pro-title">Strike Walls, probabilidad y ruta esperada</div>
+            <div className="pro-title">{t("proWalls.title")}</div>
             <span className="pro-badge">PRO</span>
           </div>
-          <div className="pro-sub">
-            Las bandas son los precios donde está el dinero, con la <b>probabilidad</b> de que
-            el precio llegue ahí en {horizonDays} días. El cono sale de la desviación estándar
-            (σ = precio × IV × √t): dentro de ±1σ cae ~68% de los escenarios.
-          </div>
+          <Rich className="pro-sub" text={t("proWalls.sub", { days: horizonDays })} />
         </div>
         <div className="pro-legend" style={{ paddingTop: 4 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ width: 10, height: 10, borderRadius: 3, background: "rgba(212,160,23,0.8)" }} />Muro de calls
+            <span style={{ width: 10, height: 10, borderRadius: 3, background: "rgba(212,160,23,0.8)" }} />{t("proWalls.callWall")}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ width: 10, height: 10, borderRadius: 3, background: "rgba(124,110,228,0.8)" }} />Muro de puts
+            <span style={{ width: 10, height: 10, borderRadius: 3, background: "rgba(124,110,228,0.8)" }} />{t("proWalls.putWall")}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ width: 14, height: 2, background: "#f5c542" }} />Ruta esperada
+            <span style={{ width: 14, height: 2, background: "#f5c542" }} />{t("proWalls.expectedPath")}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ width: 14, height: 0, borderTop: "2px dotted rgba(18,183,106,0.9)" }} />Soporte
+            <span style={{ width: 14, height: 0, borderTop: "2px dotted rgba(18,183,106,0.9)" }} />{t("proWalls.support")}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ width: 14, height: 0, borderTop: "2px dotted rgba(240,68,56,0.9)" }} />Resistencia
+            <span style={{ width: 14, height: 0, borderTop: "2px dotted rgba(240,68,56,0.9)" }} />{t("proWalls.resistance")}
           </div>
         </div>
       </div>
 
       <div className="pro-chart">
-        {bars === null && <div style={{ padding: 20, color: "#5c6a85", fontSize: 12 }}>Cargando velas…</div>}
+        {bars === null && <div style={{ padding: 20, color: "#5c6a85", fontSize: 12 }}>{t("proWalls.loadingBars")}</div>}
         {bars !== null && bars.length === 0 && (
-          <div style={{ padding: 20, color: "#5c6a85", fontSize: 12 }}>Sin datos de precio.</div>
+          <div style={{ padding: 20, color: "#5c6a85", fontSize: 12 }}>{t("proWalls.noPriceData")}</div>
         )}
         {bars !== null && bars.length > 0 && (
           <PriceChart
@@ -161,42 +159,44 @@ export default function ProWallsCard({
 
       <div className="wall-stats">
         <div className="wall-stat">
-          <div className="wall-stat-label">Movimiento esperado · 1σ · {horizonDays}d</div>
+          <div className="wall-stat-label">{t("proWalls.expMove", { days: horizonDays })}</div>
           <div className="wall-stat-value">±{em.sigmaPct.toFixed(1)}%</div>
           <div className="wall-stat-sub">
-            ${px.format(em.lower1)} — ${px.format(em.upper1)} · 68% de los escenarios
+            ${px.format(em.lower1)} — ${px.format(em.upper1)} · {t("proWalls.scenarios68")}
           </div>
         </div>
         <div className="wall-stat">
-          <div className="wall-stat-label">Rango extremo · 2σ</div>
+          <div className="wall-stat-label">{t("proWalls.extremeRange")}</div>
           <div className="wall-stat-value">±{(em.sigmaPct * 2).toFixed(1)}%</div>
           <div className="wall-stat-sub">
-            ${px.format(em.lower2)} — ${px.format(em.upper2)} · 95%
+            ${px.format(em.lower2)} — ${px.format(em.upper2)} · {t("proWalls.scenarios95")}
           </div>
         </div>
         <div className="wall-stat">
-          <div className="wall-stat-label">Nivel imán</div>
+          <div className="wall-stat-label">{t("proWalls.magnetLevel")}</div>
           <div className="wall-stat-value" style={{ color: "#f5c542" }}>
             {path ? `$${px.format(path.target)}` : "—"}
           </div>
           <div className="wall-stat-sub">
-            {magnet ? `${(magnet.magnet * 100).toFixed(0)}% de peso · ${dirLabel}` : "—"}
-            {path?.clamped && " · recortado al cono 2σ"}
+            {magnet ? t("proWalls.weightOf", { pct: (magnet.magnet * 100).toFixed(0), dir: dirLabel }) : "—"}
+            {path?.clamped && t("proWalls.clamped")}
           </div>
         </div>
         <div className="wall-stat">
-          <div className="wall-stat-label">IV usada</div>
+          <div className="wall-stat-label">{t("proWalls.ivUsed")}</div>
           <div className="wall-stat-value">{(iv * 100).toFixed(1)}%</div>
           <div className="wall-stat-sub">
-            {gex ? `régimen ${gex.regime === "positive" ? "γ+ revierte" : "γ− amplifica"} · confianza ${gex.confidence}%` : "—"}
+            {gex ? t("proWalls.regimeInfo", {
+              regime: gex.regime === "positive" ? t("proWalls.regimePositive") : t("proWalls.regimeNegative"),
+              conf: gex.confidence,
+            }) : "—"}
           </div>
         </div>
       </div>
 
       {(gex?.lowLiquidity || structure.notional.lowLiquidity) && (
         <div className="iv-special" style={{ marginTop: 10 }}>
-          ⚠ <b>Cadena de baja liquidez</b> — la proyección se marca como poco fiable y no debe
-          usarse para operar.
+          ⚠ <b>{t("proWalls.lowLiquidity")}</b> {t("proWalls.lowLiquidityDetail")}
         </div>
       )}
     </section>

@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import type { FlowRow } from "@/lib/flow";
+import { useLocale } from "@/lib/i18n";
 import { dateET, int, money } from "../format";
 
 /**
@@ -9,6 +10,7 @@ import { dateET, int, money } from "../format";
  * rojo = puts (apuestas a la baja). Datos reales de las transacciones revisadas (30 días).
  */
 export default function ActivityCard({ rows, unusualCount }: { rows: FlowRow[]; unusualCount: number }) {
+  const { t } = useLocale();
   const days = useMemo(() => {
     const byDay = new Map<string, { call: number; put: number }>();
     for (const r of rows) {
@@ -39,15 +41,12 @@ export default function ActivityCard({ rows, unusualCount }: { rows: FlowRow[]; 
     <section className="card">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
-          <div className="card-title">Unusual Options Activity</div>
-          <div className="card-sub">
-            Dinero grande detectado cada día. Verde = apuestas a que sube (calls),
-            rojo = a que baja (puts).
-          </div>
+          <div className="card-title">{t("activity.title")}</div>
+          <div className="card-sub">{t("activity.sub")}</div>
         </div>
         <div style={{ display: "flex", gap: 14, fontSize: 12, color: "#667085", whiteSpace: "nowrap" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}><span className="legend-dot" style={{ background: "#12b76a" }} />Calls</div>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}><span className="legend-dot" style={{ background: "#f97066" }} />Puts</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}><span className="legend-dot" style={{ background: "#12b76a" }} />{t("activity.calls")}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}><span className="legend-dot" style={{ background: "#f97066" }} />{t("activity.puts")}</div>
         </div>
       </div>
 
@@ -63,21 +62,21 @@ export default function ActivityCard({ rows, unusualCount }: { rows: FlowRow[]; 
       </div>
       <div className="act-days">
         {days.map((d, i) => (
-          <div key={d.day} className="act-day">{i === days.length - 1 ? "Hoy" : d.day}</div>
+          <div key={d.day} className="act-day">{i === days.length - 1 ? t("activity.today") : d.day}</div>
         ))}
       </div>
 
       <div className="act-stats">
         <div>
-          <div className="act-stat-label">Premium en calls (últ. día)</div>
+          <div className="act-stat-label">{t("activity.callsPremium")}</div>
           <div className="act-stat-value" style={{ color: "#12b76a" }}>{today ? money.format(today.call) : "—"}</div>
         </div>
         <div>
-          <div className="act-stat-label">Premium en puts (últ. día)</div>
+          <div className="act-stat-label">{t("activity.putsPremium")}</div>
           <div className="act-stat-value" style={{ color: "#f04438" }}>{today ? money.format(today.put) : "—"}</div>
         </div>
         <div>
-          <div className="act-stat-label">Trades inusuales detectados</div>
+          <div className="act-stat-label">{t("activity.unusualDetected")}</div>
           <div className="act-stat-value">{int.format(unusualCount)}</div>
         </div>
       </div>

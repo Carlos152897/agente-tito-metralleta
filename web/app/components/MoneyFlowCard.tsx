@@ -3,6 +3,7 @@
 import { useMemo } from "react";
 import type { ConvictionScore, FlowRow } from "@/lib/flow";
 import type { StructureScore } from "@/lib/structure";
+import { useLocale } from "@/lib/i18n";
 import { money, px } from "../format";
 
 /**
@@ -20,6 +21,7 @@ export default function MoneyFlowCard({
   conviction: ConvictionScore | null;
   structure: StructureScore | null;
 }) {
+  const { t } = useLocale();
   const { callPct, putPct, biggest } = useMemo(() => {
     let call = 0, put = 0;
     let top: FlowRow | null = null;
@@ -48,27 +50,27 @@ export default function MoneyFlowCard({
 
   const tiles = [
     biggest && {
-      label: "Trade más grande",
+      label: t("moneyflow.biggestTrade"),
       value: money.format(biggest.premium),
-      sub: `${biggest.underlying} ${biggest.strike != null ? px.format(biggest.strike) : ""}${biggest.type === "call" ? "C" : "P"} · vence ${biggest.expiration ?? "—"}`,
+      sub: `${biggest.underlying} ${biggest.strike != null ? px.format(biggest.strike) : ""}${biggest.type === "call" ? "C" : "P"} · ${t("moneyflow.expires", { exp: biggest.expiration ?? "—" })}`,
       color: biggest.type === "call" ? "#12b76a" : "#f04438",
     },
     pcRatio != null && {
-      label: "Ratio Put/Call",
+      label: t("moneyflow.pcRatio"),
       value: pcRatio.toFixed(2),
-      sub: pcRatio < 0.7 ? "Alcista (< 0.7)" : pcRatio > 1 ? "Bajista (> 1.0)" : "Equilibrado",
+      sub: pcRatio < 0.7 ? t("moneyflow.bullishBand") : pcRatio > 1 ? t("moneyflow.bearishBand") : t("moneyflow.balanced"),
       color: pcRatio < 0.7 ? "#12b76a" : pcRatio > 1 ? "#f04438" : "#101828",
     },
     conviction && {
-      label: "Spread promedio",
+      label: t("moneyflow.avgSpread"),
       value: conviction.spread.avgPct != null ? `${conviction.spread.avgPct.toFixed(2)}%` : "—",
-      sub: conviction.spread.avgPct != null && conviction.spread.avgPct < 2 ? "Muy líquido" : "Liquidez media",
+      sub: conviction.spread.avgPct != null && conviction.spread.avgPct < 2 ? t("moneyflow.veryLiquid") : t("moneyflow.midLiquidity"),
       color: "#101828",
     },
     structure && {
-      label: "Volumen > Open Interest",
+      label: t("moneyflow.volAboveOI"),
       value: `${structure.volOI.pct.toFixed(0)}%`,
-      sub: "Posiciones nuevas abriéndose",
+      sub: t("moneyflow.newPositions"),
       color: structure.volOI.pct >= 50 ? "#12b76a" : "#101828",
     },
   ].filter(Boolean) as { label: string; value: string; sub: string; color: string }[];
@@ -76,10 +78,8 @@ export default function MoneyFlowCard({
   return (
     <section className="card">
       <div>
-        <div className="card-title">Today's Money Flow</div>
-        <div className="card-sub">
-          De todo el dinero notable en opciones de {ticker}, cuánto apuesta al alza vs a la baja.
-        </div>
+        <div className="card-title">{t("moneyflow.title")}</div>
+        <div className="card-sub">{t("moneyflow.sub", { ticker })}</div>
       </div>
       <div>
         <div className="mf-bar">
@@ -87,8 +87,8 @@ export default function MoneyFlowCard({
           <div style={{ background: "#f97066", width: `${putPct}%` }} />
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8, fontSize: 12 }}>
-          <div style={{ fontWeight: 600, color: "#12b76a" }}>{callPct}% alcista</div>
-          <div style={{ fontWeight: 600, color: "#f04438" }}>{putPct}% bajista</div>
+          <div style={{ fontWeight: 600, color: "#12b76a" }}>{t("moneyflow.bullishPct", { pct: callPct })}</div>
+          <div style={{ fontWeight: 600, color: "#f04438" }}>{t("moneyflow.bearishPct", { pct: putPct })}</div>
         </div>
       </div>
       <div className="mf-tiles">

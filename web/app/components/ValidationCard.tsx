@@ -2,6 +2,7 @@
 
 import type { ValidationScore } from "@/lib/validation";
 import { BACKTEST_TARGET_DAYS } from "@/lib/validation";
+import { useLocale, Rich } from "@/lib/i18n";
 import { int, money, px } from "../format";
 import { dateET } from "../format";
 
@@ -18,6 +19,7 @@ function expLabel(expiration: string | null): string {
  * a favor y en contra del contrato.
  */
 export default function ValidationCard({ s }: { s: ValidationScore }) {
+  const { t } = useLocale();
   const cls = s.score >= 7 ? "up" : s.score <= 3 ? "down" : "neutral";
   const hr = s.hitRate.value;
 
@@ -25,9 +27,9 @@ export default function ValidationCard({ s }: { s: ValidationScore }) {
     <>
       <section className="scorecard cv-card">
         <div className="score-main">
-          <div className="score-cat">Confirmación de Precio</div>
+          <div className="score-cat">{t("validation.title")}</div>
           <div className={`score-num ${cls}`}>{s.score}<span className="score-den">/10</span></div>
-          <div className="score-q">¿El precio valida o absorbe?</div>
+          <div className="score-q">{t("validation.q")}</div>
         </div>
 
         <div className="score-detail">
@@ -35,34 +37,34 @@ export default function ValidationCard({ s }: { s: ValidationScore }) {
 
           <div className="cv-metrics">
             <div className="cv-metric">
-              <div className="cv-metric-label">Tasa de validación</div>
+              <div className="cv-metric-label">{t("validation.hitRate")}</div>
               <div className="cv-metric-value" style={{ color: hr != null && hr >= 55 ? OK : hr != null && hr < 45 ? BAD : undefined }}>
                 {hr != null ? `${hr.toFixed(1)}%` : "—"}
               </div>
               <div className="cv-metric-pts">{s.hitRate.points}<span className="muted">/10</span></div>
               <div className="cv-metric-hint muted">
-                {s.hitRate.validated} de {s.hitRate.resolved} flows juzgados
-                {s.weightedHitRate != null && ` · ${s.weightedHitRate.toFixed(0)}% ponderado por dinero`}
+                {t("validation.judged", { a: s.hitRate.validated, b: s.hitRate.resolved })}
+                {s.weightedHitRate != null && t("validation.weighted", { pct: s.weightedHitRate.toFixed(0) })}
               </div>
             </div>
 
             <div className="cv-metric">
-              <div className="cv-metric-label">Velocidad del movimiento</div>
+              <div className="cv-metric-label">{t("validation.speed")}</div>
               <div className="cv-metric-value">
-                {s.speed.medianSessions != null ? `${s.speed.medianSessions} ses` : "—"}
+                {s.speed.medianSessions != null ? t("validation.sessions", { n: s.speed.medianSessions }) : "—"}
               </div>
               <div className="cv-metric-pts">{s.speed.points}<span className="muted">/10</span></div>
               <div className="cv-metric-hint muted">{s.speed.band}</div>
             </div>
 
             <div className="cv-metric">
-              <div className="cv-metric-label">Recorrido medio</div>
+              <div className="cv-metric-label">{t("validation.avgMove")}</div>
               <div className="cv-metric-value">
                 <span style={{ color: OK }}>+{s.avgMfe?.toFixed(1) ?? "—"}%</span>
                 <span className="muted" style={{ fontSize: 14 }}> / </span>
                 <span style={{ color: BAD }}>−{s.avgMae?.toFixed(1) ?? "—"}%</span>
               </div>
-              <div className="cv-metric-hint muted">a favor / en contra del contrato</div>
+              <div className="cv-metric-hint muted">{t("validation.favorAgainst")}</div>
             </div>
           </div>
 
@@ -70,27 +72,25 @@ export default function ValidationCard({ s }: { s: ValidationScore }) {
             {s.byDirection.map((d) => (
               <div key={d.direction} className="val-dir">
                 <span className={`pill ${d.direction === "alcista" ? "call" : "put"}`}>
-                  {d.direction.toUpperCase()}
+                  {d.direction === "alcista" ? t("validation.bullish") : t("validation.bearish")}
                 </span>
                 <b>{d.hitRate != null ? `${d.hitRate.toFixed(0)}%` : "—"}</b>
-                <span className="muted">{d.validated}/{d.total} confirmados</span>
+                <span className="muted">{t("validation.confirmed", { n: d.validated, total: d.total })}</span>
               </div>
             ))}
           </div>
 
-          <div className="iv-note">
-            Un flow cuenta como <b>validado</b> si el precio se movió a favor del contrato{" "}
-            <b>{s.thresholdPct.toFixed(1)}%</b> antes de irse en contra. Ese umbral se adapta a
-            la volatilidad del ticker: un 2% fijo sería ruido en una acción que recorre 5% al día.
-          </div>
+          <Rich className="iv-note" text={t("validation.note", { pct: s.thresholdPct.toFixed(1) })} />
 
           {s.coverage.belowTarget && (
             <div className="iv-special">
-              ⚠ <b>El documento pide al menos {BACKTEST_TARGET_DAYS} días de backtest</b> y hoy
-              hay <b>{s.coverage.days}</b>. El historial se acumula hacia adelante en cada
-              búsqueda ({int.format(s.coverage.flows)} flows guardados
-              {s.coverage.pending > 0 && `, ${int.format(s.coverage.pending)} aún sin juzgar`}).
-              Tómalo como preliminar hasta llegar a {BACKTEST_TARGET_DAYS} días.
+              ⚠ <b>{t("validation.coverageTitle", { target: BACKTEST_TARGET_DAYS })}</b>
+              <Rich text={t("validation.coverageDetail", {
+                days: s.coverage.days,
+                flows: int.format(s.coverage.flows),
+                pending: s.coverage.pending > 0 ? t("validation.pendingNote", { n: int.format(s.coverage.pending) }) : "",
+                target: BACKTEST_TARGET_DAYS,
+              })} />
             </div>
           )}
         </div>
@@ -99,21 +99,21 @@ export default function ValidationCard({ s }: { s: ValidationScore }) {
       {s.outcomes.length > 0 && (
         <div className="clusters">
           <h2 className="clusters-title">
-            Qué pasó después de cada flow
-            <span className="muted"> — cuánto tardó el movimiento en desarrollarse</span>
+            {t("validation.outcomesTitle")}
+            <span className="muted">{t("validation.outcomesSub")}</span>
           </h2>
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Fecha del flow</th>
-                  <th>Contrato</th>
-                  <th>Apuesta</th>
-                  <th className="num">Premium</th>
-                  <th className="num">A favor</th>
-                  <th className="num">En contra</th>
-                  <th className="num">Tardó</th>
-                  <th>Resultado</th>
+                  <th>{t("validation.flowDate")}</th>
+                  <th>{t("validation.contract")}</th>
+                  <th>{t("validation.bet")}</th>
+                  <th className="num">{t("validation.premium")}</th>
+                  <th className="num">{t("validation.favor")}</th>
+                  <th className="num">{t("validation.against")}</th>
+                  <th className="num">{t("validation.took")}</th>
+                  <th>{t("validation.result")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -121,33 +121,33 @@ export default function ValidationCard({ s }: { s: ValidationScore }) {
                   <tr key={o.id}>
                     <td>
                       {dateET(o.timestamp)}
-                      <span className="muted"> ({o.daysElapsed}d atrás)</span>
+                      <span className="muted"> {t("validation.daysAgo", { n: o.daysElapsed })}</span>
                     </td>
                     <td>
                       <b>${o.strike != null ? px.format(o.strike) : "?"}</b>{" "}
                       <span className={`pill ${o.type === "call" ? "call" : "put"}`}>
                         {o.type === "call" ? "CALL" : "PUT"}
                       </span>
-                      <div className="muted" style={{ fontSize: 11 }}>vence {expLabel(o.expiration)}</div>
+                      <div className="muted" style={{ fontSize: 11 }}>{t("validation.vence", { exp: expLabel(o.expiration) })}</div>
                     </td>
                     <td>
                       <span className={`pill ${o.direction === "alcista" ? "call" : "put"}`}>
-                        {o.direction.toUpperCase()}
+                        {o.direction === "alcista" ? t("validation.bullish") : t("validation.bearish")}
                       </span>
                     </td>
                     <td className="num">{money.format(o.premium)}</td>
                     <td className="num" style={{ color: OK }}>+{o.mfePct.toFixed(1)}%</td>
                     <td className="num" style={{ color: BAD }}>−{o.maePct.toFixed(1)}%</td>
                     <td className="num">
-                      {o.daysToValidate != null ? `${o.daysToValidate} ses` : "—"}
+                      {o.daysToValidate != null ? t("validation.sessions", { n: o.daysToValidate }) : "—"}
                     </td>
                     <td>
                       {!o.resolved ? (
-                        <span className="val-tag pending">Muy reciente</span>
+                        <span className="val-tag pending">{t("validation.veryRecent")}</span>
                       ) : o.validated ? (
-                        <span className="val-tag ok">Validado</span>
+                        <span className="val-tag ok">{t("validation.validated")}</span>
                       ) : (
-                        <span className="val-tag bad">Absorbido</span>
+                        <span className="val-tag bad">{t("validation.absorbed")}</span>
                       )}
                     </td>
                   </tr>

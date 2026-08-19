@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { EXECUTION_LABEL, executionLevel, spreadPct, type FlowRow } from "@/lib/flow";
 import RepeatBadge, { buildRepeatCounts, repeatKey } from "./RepeatBadge";
+import { useLocale, Rich, type LocaleCtx } from "@/lib/i18n";
 import { dateOf, int, money, px, timeOf } from "../format";
 
 export interface ConvictionMeta {
@@ -15,12 +16,11 @@ export interface ConvictionMeta {
   saved: { total: number; added: number; firstSeen: string | null } | null;
 }
 
-const STATUS_LABEL: Record<FlowRow["expiryStatus"], string> = {
-  expirado: "Expirado",
-  expira_hoy: "Expira hoy",
-  vigente: "Vigente",
-  desconocido: "—",
-};
+function statusLabel(s: FlowRow["expiryStatus"], t: LocaleCtx["t"]): string {
+  return s === "expirado" ? t("conviction.expired")
+    : s === "expira_hoy" ? t("conviction.expiresToday")
+    : s === "vigente" ? t("conviction.active") : "—";
+}
 
 function contractLabel(r: FlowRow): string {
   const t = r.type === "call" ? "C" : r.type === "put" ? "P" : "?";
@@ -36,6 +36,7 @@ export default function ConvictionTransactions({
   rows: FlowRow[];
   meta: ConvictionMeta;
 }) {
+  const { t } = useLocale();
   const [filter, setFilter] = useState<Filter>("todas");
   const repeatCounts = useMemo(() => buildRepeatCounts(rows), [rows]);
 
@@ -48,26 +49,26 @@ export default function ConvictionTransactions({
   return (
     <div className="clusters">
       <div className="clusters-title">
-        📒 Transacciones revisadas · últimos {meta.window}
+        📒 {t("convictionTx.reviewed", { window: meta.window })}
         <span className="muted">
-          {" "}— {int.format(meta.total)} trades ≥ {money.format(meta.minPremium)}
-          {meta.shown < meta.total ? `, mostrando ${meta.shown}` : ""}
+          {t("convictionTx.reviewedMeta", { total: int.format(meta.total), min: money.format(meta.minPremium) })}
+          {meta.shown < meta.total ? t("convictionTx.showing", { n: meta.shown }) : ""}
           {meta.saved && (
-            <> · guardadas <b>{int.format(meta.saved.total)}</b>
-              {meta.saved.added > 0 && <> (+{int.format(meta.saved.added)} nuevas)</>}</>
+            <>{t("convictionTx.saved", { n: int.format(meta.saved.total) })}
+              {meta.saved.added > 0 && t("convictionTx.savedNew", { n: int.format(meta.saved.added) })}</>
           )}
         </span>
       </div>
 
       <div className="tf-toggle" style={{ marginBottom: 10 }}>
         <button type="button" className={`tf-btn ${filter === "todas" ? "on" : ""}`} onClick={() => setFilter("todas")}>
-          Todas ({int.format(rows.length)})
+          {t("convictionTx.all", { n: int.format(rows.length) })}
         </button>
         <button type="button" className={`tf-btn ${filter === "vigente" ? "on" : ""}`} onClick={() => setFilter("vigente")}>
-          Vigentes ({int.format(meta.vigenteCount)})
+          {t("convictionTx.active", { n: int.format(meta.vigenteCount) })}
         </button>
         <button type="button" className={`tf-btn ${filter === "expirado" ? "on" : ""}`} onClick={() => setFilter("expirado")}>
-          Expirados ({int.format(meta.expiredCount)})
+          {t("convictionTx.expired", { n: int.format(meta.expiredCount) })}
         </button>
       </div>
 
@@ -75,15 +76,15 @@ export default function ConvictionTransactions({
         <table>
           <thead>
             <tr>
-              <th className="left">Fecha · Hora</th>
-              <th className="left">Contrato</th>
-              <th className="left">Vencimiento</th>
-              <th>Estado</th>
-              <th>Lado</th>
-              <th>Ejecución</th>
-              <th>Spread</th>
-              <th>Contratos</th>
-              <th>Dinero</th>
+              <th className="left">{t("convictionTx.date")}</th>
+              <th className="left">{t("convictionTx.contract")}</th>
+              <th className="left">{t("convictionTx.expiration")}</th>
+              <th>{t("convictionTx.status")}</th>
+              <th>{t("convictionTx.side")}</th>
+              <th>{t("convictionTx.execution")}</th>
+              <th>{t("convictionTx.spread")}</th>
+              <th>{t("convictionTx.contracts")}</th>
+              <th>{t("convictionTx.money")}</th>
             </tr>
           </thead>
           <tbody>
@@ -101,15 +102,15 @@ export default function ConvictionTransactions({
                   <td className="left">
                     {r.expiration ?? "—"}
                     {r.dte != null && (
-                      <span className="muted"> ({r.dte >= 0 ? `${r.dte}d` : `hace ${Math.abs(r.dte)}d`})</span>
+                      <span className="muted"> ({r.dte >= 0 ? `${r.dte}d` : t("conviction.agoDays", { n: Math.abs(r.dte) })})</span>
                     )}
                   </td>
                   <td>
-                    <span className={`pill st-${r.expiryStatus}`}>{STATUS_LABEL[r.expiryStatus]}</span>
+                    <span className={`pill st-${r.expiryStatus}`}>{statusLabel(r.expiryStatus, t)}</span>
                   </td>
                   <td>
                     <span className={`pill ${r.aggression === "ask" ? "agg-ask" : r.aggression === "bid" ? "agg-bid" : "agg-mid"}`}>
-                      {r.aggression === "ask" ? "▲ Compra" : r.aggression === "bid" ? "▼ Venta" : "Mid"}
+                      {r.aggression === "ask" ? t("convictionTx.buy") : r.aggression === "bid" ? t("convictionTx.sell") : t("convictionTx.mid")}
                     </span>
                   </td>
                   <td className="muted">{EXECUTION_LABEL[level]}</td>
@@ -126,10 +127,8 @@ export default function ConvictionTransactions({
       </div>
 
       <p className="pxsrc" style={{ marginTop: 8 }}>
-        <b>Estado</b> compara el vencimiento del contrato con la fecha de hoy: las filas grises ya
-        <b> expiraron</b> (útil para ver si la apuesta llegó a su fin) y las <b>vigentes</b> siguen abiertas.
-        Todas quedan <b>guardadas</b> en el historial local del agente.
-        {meta.saved?.firstSeen && <> Historial desde {dateOf(meta.saved.firstSeen)}.</>}
+        <Rich text={t("convictionTx.footnote")} />
+        {meta.saved?.firstSeen && t("convictionTx.historySince", { date: dateOf(meta.saved.firstSeen) })}
       </p>
     </div>
   );

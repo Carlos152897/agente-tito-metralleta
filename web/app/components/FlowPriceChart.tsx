@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { detectClusters, type FlowRow } from "@/lib/flow";
 import type { TfBar } from "@/lib/types";
+import { useLocale, Rich } from "@/lib/i18n";
 import { dateET, hmET, int, money, px, timeET } from "../format";
 
 const FORWARD_SEC = 30 * 60; // seguimiento intradía: +30 min
@@ -45,6 +46,7 @@ function nearestBarTime(times: number[], sec: number): number | null {
 }
 
 export default function FlowPriceChart({ ticker, trades }: { ticker: string; trades: FlowRow[] }) {
+  const { t } = useLocale();
   const priceRef = useRef<HTMLDivElement>(null);
   const histRef = useRef<HTMLDivElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
@@ -274,21 +276,17 @@ export default function FlowPriceChart({ ticker, trades }: { ticker: string; tra
   return (
     <section className="chart">
       <div className="chart-head">
-        <h2>Flujo notable sobre el precio · {ticker}</h2>
+        <h2>{t("flowChart.title", { ticker })}</h2>
         <div className="tf-toggle">
           {TFS.map((x) => (
             <button key={x.key} className={`tf-btn ${tf === x.key ? "on" : ""}`} onClick={() => setTf(x.key)} type="button">{x.label}</button>
           ))}
         </div>
       </div>
-      <div className="chart-sub muted">
-        Arriba: el precio. Abajo: el dinero de cada vela — <span className="dot-ask" /> <b>compra</b> hacia arriba,
-        {" "}<span className="dot-bid" /> <b>venta</b> hacia abajo (barras brillantes = racimo).
-        {" "}🚩 = racimo de trades ({DAYS_BY_TF[tf] ?? 5} días de flujo) · hora ET · pasa el cursor para ver los trades.
-      </div>
-      {flowLoading && <div className="chart-loading">Cargando flujo de {DAYS_BY_TF[tf] ?? 5} días…</div>}
-      {loading && <div className="chart-loading">Cargando barras…</div>}
-      {!loading && bars && bars.length === 0 && <div className="chart-empty">Sin barras de precio para {ticker} en este timeframe.</div>}
+      <Rich className="chart-sub muted" text={t("flowChart.sub", { days: DAYS_BY_TF[tf] ?? 5 })} />
+      {flowLoading && <div className="chart-loading">{t("flowChart.loadingFlow", { days: DAYS_BY_TF[tf] ?? 5 })}</div>}
+      {loading && <div className="chart-loading">{t("flowChart.loadingBars")}</div>}
+      {!loading && bars && bars.length === 0 && <div className="chart-empty">{t("flowChart.noBars", { ticker })}</div>}
       <div className="flowchart-wrap" style={{ display: bars && bars.length > 0 ? "block" : "none" }}>
         <div ref={priceRef} className="pane-price" />
         <div ref={histRef} className="pane-hist" />
@@ -298,15 +296,15 @@ export default function FlowPriceChart({ ticker, trades }: { ticker: string; tra
       {clusterRows.length > 0 && (
         <div className="clusters">
           <div className="clusters-title">
-            🚩 Racimos de trades ({clusterRows.length})
-            <span className="muted"> — grupos de 3+ trades grandes del mismo lado en 5 minutos</span>
+            {t("flowChart.clustersTitle", { n: clusterRows.length })}
+            <span className="muted">{t("flowChart.clustersSub")}</span>
           </div>
           <div className="tablewrap">
             <table>
               <thead>
                 <tr>
-                  <th className="left">Cuándo (ET)</th><th>Qué hicieron</th><th>Apuesta</th><th>Trades</th>
-                  <th>Dinero</th><th>Fuerza</th><th>¿El precio siguió la apuesta? ({intraday ? "30 min" : "1 día"} después)</th>
+                  <th className="left">{t("flowChart.when")}</th><th>{t("flowChart.whatDid")}</th><th>{t("flowChart.bet")}</th><th>{t("flowChart.trades")}</th>
+                  <th>{t("flowChart.money")}</th><th>{t("flowChart.strength")}</th><th>{t("flowChart.followed", { window: intraday ? "30 min" : "1 día" })}</th>
                 </tr>
               </thead>
               <tbody>
@@ -314,14 +312,14 @@ export default function FlowPriceChart({ ticker, trades }: { ticker: string; tra
                   <tr key={i}>
                     <td className="left">{dateET(c.trades[0].timestamp)} · {hmET(c.startSec)}–{hmET(c.endSec)}</td>
                     <td><span className={`pill ${c.bet === "alcista" ? "agg-ask" : "agg-bid"}`}>{c.betLabel}</span></td>
-                    <td>{c.bet === "alcista" ? "📈 Alcista" : "📉 Bajista"}</td>
+                    <td>{c.bet === "alcista" ? t("flowChart.bullish") : t("flowChart.bearish")}</td>
                     <td>{c.count}</td>
                     <td>{money.format(c.premium)}</td>
                     <td>{c.score}/10</td>
                     <td>
                       {move
-                        ? <span className={move.matched ? "mv-ok" : "mv-bad"}>{move.matched ? "Sí ✓" : "No ✗"} ({(move.pct * 100).toFixed(2)}%)</span>
-                        : <span className="muted">aún en curso</span>}
+                        ? <span className={move.matched ? "mv-ok" : "mv-bad"}>{move.matched ? t("flowChart.yes") : t("flowChart.no")} ({(move.pct * 100).toFixed(2)}%)</span>
+                        : <span className="muted">{t("flowChart.ongoing")}</span>}
                     </td>
                   </tr>
                 ))}
@@ -329,8 +327,7 @@ export default function FlowPriceChart({ ticker, trades }: { ticker: string; tra
             </table>
           </div>
           <p className="pxsrc" style={{ marginTop: 8 }}>
-            La <b>apuesta</b> sale de qué operaron: comprar CALLS o vender PUTS = apuesta alcista 📈 ·
-            comprar PUTS o vender CALLS = apuesta bajista 📉. "Sí" = el precio se movió en esa dirección. No es consejo, es análisis.
+            <Rich text={t("flowChart.footnote")} />
           </p>
         </div>
       )}

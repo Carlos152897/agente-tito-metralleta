@@ -1,5 +1,7 @@
 "use client";
 
+import { useLocale } from "@/lib/i18n";
+
 /**
  * Loader de análisis para la vista Estudiante (y Pro).
  *
@@ -10,11 +12,11 @@
  * progreso solo sube y nunca parpadea ni retrocede.
  */
 
-const PHASES = [
-  "Conectando con el mercado",
-  "Leyendo el flujo de opciones",
-  "Descargando la cadena de opciones",
-  "Calculando escenarios y niveles",
+const PHASE_KEYS = [
+  "loader.phase1",
+  "loader.phase2",
+  "loader.phase3",
+  "loader.phase4",
 ];
 
 export default function AnalysisLoader({
@@ -24,6 +26,7 @@ export default function AnalysisLoader({
   ticker: string | null;
   steps: string[];
 }) {
+  const { t } = useLocale();
   // Progreso suave y siempre creciente: curva asintótica sobre el nº de pasos recibidos.
   // Con cada paso avanza un poco (sensación fluida) sin depender de un total exacto que
   // varía por ticker. Se topa en 97% hasta que el análisis termina y el loader se oculta.
@@ -35,13 +38,13 @@ export default function AnalysisLoader({
   return (
     <section className="loader card">
       <div className="loader-steps">
-        {PHASES.map((label, i) => (
+        {PHASE_KEYS.map((key, i) => (
           <div
             key={i}
             className={`loader-node ${i < phase ? "done" : i === phase ? "active" : "pending"}`}
           >
             <span className="loader-num">{i < phase ? "✓" : i + 1}</span>
-            <span className="loader-node-label">{label}</span>
+            <span className="loader-node-label">{t(key)}</span>
           </div>
         ))}
       </div>
@@ -54,7 +57,7 @@ export default function AnalysisLoader({
       </div>
 
       <div className="loader-current" key={phase}>
-        Analizando {ticker ?? "el ticker"} — {PHASES[phase]}…
+        {t("loader.analyzing", { ticker: ticker ?? t("loader.theTicker"), phase: t(PHASE_KEYS[phase]) })}
       </div>
     </section>
   );

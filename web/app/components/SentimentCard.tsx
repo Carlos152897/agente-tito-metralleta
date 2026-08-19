@@ -1,5 +1,7 @@
 "use client";
 
+import { useLocale } from "@/lib/i18n";
+
 export interface SentimentPart {
   name: string;
   note: string;
@@ -16,21 +18,22 @@ function colorFor(score100: number): string {
  * ponderados por su peso del scorecard, escalados a 0-100.
  */
 export default function SentimentCard({ ticker, parts }: { ticker: string; parts: SentimentPart[] }) {
+  const { t } = useLocale();
   const active = parts.filter((p) => p.score != null);
   const activeWeight = active.reduce((s, p) => s + p.weight, 0);
   const pts = active.reduce((s, p) => s + (p.score! / 10) * p.weight, 0);
   const score = activeWeight > 0 ? Math.round((pts / activeWeight) * 100) : 0;
   const scoreColor = colorFor(score);
-  const scoreLabel = score >= 60 ? "Bullish" : score >= 45 ? "Neutral" : "Bearish";
+  const scoreLabel = score >= 60 ? t("sentiment.bullish") : score >= 45 ? t("sentiment.neutral") : t("sentiment.bearish");
 
   return (
     <section className="card">
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
         <div>
-          <div className="card-title">AI Sentiment Score</div>
+          <div className="card-title">{t("sentiment.title")}</div>
           <div className="card-sub">
-            Qué tan positivo o negativo se ve el mercado para {ticker} ahora mismo, de 0 a 100.
-            {active.length < parts.length && <> Basado en {active.length} de {parts.length} señales.</>}
+            {t("sentiment.sub", { ticker })}
+            {active.length < parts.length && t("sentiment.subPartial", { shown: active.length, total: parts.length })}
           </div>
         </div>
         <div style={{ textAlign: "right" }}>
@@ -51,12 +54,12 @@ export default function SentimentCard({ ticker, parts }: { ticker: string; parts
           </div>
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#667085", marginTop: 6 }}>
-          <div>Bearish</div><div>Neutral</div><div>Bullish</div>
+          <div>{t("sentiment.bearish")}</div><div>{t("sentiment.neutral")}</div><div>{t("sentiment.bullish")}</div>
         </div>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 12, borderTop: "1px solid #f2f4f7", paddingTop: 16 }}>
-        <div className="sent-head-label">Desglose por señal (promedios de cada sub-agente)</div>
+        <div className="sent-head-label">{t("sentiment.breakdown")}</div>
         {parts.map((p) => {
           const s100 = p.score != null ? p.score * 10 : null;
           const c = s100 != null ? colorFor(s100) : "#d0d5dd";

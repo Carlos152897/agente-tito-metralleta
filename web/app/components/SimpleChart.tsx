@@ -5,13 +5,14 @@ import type { TfBar } from "@/lib/types";
 import type { LevelsReport } from "@/lib/levels";
 import { conePoints, predictionPath } from "@/lib/expectedMove";
 import PriceChart, { type ChartSeries, type ChartTarget } from "./chart/PriceChart";
+import { useLocale } from "@/lib/i18n";
 
 export interface Scenarios { bear: number; base: number; bull: number }
 
-const SCEN: { key: keyof Scenarios; color: string; seed: number; label: string }[] = [
-  { key: "bull", color: "#12b76a", seed: 1.7, label: "Alcista" },
-  { key: "base", color: "#2f6bff", seed: 4.1, label: "Base" },
-  { key: "bear", color: "#f04438", seed: 8.3, label: "Bajista" },
+const SCEN: { key: keyof Scenarios; color: string; seed: number; labelKey: string }[] = [
+  { key: "bull", color: "#12b76a", seed: 1.7, labelKey: "chart.bullShort" },
+  { key: "base", color: "#2f6bff", seed: 4.1, labelKey: "chart.baseShort" },
+  { key: "bear", color: "#f04438", seed: 8.3, labelKey: "chart.bearShort" },
 ];
 
 /**
@@ -61,6 +62,7 @@ export default function SimpleChart({
   scenarios: Scenarios | null;
   levels: LevelsReport | null;
 }) {
+  const { t } = useLocale();
   const [bars, setBars] = useState<TfBar[] | null>(null);
 
   useEffect(() => {
@@ -93,7 +95,7 @@ export default function SimpleChart({
 
   // El target es el de `predictionPath` (ya recortado al cono), no el crudo.
   const targets: ChartTarget[] = scen.map((s) => ({
-    key: s.key, price: s.path.target, label: s.label, color: s.color, weight: 1,
+    key: s.key, price: s.path.target, label: t(s.labelKey), color: s.color, weight: 1,
   }));
 
   // Menos ruido: solo los 2 soportes y 2 resistencias más CERCANOS y con fuerza real.
@@ -109,18 +111,18 @@ export default function SimpleChart({
   return (
     <section className="simple-chart card">
       <div>
-        <div className="card-title">¿Cómo se podría mover {ticker}?</div>
+        <div className="card-title">{t("chart.title", { ticker })}</div>
         <div className="card-sub">
-          Las líneas de colores son las 3 rutas posibles: <b style={{ color: "#12b76a" }}>alcista</b>,
-          {" "}<b style={{ color: "#2f6bff" }}>base</b> y <b style={{ color: "#f04438" }}>bajista</b>.
-          Las punteadas son soportes/resistencias cercanos. Simulación ilustrativa, no exacta.
+          {t("chart.sub1")} <b style={{ color: "#12b76a" }}>{t("chart.bullShort").toLowerCase()}</b>,
+          {" "}<b style={{ color: "#2f6bff" }}>{t("chart.baseShort").toLowerCase()}</b> {t("chart.and")} <b style={{ color: "#f04438" }}>{t("chart.bearShort").toLowerCase()}</b>.
+          {" "}{t("chart.sub2")}
         </div>
       </div>
 
       <div className="simple-chart-area">
-        {bars === null && <div className="simple-chart-loading">Cargando gráfica…</div>}
+        {bars === null && <div className="simple-chart-loading">{t("chart.loading")}</div>}
         {bars !== null && bars.length === 0 && (
-          <div className="simple-chart-loading">Sin datos de precio para {ticker}.</div>
+          <div className="simple-chart-loading">{t("chart.noData", { ticker })}</div>
         )}
         {bars !== null && bars.length > 0 && (
           <PriceChart
@@ -139,7 +141,7 @@ export default function SimpleChart({
       </div>
 
       <div className="simple-chart-foot">
-        Simulación ilustrativa basada en volatilidad y flujo de opciones. No es consejo financiero.
+        {t("chart.footer")}
       </div>
     </section>
   );

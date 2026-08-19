@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import type { DailyBar, Row } from "@/lib/types";
+import { useLocale } from "@/lib/i18n";
 
 const LINE_COLORS = ["#4da3ff", "#3fd07a", "#ffb020", "#ff6b6b", "#b98cff"];
 
@@ -29,6 +30,7 @@ export default function ChartPanel({
   bars: DailyBar[];
   contracts: Row[];
 }) {
+  const { t } = useLocale();
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -94,12 +96,12 @@ export default function ChartPanel({
   return (
     <section className="chart">
       <div className="chart-head">
-        <h2>Top 5 por Notional Value · {ticker}</h2>
-        <span className="muted">Líneas dibujadas en cada strike sobre el precio del subyacente</span>
+        <h2>{t("chartPanel.title", { ticker })}</h2>
+        <span className="muted">{t("chartPanel.sub")}</span>
       </div>
 
       {bars.length === 0 ? (
-        <div className="chart-empty">Sin histórico de precio para {ticker}.</div>
+        <div className="chart-empty">{t("chartPanel.noHistory", { ticker })}</div>
       ) : (
         <div ref={containerRef} className="chart-canvas" />
       )}
@@ -117,7 +119,7 @@ export default function ChartPanel({
                 <span className={`pill ${c.contractType}`}>{c.contractType}</span>
               </div>
               <div className="legend-meta">
-                Vence {c.expiration} · OI {c.openInterest.toLocaleString("en-US")} ·
+                {t("chartPanel.expires", { exp: c.expiration })} · OI {c.openInterest.toLocaleString("en-US")} ·
                 {" "}Open Premium {c.openPremium != null ? money.format(c.openPremium) : "n/a"} ·
                 {" "}Notional <b>{money.format(c.notionalValue)}</b>
               </div>

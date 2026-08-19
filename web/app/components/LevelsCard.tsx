@@ -1,19 +1,20 @@
 "use client";
 
 import type { Level, LevelsReport } from "@/lib/levels";
+import { useLocale, Rich, type LocaleCtx } from "@/lib/i18n";
 import { int, money, px } from "../format";
 
 const SUP = "#12b76a";
 const RES = "#f04438";
 
-function strengthLabel(s: number): string {
-  if (s >= 70) return "Muy fuerte";
-  if (s >= 50) return "Fuerte";
-  if (s >= 30) return "Moderado";
-  return "Débil";
+function strengthLabel(s: number, t: LocaleCtx["t"]): string {
+  if (s >= 70) return t("levelsCard.veryStrong");
+  if (s >= 50) return t("levelsCard.strong");
+  if (s >= 30) return t("levelsCard.moderate");
+  return t("levelsCard.weak");
 }
 
-function Row({ l }: { l: Level }) {
+function Row({ l, t }: { l: Level; t: LocaleCtx["t"] }) {
   const color = l.kind === "soporte" ? SUP : RES;
   return (
     <div className="lvl-row">
@@ -31,8 +32,8 @@ function Row({ l }: { l: Level }) {
       </div>
       <div className="lvl-strength">
         <b style={{ color }}>{l.strength}</b>
-        <span>{strengthLabel(l.strength)}</span>
-        {l.flipped && <span className="lvl-flip">flipeado</span>}
+        <span>{strengthLabel(l.strength, t)}</span>
+        {l.flipped && <span className="lvl-flip">{t("levelsCard.flipped")}</span>}
       </div>
     </div>
   );
@@ -43,40 +44,38 @@ function Row({ l }: { l: Level }) {
  * (venta de calls = resistencia, venta de puts = soporte).
  */
 export default function LevelsCard({ r, ticker }: { r: LevelsReport; ticker: string }) {
+  const { t } = useLocale();
   const has = r.supports.length > 0 || r.resistances.length > 0;
 
   return (
     <section className="card">
       <div>
-        <div className="card-title">Soportes y resistencias</div>
-        <div className="card-sub">
-          Dónde el precio de {ticker} ya frenó antes y dónde hay dinero puesto para frenarlo.
-          La fuerza mezcla los rebotes reales con el posicionamiento en opciones.
-        </div>
+        <div className="card-title">{t("levelsCard.title")}</div>
+        <div className="card-sub">{t("levelsCard.sub", { ticker })}</div>
       </div>
 
       {!has ? (
-        <div className="feed-empty">Sin niveles claros en el rango operativo.</div>
+        <div className="feed-empty">{t("levelsCard.none")}</div>
       ) : (
         <>
           {(r.keyResistance || r.keySupport) && (
             <div className="lvl-key">
               {r.keyResistance && (
                 <div className="lvl-key-box" style={{ borderColor: `${RES}33`, background: "#fef3f2" }}>
-                  <div className="lvl-key-label" style={{ color: RES }}>Resistencia clave</div>
+                  <div className="lvl-key-label" style={{ color: RES }}>{t("levelsCard.keyResistance")}</div>
                   <div className="lvl-key-price" style={{ color: RES }}>${px.format(r.keyResistance.price)}</div>
                   <div className="lvl-key-sub">
                     {r.keyResistance.distancePct >= 0 ? "+" : ""}{r.keyResistance.distancePct.toFixed(1)}% ·
-                    fuerza {r.keyResistance.strength}/100
+                    {" "}{t("levelsCard.strengthOf", { s: r.keyResistance.strength })}
                   </div>
                 </div>
               )}
               {r.keySupport && (
                 <div className="lvl-key-box" style={{ borderColor: `${SUP}33`, background: "#f6fef9" }}>
-                  <div className="lvl-key-label" style={{ color: SUP }}>Soporte clave</div>
+                  <div className="lvl-key-label" style={{ color: SUP }}>{t("levelsCard.keySupport")}</div>
                   <div className="lvl-key-price" style={{ color: SUP }}>${px.format(r.keySupport.price)}</div>
                   <div className="lvl-key-sub">
-                    {r.keySupport.distancePct.toFixed(1)}% · fuerza {r.keySupport.strength}/100
+                    {r.keySupport.distancePct.toFixed(1)}% · {t("levelsCard.strengthOf", { s: r.keySupport.strength })}
                   </div>
                 </div>
               )}
@@ -85,32 +84,27 @@ export default function LevelsCard({ r, ticker }: { r: LevelsReport; ticker: str
 
           {r.resistances.length > 0 && (
             <div>
-              <div className="news-head">Resistencias — techos por encima del precio</div>
+              <div className="news-head">{t("levelsCard.resistancesHead")}</div>
               <div className="lvl-list">
-                {r.resistances.map((l) => <Row key={`r${l.price}`} l={l} />)}
+                {r.resistances.map((l) => <Row key={`r${l.price}`} l={l} t={t} />)}
               </div>
             </div>
           )}
 
           <div className="lvl-spot">
-            Precio actual · <b>${px.format(r.spot)}</b>
+            {t("levelsCard.currentPrice")} · <b>${px.format(r.spot)}</b>
           </div>
 
           {r.supports.length > 0 && (
             <div>
-              <div className="news-head">Soportes — suelos por debajo del precio</div>
+              <div className="news-head">{t("levelsCard.supportsHead")}</div>
               <div className="lvl-list">
-                {r.supports.map((l) => <Row key={`s${l.price}`} l={l} />)}
+                {r.supports.map((l) => <Row key={`s${l.price}`} l={l} t={t} />)}
               </div>
             </div>
           )}
 
-          <div className="iv-note">
-            Un nivel vale más cuando <b>coincide</b> el precio y las opciones: que ya haya
-            rebotado ahí <i>y</i> que además haya dinero puesto. Los niveles se agrupan con una
-            tolerancia de {r.tolerancePct}% — $299 y $301 son el mismo techo, no dos.
-            <b> Flipeado</b> = era techo y ahora hace de suelo (o al revés).
-          </div>
+          <Rich className="iv-note" text={t("levelsCard.note", { tol: r.tolerancePct })} />
         </>
       )}
     </section>

@@ -1,4 +1,7 @@
+"use client";
+
 import type { FlowRow } from "@/lib/flow";
+import { useLocale } from "@/lib/i18n";
 
 /**
  * Burbuja para trades repetitivos — mismo contrato golpeado varias veces
@@ -18,8 +21,9 @@ export function buildRepeatCounts(rows: FlowRow[]): Map<string, number> {
 }
 
 export default function RepeatBadge({ count }: { count: number }) {
+  const { t } = useLocale();
   return (
-    <span className="repeat-badge" title={`Contrato repetido — ${count} operaciones sobre el mismo strike`}>
+    <span className="repeat-badge" title={t("repeatBadge.title", { n: count })}>
       🔁 ×{Math.max(count, 2)}
     </span>
   );
