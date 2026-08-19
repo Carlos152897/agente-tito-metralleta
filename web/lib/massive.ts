@@ -289,12 +289,22 @@ export interface WheelChainQuote {
   ask: number | null;
   lastTrade: number | null;
   openInterest: number;
+  /**
+   * Cierre del día del CONTRATO (no del subyacente) — respaldo cuando no hay
+   * `last_quote`/`last_trade` (ver la nota en `fetchCreditSpreadChain`).
+   * Opcional: `fetchWheelChain` no lo rellena, solo lo usa Venta de Primas.
+   */
+  dayClose?: number | null;
+  /** IV que Massive ya trae calculada para este contrato, si la trae. */
+  impliedVolatility?: number | null;
 }
 
 interface WheelRawContract {
   details?: { strike_price?: number; expiration_date?: string; contract_type?: string };
   last_quote?: { bid?: number; ask?: number };
   last_trade?: { price?: number };
+  day?: { close?: number; vwap?: number };
+  implied_volatility?: number;
   open_interest?: number;
   underlying_asset?: { price?: number };
 }
@@ -349,6 +359,106 @@ export async function fetchWheelChain(
   // Solo puts OTM: los ITM no son cash-secured puts de Wheel, son otra cosa.
   const otm = spot != null ? quotes.filter((q) => q.strike <= spot) : quotes;
   return { spot, quotes: otm };
+}
+
+/**
+ * Cadena de AMBOS lados (calls y puts) para el screener de Venta de Primas.
+ * A diferencia de `fetchWheelChain` (solo puts, filtrados a OTM porque la
+ * Wheel solo vende un lado), un spread de crédito necesita la cadena COMPLETA
+ * alrededor del spot en ambos tipos: la pata corta puede quedar en cualquier
+ * strike OTM y la pata larga se busca a un ancho de distancia, así que hace
+ * falta ver strikes a ambos lados sin descartar nada de antemano — el filtro
+ * OTM lo aplica `creditSpreadCandidatesForTicker` (lib/creditSpreads.ts), no
+ * esta función de I/O.
+ *
+ * Dos peticiones (call y put) al mismo endpoint que `fetchWheelChain`, cada
+ * una ya acotada por Massive al rango de vencimiento — mismo patrón, el doble
+ * de llamadas.
+ *
+ * LIMITACIÓN REAL RE-VERIFICADA EN VIVO (ago 2026, no la nota vieja de
+ * jul 2026 que decía lo contrario): en este plan, `/v3/snapshot/options/{t}`
+ * NO trae `last_quote` (bid/ask) NI `last_trade` para NINGÚN contrato —
+ * probado en vivo sobre IWM/AAPL/SPY, 0 de 250 resultados con bid en cada
+ * caso. Sí trae `day.close`/`day.vwap` (cierre del contrato hoy, ~209/250
+ * contratos) y, novedad frente a esa nota vieja, `implied_volatility` casi
+ * siempre (250/250 en la prueba de SPY calls) — se usa cuando está, con
+ * bisección propia (`impliedVol`) como respaldo. Como tampoco hay
+ * `underlying_asset.price`, el spot NO sale de aquí: la ruta usa el último
+ * cierre de `cachedDailyBars` (mismas barras que ya pide para la volatilidad
+ * realizada). El crédito real "vender al bid, comprar al ask" que pide el
+ * prompt de Carlos se degrada, cuando no hay bid/ask real, a una ESTIMACIÓN
+ * conservadora desde `day.close` con el mismo haircut del 10% que ya usa
+ * `HAIRCUT.ultimo` en lib/wheel.ts para el mismo problema — ver
+ * `resolveLegQuote` en lib/creditSpreads.ts. Se marca `creditSource` en cada
+ * candidato y se declara en la UI; nunca se presenta como precio real cuando
+ * no lo es.
+ */
+export interface CreditSpreadChainResult {
+  spot: number | null;
+  puts: WheelChainQuote[];
+  calls: WheelChainQuote[];
+}
+
+async function fetchSideChain(
+  clean: string,
+  contractType: "call" | "put",
+  from: string,
+  to: string,
+  todayETMs: number,
+): Promise<{ spot: number | null; quotes: WheelChainQuote[] }> {
+  const day = 24 * 60 * 60 * 1000;
+  const path =
+    `/v3/snapshot/options/${encodeURIComponent(clean)}` +
+    `?contract_type=${contractType}&expiration_date.gte=${from}&expiration_date.lte=${to}&limit=250`;
+
+  const json = await getJson<{ results?: WheelRawContract[] }>(path);
+  const results = json?.results ?? [];
+
+  let spot: number | null = null;
+  const quotes: WheelChainQuote[] = [];
+  for (const c of results) {
+    const strike = c.details?.strike_price;
+    const expiration = c.details?.expiration_date;
+    if (!(strike != null && strike > 0) || !expiration) continue;
+    if (spot == null && c.underlying_asset?.price) spot = c.underlying_asset.price;
+
+    const dte = Math.round((Date.parse(`${expiration}T00:00:00Z`) - todayETMs) / day);
+    quotes.push({
+      strike, expiration, dte,
+      bid: c.last_quote?.bid ?? null,
+      ask: c.last_quote?.ask ?? null,
+      lastTrade: c.last_trade?.price ?? null,
+      openInterest: c.open_interest ?? 0,
+      dayClose: c.day?.close ?? c.day?.vwap ?? null,
+      impliedVolatility: c.implied_volatility ?? null,
+    });
+  }
+  return { spot, quotes };
+}
+
+export async function fetchCreditSpreadChain(
+  ticker: string,
+  opts: { dteMin: number; dteMax: number; now?: Date },
+): Promise<CreditSpreadChainResult> {
+  const clean = ticker.trim().toUpperCase();
+  if (!clean) throw new MassiveError("Ticker vacío.");
+  const now = opts.now ?? new Date();
+  const day = 24 * 60 * 60 * 1000;
+  const todayET = marketDateStr(now);
+  const todayETMs = Date.parse(`${todayET}T00:00:00Z`);
+  const from = toDateStr(todayETMs + opts.dteMin * day);
+  const to = toDateStr(todayETMs + opts.dteMax * day);
+
+  const [putSide, callSide] = await Promise.all([
+    fetchSideChain(clean, "put", from, to, todayETMs),
+    fetchSideChain(clean, "call", from, to, todayETMs),
+  ]);
+
+  return {
+    spot: putSide.spot ?? callSide.spot,
+    puts: putSide.quotes,
+    calls: callSide.quotes,
+  };
 }
 
 // ── Backtest ("Prueba de Fuego") ────────────────────────────────────────────
