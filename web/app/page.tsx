@@ -13,6 +13,7 @@ import { gexHeatmap, type HeatTrade } from "@/lib/gexHeatmap";
 import { predictPro } from "@/lib/prediction";
 import { findLevels, type ChainLevel, type FlowLevel } from "@/lib/levels";
 import { int } from "./format";
+import { useLocale } from "@/lib/i18n";
 import HeaderBar from "./components/HeaderBar";
 import HeroLanding from "./components/HeroLanding";
 import AnalysisLoader from "./components/AnalysisLoader";
@@ -62,6 +63,7 @@ type FlowEvent =
   | { type: "error"; message: string };
 
 export default function Dashboard() {
+  const { t } = useLocale();
   const [ticker, setTicker] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [steps, setSteps] = useState<string[]>([]);
@@ -352,7 +354,7 @@ export default function Dashboard() {
 
   return (
     <>
-      <HeaderBar ticker={ticker} company={company} busy={busy} onSearch={runSearch} />
+      <HeaderBar company={company} busy={busy} showSearch={started || busy} onSearch={runSearch} />
       <main className="wrap page-stack">
 
         {!started && !busy && <HeroLanding onSearch={runSearch} />}
@@ -367,10 +369,10 @@ export default function Dashboard() {
             <div className="view-toggle-row">
               <div className="view-toggle">
                 <button className={view === "estudiante" ? "active" : ""} onClick={() => setView("estudiante")}>
-                  👤 Estudiante
+                  👤 {t("view.estudiante")}
                 </button>
                 <button className={view === "pro" ? "active" : ""} onClick={() => setView("pro")}>
-                  ⚡ Pro
+                  ⚡ {t("view.pro")}
                 </button>
               </div>
             </div>
@@ -385,7 +387,7 @@ export default function Dashboard() {
                 <div className="stack-tight">
                   <div className="view-toggle-row">
                     <div className="view-toggle">
-                      {[[10, "Esta semana"], [20, "2 semanas"], [30, "1 mes"]].map(([d, lbl]) => (
+                      {[[10, t("horizon.week")], [20, t("horizon.twoWeeks")], [30, t("horizon.month")]].map(([d, lbl]) => (
                         <button
                           key={d as number}
                           className={horizonDays === d ? "active" : ""}
@@ -418,7 +420,7 @@ export default function Dashboard() {
                 <MemoriaCard ticker={ticker} />
 
                 <div className="disclaimer">
-                  Las predicciones son estimaciones de IA, no consejo financiero.
+                  {t("disclaimer.predictions")}
                 </div>
               </>
             )}
@@ -452,12 +454,12 @@ export default function Dashboard() {
             {unusualRows && <TradesFeed rows={unusualRows} />}
 
             <div className="disclaimer">
-              Las predicciones son estimaciones de IA, no consejo financiero.
+              {t("disclaimer.predictions")}
             </div>
 
             <details className="detalle">
               <summary>
-                Detalle de sub-agentes — las tablas y promedios que alimentan Prediction Pro
+                {t("detail.summary")}
               </summary>
               <div className="detalle-inner">
                 {company && <CompanyHeader company={company} />}
@@ -482,8 +484,8 @@ export default function Dashboard() {
                 {chainRows && chainMeta && (
                   <div>
                     <h2 className="clusters-title" style={{ cursor: "pointer" }} onClick={() => setShowChain((v) => !v)}>
-                      {showChain ? "▾" : "▸"} Option Chain completo
-                      <span className="muted"> — {int.format(chainMeta.contractCount)} contratos</span>
+                      {showChain ? "▾" : "▸"} {t("detail.optionChain")}
+                      <span className="muted"> — {int.format(chainMeta.contractCount)} {t("detail.contracts")}</span>
                     </h2>
                     {showChain && <OptionChainTable rows={chainRows} meta={chainMeta} />}
                   </div>

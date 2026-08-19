@@ -4,12 +4,13 @@ import { useEffect, useState } from "react";
 import type { CompanyInfo } from "@/lib/types";
 import type { Bias, NewsReport } from "@/lib/news";
 import { contradictionFlag, flowBias } from "@/lib/news";
+import { useLocale } from "@/lib/i18n";
 
-const BIAS: Record<Bias, { text: string; cls: string }> = {
-  bullish: { text: "Noticias positivas", cls: "up" },
-  bearish: { text: "Noticias negativas", cls: "down" },
-  mixed: { text: "Noticias mixtas", cls: "flat" },
-  neutral: { text: "Sin noticias marcadas", cls: "flat" },
+const BIAS_KEY: Record<Bias, { key: string; cls: string }> = {
+  bullish: { key: "context.positive", cls: "up" },
+  bearish: { key: "context.negative", cls: "down" },
+  mixed: { key: "context.mixed", cls: "flat" },
+  neutral: { key: "context.neutral", cls: "flat" },
 };
 
 /**
@@ -25,6 +26,7 @@ export default function ContextoLinea({
   company: CompanyInfo | null;
   callPct: number | null;
 }) {
+  const { t } = useLocale();
   const [report, setReport] = useState<NewsReport | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -41,19 +43,19 @@ export default function ContextoLinea({
   }, [ticker, company?.name]);
 
   if (failed) return null;
-  if (!report) return <div className="ctx-line ctx-loading">📰 Leyendo noticias de {ticker}…</div>;
+  if (!report) return <div className="ctx-line ctx-loading">{t("context.loading", { ticker })}</div>;
 
-  const b = BIAS[report.bias.bias];
+  const b = BIAS_KEY[report.bias.bias];
   const flag = callPct != null ? contradictionFlag(flowBias(callPct), report.bias) : null;
   const agree =
-    flag?.kind === "confirm" ? { txt: "coincide con el flujo ✓", cls: "up" }
-    : flag?.kind === "conflict" ? { txt: "contradice al flujo ⚠", cls: "down" }
+    flag?.kind === "confirm" ? { txt: t("context.confirms"), cls: "up" }
+    : flag?.kind === "conflict" ? { txt: t("context.conflicts"), cls: "down" }
     : null;
 
   return (
     <div className={`ctx-line ctx-${b.cls}`}>
       <span className="ctx-icon">📰</span>
-      <span className="ctx-text"><b>{b.text}</b> sobre {ticker}</span>
+      <span className="ctx-text"><b>{t(b.key)}</b> {t("context.about", { ticker })}</span>
       {agree && <span className={`ctx-flag ${agree.cls}`}>{agree.txt}</span>}
     </div>
   );

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Space_Grotesk } from "next/font/google";
+import { LocaleProvider } from "@/lib/i18n";
 import "./globals.css";
 
 const spaceGrotesk = Space_Grotesk({
@@ -19,7 +20,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="es">
-      <body className={spaceGrotesk.className}>{children}</body>
+      <body className={spaceGrotesk.className}>
+        <LocaleProvider>{children}</LocaleProvider>
+      </body>
     </html>
   );
 }

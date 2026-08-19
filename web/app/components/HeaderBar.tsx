@@ -2,56 +2,47 @@
 
 import { useState } from "react";
 import type { CompanyInfo } from "@/lib/types";
+import { useLocale } from "@/lib/i18n";
 import { pct, px } from "../format";
 import BrandMark from "./BrandMark";
 import NavTabs from "./NavTabs";
-
-const QUICK = ["TSLA", "NVDA", "SPY", "AAPL"];
+import LanguageSwitcher from "./LanguageSwitcher";
 
 export default function HeaderBar({
-  ticker,
   company,
   busy,
+  showSearch,
   onSearch,
 }: {
-  ticker: string | null;
   company: CompanyInfo | null;
   busy: boolean;
+  showSearch: boolean;
   onSearch: (t: string) => void;
 }) {
   const [q, setQ] = useState("");
+  const { t } = useLocale();
 
   const submit = () => {
-    const t = q.trim().toUpperCase();
-    if (!t || busy) return;
+    const query = q.trim().toUpperCase();
+    if (!query || busy) return;
     setQ("");
-    onSearch(t);
+    onSearch(query);
   };
 
   return (
     <div className="hb">
       <BrandMark subtitle="AI Options Agent" />
       <NavTabs />
-      <div className="hb-tabs">
-        {QUICK.map((s) => (
-          <button
-            key={s}
-            type="button"
-            className={`hb-tab ${ticker === s ? "on" : ""}`}
-            onClick={() => !busy && onSearch(s)}
-          >
-            {s}
-          </button>
-        ))}
-      </div>
-      <input
-        className="hb-search"
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
-        onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
-        placeholder="Buscar ticker…"
-        spellCheck={false}
-      />
+      {showSearch && (
+        <input
+          className="hb-search"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
+          placeholder={t("header.searchPlaceholder")}
+          spellCheck={false}
+        />
+      )}
       <div className="hb-right">
         {company && (
           <>
@@ -64,6 +55,7 @@ export default function HeaderBar({
             )}
           </>
         )}
+        <LanguageSwitcher />
       </div>
     </div>
   );

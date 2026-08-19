@@ -67,6 +67,11 @@ html, body {
   top: 0;
   z-index: 40;
 }
+/* El navbar (8 pestañas) es lo único que puede quedarse corto de espacio — todo lo
+   demás (marca, búsqueda, precio, selector de idioma) debe seguir siempre visible,
+   así que el navbar es el que se achica y scrollea internamente en vez de empujar
+   al resto fuera de la pantalla. */
+.hb-brand, .hb-search, .hb-right { flex-shrink: 0; }
 .hb-brand { display: flex; align-items: center; gap: 10px; }
 .hb-logo {
   width: 30px; height: 30px; border-radius: 8px;
@@ -80,7 +85,6 @@ html, body {
   font-size: 11px; color: var(--muted); background: var(--border-soft);
   border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px;
 }
-.hb-tabs { display: flex; gap: 6px; }
 .hb-tab {
   font-family: inherit; font-size: 13px; font-weight: 600;
   padding: 7px 14px; border-radius: 999px; cursor: pointer; white-space: nowrap;
@@ -101,6 +105,15 @@ html, body {
 .hb-link { font-size: 12px; color: var(--accent); text-decoration: none; white-space: nowrap; }
 .hb-link:hover { text-decoration: underline; }
 
+.lang-switch {
+  font-family: inherit; font-size: 13px; font-weight: 600;
+  padding: 7px 30px 7px 14px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--panel) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23667085' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 12px center;
+  color: var(--text); outline: none; appearance: none; -webkit-appearance: none;
+}
+.lang-switch:hover { background-color: var(--panel-2); }
+.lang-switch:focus { border-color: var(--accent); }
+
 /* ── Navegación entre vistas (Ticker / Ideas / Wheel / Time & Sales) ── */
 .nav-tabs {
   display: flex;
@@ -110,8 +123,14 @@ html, body {
   border-radius: 999px;
   background: var(--border-soft);
   border: 1px solid var(--border);
+  /* Se achica y scrollea internamente antes que empujar el buscador/idioma
+     fuera de la pantalla (ver .hb-brand/.hb-search/.hb-right). */
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
-.nav-tabs.standalone { display: inline-flex; margin-bottom: 20px; }
+.nav-tabs::-webkit-scrollbar { display: none; }
+.nav-tabs.standalone { display: inline-flex; margin-bottom: 20px; overflow-x: visible; }
 .nav-tab {
   display: inline-flex; align-items: center; gap: 6px;
   font-size: 13px; font-weight: 600; line-height: 1;
@@ -1041,6 +1060,37 @@ tfoot .totals td {
 .wheel-empty { color: var(--muted); }
 .wheel-status { font-size: 14px; font-weight: 600; margin: 4px 0; }
 .wheel-disclaimer { font-size: 12px; color: var(--muted); margin: 0 0 8px; }
+
+/* ── Venta de Primas (spreads de crédito de riesgo definido) ────────────── */
+.vp-disclaimer-top {
+  font-size: 13px; color: var(--muted); background: var(--panel); border: 1px solid var(--border);
+  border-radius: 10px; padding: 10px 14px; margin: 0 0 4px; line-height: 1.5;
+}
+.vp-disclaimer-top b { color: var(--text); }
+.vp-strikes { font-size: 11px; margin-top: 2px; }
+.vp-earnings-badge {
+  margin-left: 6px; background: var(--red-bg); color: var(--red);
+  font-size: 10px; font-weight: 700; letter-spacing: 0.3px;
+}
+.vp-premium-cara { background: var(--red-bg); color: var(--red); }
+.vp-premium-normal { background: var(--border-soft); color: var(--muted); }
+.vp-premium-barata { background: var(--green-bg); color: var(--green-dark); }
+.vp-pos { color: var(--green-dark); font-weight: 600; }
+.vp-neg { color: var(--red); font-weight: 600; }
+.vp-verdict-banner {
+  background: var(--red-bg); border: 1px solid rgba(240,68,56,0.3); color: var(--red);
+  border-radius: 10px; padding: 12px 16px; font-size: 13.5px; line-height: 1.5; margin: 4px 0 8px;
+}
+.vp-verdict-banner b { color: var(--red); }
+.vp-earnings-banner {
+  background: var(--amber-bg); border: 1px solid var(--amber-border); color: var(--amber-text);
+  border-radius: 10px; padding: 10px 16px; font-size: 13px; line-height: 1.5; margin: 0 0 8px;
+}
+.vp-notes { display: flex; flex-direction: column; gap: 6px; margin: 0 0 14px; }
+.vp-notes p {
+  font-size: 12px; color: var(--muted); margin: 0; line-height: 1.5;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px;
+}
 
 /* ── Hero de portada (Visionary Trades) ──────────────────────────────── */
 .hero { display: flex; flex-direction: column; align-items: center; text-align: center;

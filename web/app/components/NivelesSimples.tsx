@@ -2,6 +2,7 @@
 
 import type { LevelsReport } from "@/lib/levels";
 import { probTouch } from "@/lib/expectedMove";
+import { useLocale, horizonLabel } from "@/lib/i18n";
 import { px } from "../format";
 
 /**
@@ -18,6 +19,7 @@ export default function NivelesSimples({
   iv: number;
   horizonDays: number;
 }) {
+  const { t } = useLocale();
   const spot = levels.spot;
   const rows = [...levels.supports, ...levels.resistances]
     .filter((l) => l.strength >= 20)
@@ -31,8 +33,8 @@ export default function NivelesSimples({
   if (rows.length === 0) {
     return (
       <section className="card">
-        <div className="card-title">Precios clave</div>
-        <div className="card-sub">Todavía no hay soportes ni resistencias claros para este ticker.</div>
+        <div className="card-title">{t("levels.titleEmpty")}</div>
+        <div className="card-sub">{t("levels.subEmpty")}</div>
       </section>
     );
   }
@@ -40,16 +42,13 @@ export default function NivelesSimples({
   return (
     <section className="card">
       <div>
-        <div className="card-title">Precios clave — ¿hasta dónde puede llegar?</div>
-        <div className="card-sub">
-          Zonas donde el precio suele frenar. La probabilidad es qué tan factible es que lo
-          <b> toque</b> en las próximas ~{horizonDays === 10 ? "1 semana" : horizonDays === 20 ? "2 semanas" : "4 semanas"}.
-        </div>
+        <div className="card-title">{t("levels.title")}</div>
+        <div className="card-sub">{t("levels.sub", { horizon: horizonLabel(t, horizonDays) })}</div>
       </div>
 
       <div className="niveles">
         <div className="niveles-head">
-          <span>Precio</span><span>Tipo</span><span>Distancia</span><span>Probabilidad</span>
+          <span>{t("levels.price")}</span><span>{t("levels.type")}</span><span>{t("levels.distance")}</span><span>{t("levels.probability")}</span>
         </div>
         {rows.map((l) => {
           const isSup = l.kind === "soporte";
@@ -58,8 +57,8 @@ export default function NivelesSimples({
             <div key={`${l.kind}-${l.price}`} className="niveles-row">
               <span className="niveles-price">${px.format(l.price)}</span>
               <span className={`niveles-tag ${isSup ? "sup" : "res"}`}>
-                {isSup ? "🟢 Soporte" : "🔴 Resistencia"}
-                {l.flipped && <span className="niveles-flip" title="Antes hacía de lo contrario"> ⤾</span>}
+                {isSup ? t("levels.support") : t("levels.resistance")}
+                {l.flipped && <span className="niveles-flip" title={t("levels.flipped")}> ⤾</span>}
               </span>
               <span className="niveles-dist">
                 {l.distancePct >= 0 ? "+" : ""}{l.distancePct.toFixed(1)}%

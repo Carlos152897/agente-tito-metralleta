@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { timeGreeting } from "@/lib/greeting";
 import { isMarketOpen } from "@/lib/marketHours";
 import { loadProfile } from "@/app/components/RiskProfileCard";
+import { useLocale } from "@/lib/i18n";
 
 const CHIP_COLORS = ["#34d399", "#22d3ee", "#fb923c", "#60a5fa", "#c084fc"];
 const CHIPS = ["SPX", "SPY", "TSLA", "NVDA", "AAPL"];
@@ -12,6 +13,7 @@ export default function HeroLanding({ onSearch }: { onSearch: (t: string) => voi
   const [q, setQ] = useState("");
   const [marketOpen, setMarketOpen] = useState(false);
   const [tolerancePct, setTolerancePct] = useState(4);
+  const { t } = useLocale();
 
   useEffect(() => {
     setMarketOpen(isMarketOpen());
@@ -39,7 +41,7 @@ export default function HeroLanding({ onSearch }: { onSearch: (t: string) => voi
         </div>
         <div className={`hero-status ${marketOpen ? "open" : "closed"}`}>
           <span className="dot" />
-          Market Overview — {marketOpen ? "Open" : "Closed"}
+          Market Overview — {marketOpen ? t("hero.open") : t("hero.closed")}
         </div>
       </div>
 
@@ -58,10 +60,10 @@ export default function HeroLanding({ onSearch }: { onSearch: (t: string) => voi
           onKeyDown={(e) => {
             if (e.key === "Enter") submit();
           }}
-          placeholder="What ticker do you want to analyze?"
+          placeholder={t("hero.searchPlaceholder")}
           spellCheck={false}
         />
-        <button className="hero-search-btn" onClick={submit} aria-label="Buscar">
+        <button className="hero-search-btn" onClick={submit} aria-label={t("common.search")}>
           🔍
         </button>
       </div>
