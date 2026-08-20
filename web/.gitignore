@@ -17,3 +17,4 @@ next-env.d.ts
 scripts/marketsnack-keepalive/*.log
 scripts/marketsnack-keepalive/_run-keepalive.cmd
 scripts/marketsnack-cookie/extractor.log
+scripts/tastytrade-candles/_run-candle-streamer.cmd

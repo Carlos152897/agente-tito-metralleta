@@ -45,6 +45,7 @@ import {
 } from "@/lib/grandesEmpresas";
 import { fetchNestedOptionChain, TastytradeError } from "@/lib/tastytrade";
 import { fetchZeroDteChain } from "@/lib/tastytradeChain";
+import { fetchTastytradeCandles } from "@/lib/tastytradeCandles";
 import { atmIV } from "@/lib/zerodte";
 import { buildSuggestions, type ZeroDteSuggestions } from "@/lib/zerodteSuggestions";
 import type { TfBar } from "@/lib/types";
@@ -63,15 +64,17 @@ export async function GET(request: Request) {
     // en paralelo con todo lo demás, no después — es la llamada más pesada
     // de las siete (cientos de strikes/vencimientos) y esperarla en serie
     // duplicaba el tiempo total de la respuesta (~30s medido en vivo).
-    const [chain, msPrice, gexStats, bars15m, dailyBars, todayChart, tastyExpirations] = await Promise.all([
-      fetchNearTermChain(TICKER, { dteMax: NEAR_TERM_DTE_MAX, now }),
-      fetchAssetPrice(TICKER).catch(() => null),
-      fetchGexStats(TICKER, { period: "1d" }).catch(() => []),
-      fetchBars(TICKER, 15, "minute", 20),
-      fetchBars(TICKER, 1, "day", 5),
-      fetchAssetPriceChart(TICKER).catch(() => []),
-      fetchNestedOptionChain(TICKER).catch(() => []),
-    ]);
+    const [chain, msPrice, gexStats, bars15m, dailyBars, todayChart, tastyExpirations, tastyCandles] =
+      await Promise.all([
+        fetchNearTermChain(TICKER, { dteMax: NEAR_TERM_DTE_MAX, now }),
+        fetchAssetPrice(TICKER).catch(() => null),
+        fetchGexStats(TICKER, { period: "1d" }).catch(() => []),
+        fetchBars(TICKER, 15, "minute", 20),
+        fetchBars(TICKER, 1, "day", 5),
+        fetchAssetPriceChart(TICKER).catch(() => []),
+        fetchNestedOptionChain(TICKER).catch(() => []),
+        fetchTastytradeCandles(TICKER),
+      ]);
 
     const spot = msPrice ?? chain.spot ?? dailyBars.at(-1)?.close ?? 0;
     if (!(spot > 0)) {
@@ -154,11 +157,23 @@ export async function GET(request: Request) {
     // precio puntual cada 5 min (no rango OHLC), así que se arma como vela
     // sintética open=high=low=close=v — suficiente para pivotes de
     // soporte/resistencia, no para mechas reales.
-    const todayBars: TfBar[] = todayChart.map((p) => {
+    const marketSnackTodayBars: TfBar[] = todayChart.map((p) => {
       const v = p.v;
       const time = Math.floor(Date.parse(p.t) / 1000);
       return { time, open: v, high: v, low: v, close: v };
     });
+
+    // Respaldo real (2026-08-20, pedido explícito de Carlos): el feed de
+    // MarketSnack puede quedar atrasado un día entero sin avisar (visto en
+    // vivo con TSLA — 9am ET y su "hoy" seguía sin arrancar). `tastyCandles`
+    // viene de `scripts/tastytrade-candles/candle-streamer.mjs` (proceso de
+    // streaming DXLink aparte, ver ese archivo) — velas de 15 min REALES
+    // (con mechas, no el open=high=low=close sintético de arriba), que se
+    // prefieren siempre que estén al menos tan frescas como MarketSnack.
+    const todayBars: TfBar[] =
+      tastyCandles.length > 0 && (tastyCandles.at(-1)?.time ?? 0) >= (marketSnackTodayBars.at(-1)?.time ?? 0)
+        ? tastyCandles
+        : marketSnackTodayBars;
 
     // Fecha de la SESIÓN que se muestra: la del último dato disponible, no
     // necesariamente la fecha calendario de `now` — pedido explícito de
