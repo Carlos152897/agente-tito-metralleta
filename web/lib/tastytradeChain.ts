@@ -4,7 +4,13 @@
 // producción de tastytrade es tiempo real de fábrica, a diferencia del
 // isDelayed=true que devolvía Schwab acá.
 
-import { fetchNestedOptionChain, fetchOptionQuotesByType, fetchUnderlyingQuote, type TastyQuote } from "./tastytrade";
+import {
+  fetchNestedOptionChain,
+  fetchOptionQuotesByType,
+  fetchUnderlyingQuote,
+  type NestedChainExpiration,
+  type TastyQuote,
+} from "./tastytrade";
 import { INDEX_UNDERLYINGS } from "./zerodteTickers";
 import type { ContractType, ZContractGreeks, ZRow } from "./zerodteTypes";
 
@@ -36,10 +42,10 @@ function toGreeks(q: TastyQuote | undefined): ZContractGreeks | null {
  * shape que fetchZeroDteChain de Schwab — swap directo en zerodte.ts.
  */
 export async function fetchZeroDteChain(
-  symbol: string, day: string,
+  symbol: string, day: string, preloadedExpirations?: NestedChainExpiration[],
 ): Promise<{ rows: ZRow[]; underlyingPrice: number | null; delayed: boolean }> {
   const clean = symbol.replace(/^\$/, "").toUpperCase();
-  const expirations = await fetchNestedOptionChain(clean);
+  const expirations = preloadedExpirations ?? (await fetchNestedOptionChain(clean));
   const target = expirations.find((e) => e["expiration-date"] === day);
   if (!target) return { rows: [], underlyingPrice: null, delayed: false };
 

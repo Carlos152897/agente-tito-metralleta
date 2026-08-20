@@ -67,6 +67,40 @@ export function daysToExpiration(expiration: string, now: Date): number {
 }
 
 /**
+ * Instante UTC (unix, en SEGUNDOS) de `hour:minute` ET en `dateStr`
+ * (YYYY-MM-DD) — sondea el offset ET (EDT/EST) del propio `dateStr` con una
+ * prueba a las 16:00Z (siempre cae del mismo lado del cambio de horario que
+ * cualquier otra hora de ese día). Generaliza el mismo truco que ya usaba
+ * `hoursToExpirationClose` (que ahora lo reusa) a cualquier hora del día —
+ * lo pidió "Grandes empresas" (Prueba de Fuego) para sombrear en gris la
+ * franja de pre-market (4:00–9:30 ET) sobre la gráfica de velas.
+ */
+export function etTimeToUnix(dateStr: string, hour: number, minute: number): number {
+  const probe = new Date(`${dateStr}T16:00:00Z`);
+  const tzName = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", timeZoneName: "short" })
+    .formatToParts(probe)
+    .find((p) => p.type === "timeZoneName")?.value;
+  const offsetHours = tzName === "EDT" ? 4 : 5;
+  const utcHour = hour + offsetHours;
+  return Math.floor(Date.parse(`${dateStr}T${String(utcHour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:00Z`) / 1000);
+}
+
+/**
+ * Horas desde `now` hasta el cierre (16:00 ET) de `expirationDate` —
+ * generalización de `hoursToClose` (lib/zerodte.ts, que solo sabe calcular
+ * hasta el cierre de HOY, para 0DTE) a un vencimiento cualquiera, días
+ * adelante. Usado por "Grandes empresas" (Prueba de Fuego): a diferencia de
+ * SPX/SPY/QQQ 0DTE, el vencimiento más cercano de estas empresas puede caer
+ * varios días después de hoy. Sondea el offset ET (EDT/EST) del propio
+ * `expirationDate` (no el de `now`) para no errar si el vencimiento cae del
+ * otro lado de un cambio de horario.
+ */
+export function hoursToExpirationClose(expirationDate: string, now: Date): number {
+  const closeUnixSec = etTimeToUnix(expirationDate, 16, 0);
+  return Math.max(0, (closeUnixSec * 1000 - now.getTime()) / 3_600_000);
+}
+
+/**
  * La raíz OCC real de un contrato (ej. "SPXW" para SPX, cuando el índice
  * cotiza sus opciones bajo una raíz distinta al ticker que se pide/muestra).
  * `optionTicker` puede venir con el prefijo "O:" de Massive.

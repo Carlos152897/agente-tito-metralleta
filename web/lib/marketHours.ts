@@ -47,6 +47,47 @@ export function isMarketCloseNear(now: Date = new Date(), minutesBefore = 15): b
   return minutesSinceMidnight >= closeMinutes - minutesBefore && minutesSinceMidnight < closeMinutes;
 }
 
+/** ¿Es horario de pre-market (4:00–9:30 ET, lun-vie)? Sin calendario de feriados, misma limitación de arriba. */
+export function isPreMarket(now: Date = new Date()): boolean {
+  const { weekday, hour, minute } = partsET(now);
+  if (weekday === "Sat" || weekday === "Sun") return false;
+  const minutesSinceMidnight = hour * 60 + minute;
+  return minutesSinceMidnight >= 4 * 60 && minutesSinceMidnight < 9 * 60 + 30;
+}
+
+/**
+ * Recorta barras intradía (tiempo unix en segundos) a la ventana de
+ * pre-market (4:00–9:30 ET) del día de mercado `targetDateStr` (YYYY-MM-DD,
+ * ET — mismo formato que `marketDateStr`, lib/occ.ts) — para "Grandes
+ * empresas" (Prueba de Fuego): el % movido y los puntos de rechazo del
+ * pre-market se calculan SOLO sobre las velas de ese día antes de la
+ * apertura, no sobre todo el histórico de 20 días que trae la gráfica.
+ *
+ * Recibe la fecha explícita (no `now`) a propósito: entre medianoche y las
+ * 4:00 ET, "hoy" en el calendario todavía no tiene NINGÚN dato (el feed en
+ * vivo de MarketSnack recién empieza a las 4:00 ET) — pedirle el pre-market
+ * del día calendario de `now` en esa ventana siempre da `[]`. El caller
+ * decide la fecha real a usar (normalmente la del último dato disponible,
+ * que sigue siendo la sesión de ayer hasta que arranca la de hoy).
+ */
+export function filterPremarketBars<T extends { time: number }>(bars: T[], targetDateStr: string): T[] {
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: ET,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+  });
+
+  return bars.filter((b) => {
+    const parts = fmt.formatToParts(new Date(b.time * 1000));
+    const key = ["year", "month", "day"].map((t) => parts.find((p) => p.type === t)?.value).join("-");
+    if (key !== targetDateStr) return false;
+    const hour = Number(parts.find((p) => p.type === "hour")?.value ?? "0") % 24;
+    const minute = Number(parts.find((p) => p.type === "minute")?.value ?? "0");
+    const minutesSinceMidnight = hour * 60 + minute;
+    return minutesSinceMidnight >= 4 * 60 && minutesSinceMidnight < 9 * 60 + 30;
+  });
+}
+
 /**
  * ¿Está abierto el mercado de FUTUROS de CME (ES/NQ, sesión "Globex")? Casi
  * 24/5, a diferencia de las opciones de índice de arriba — pedido explícito

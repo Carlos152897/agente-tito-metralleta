@@ -223,6 +223,46 @@ export async function fetchAssetPrice(ticker: string): Promise<number | null> {
   return price != null && price > 0 ? price : null;
 }
 
+export interface AssetChartPoint {
+  t: string;
+  v: number;
+}
+
+/**
+ * Serie de precio en vivo del subyacente, 5 min de resolución, vía
+ * `GET /api/assets/{ticker}/chart?period=1d` — SOLO acepta "1d" (probado en
+ * vivo, "5d" da 422). A diferencia de `fetchBars`/`fetchDailyBars` de Massive
+ * (velas OHLC, pero atrasadas ~1 día en este entorno — verificado en vivo,
+ * ago 2026: ni la barra diaria ni la de 15 min de HOY existen todavía), este
+ * endpoint SÍ cubre HOY completo, pre-market incluido: primer punto a las
+ * 4:00 ET (verificado en vivo con AAPL, 193 puntos desde 08:00 UTC/4:00 ET
+ * hasta after-hours). Solo trae precio puntual (`v`), no rango OHLC — para
+ * "Grandes empresas" (Prueba de Fuego) se usa como vela sintética
+ * (open=high=low=close=v) SOLO para el tramo de hoy que Massive no tiene
+ * todavía; el resto del histórico sigue viniendo de Massive.
+ */
+export async function fetchAssetPriceChart(ticker: string): Promise<AssetChartPoint[]> {
+  const clean = ticker.trim().toUpperCase();
+  if (!clean) return [];
+  const url = `${BASE_URL}/api/assets/${encodeURIComponent(clean)}/chart?period=1d`;
+  const res = await fetch(url, {
+    headers: { Accept: "application/json", Cookie: await cookie() },
+    cache: "no-store",
+    redirect: "manual",
+  });
+
+  if (res.status === 401 || res.status === 403 || (res.status >= 300 && res.status < 400)) {
+    throw new MarketSnackError(
+      "Sesión de MarketSnack inválida o expirada. Actualiza la cookie en /ajustes.",
+      res.status,
+    );
+  }
+  if (!res.ok) return [];
+
+  const json: { data?: AssetChartPoint[] } = await res.json();
+  return json.data ?? [];
+}
+
 /**
  * GEX agregado de MarketSnack, ya calculado por ellos (call_wall, put_wall,
  * magnet, max_pain, gamma_flip, net_gex) — vía `GET /api/assets/{ticker}/

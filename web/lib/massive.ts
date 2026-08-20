@@ -361,6 +361,62 @@ export async function fetchWheelChain(
   return { spot, quotes: otm };
 }
 
+export interface NearTermContract {
+  strike: number;
+  expiration: string;
+  contractType: "call" | "put";
+  optionTicker: string;
+}
+
+export interface NearTermChainResult {
+  spot: number | null;
+  contracts: NearTermContract[];
+}
+
+/**
+ * Cadena acotada a un rango de vencimiento cercano (AMBOS lados, calls y
+ * puts de una — a diferencia de `fetchWheelChain`, que solo pide puts) —
+ * mismo patrón de `expiration_date.gte/.lte` filtrado en el servidor de
+ * Massive, evita traer la cadena multi-mes completa solo para mirar el
+ * vencimiento más próximo. Usado por "Grandes empresas" (Prueba de Fuego,
+ * ago 2026): a diferencia de SPX/SPY/QQQ (0DTE real de tastytrade), estas
+ * empresas no siempre tienen opciones diarias — `dteMax` da margen para
+ * encontrar el vencimiento más próximo que exista de verdad.
+ */
+export async function fetchNearTermChain(
+  ticker: string,
+  opts: { dteMin?: number; dteMax: number; now?: Date },
+): Promise<NearTermChainResult> {
+  const clean = ticker.trim().toUpperCase();
+  if (!clean) throw new MassiveError("Ticker vacío.");
+  const now = opts.now ?? new Date();
+  const day = 24 * 60 * 60 * 1000;
+  const todayET = marketDateStr(now);
+  const todayETMs = Date.parse(`${todayET}T00:00:00Z`);
+  const from = toDateStr(todayETMs + (opts.dteMin ?? 0) * day);
+  const to = toDateStr(todayETMs + opts.dteMax * day);
+
+  const path =
+    `/v3/snapshot/options/${encodeURIComponent(clean)}` +
+    `?expiration_date.gte=${from}&expiration_date.lte=${to}&limit=250`;
+
+  const json = await getJson<{ results?: RawContract[] }>(path);
+  const results = json?.results ?? [];
+
+  let spot: number | null = null;
+  const contracts: NearTermContract[] = [];
+  for (const c of results) {
+    const strike = c.details?.strike_price;
+    const expiration = c.details?.expiration_date;
+    const rawType = c.details?.contract_type;
+    const optionTicker = c.details?.ticker;
+    if (spot == null && c.underlying_asset?.price) spot = c.underlying_asset.price;
+    if (strike == null || !expiration || !optionTicker || (rawType !== "call" && rawType !== "put")) continue;
+    contracts.push({ strike, expiration, contractType: rawType, optionTicker });
+  }
+  return { spot, contracts };
+}
+
 /**
  * Cadena de AMBOS lados (calls y puts) para el screener de Venta de Primas.
  * A diferencia de `fetchWheelChain` (solo puts, filtrados a OTM porque la

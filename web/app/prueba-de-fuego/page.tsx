@@ -9,28 +9,29 @@ import AgenteOdteTab from "./AgenteOdteTab";
 import ContratosVecinos2Tab from "./ContratosVecinos2Tab";
 import ContratosVecinos3Tab from "./ContratosVecinos3Tab";
 import ContractSearchTab from "./ContractSearchTab";
+import GrandesEmpresasTab from "./GrandesEmpresasTab";
 import { migrateLegacyKey } from "@/lib/legacyStorage";
 
 const KEY_TAB = "visionary.pruebaDeFuego.tab";
 
-type Tab = "TSLA" | "SPX" | "SPX_VECINOS" | "SPX_0DTE" | "VECINOS_2" | "VECINOS_3" | "buscar";
+type Tab = "TSLA" | "SPX" | "SPX_VECINOS" | "SPX_0DTE" | "VECINOS_2" | "VECINOS_3" | "buscar" | "GRANDES";
+
+// TSLA/SPX/SPX_VECINOS/SPX_0DTE: pedido explícito de Carlos (ago 2026) —
+// sacadas de la navegación visible, NO borradas. El componente, la ruta y el
+// `case` de render siguen intactos más abajo a propósito, por si hace falta
+// traerlas de vuelta: para eso alcanza con volver a agregar el `<button>`
+// correspondiente al array de abajo.
+const VISIBLE_TABS: Tab[] = ["VECINOS_2", "VECINOS_3", "buscar", "GRANDES"];
+const DEFAULT_TAB: Tab = "GRANDES";
 
 export default function PruebaDeFuegoPage() {
-  const [tab, setTab] = useState<Tab>("TSLA");
+  const [tab, setTab] = useState<Tab>(DEFAULT_TAB);
 
   useEffect(() => {
     migrateLegacyKey("tito.pruebaDeFuego.tab", KEY_TAB);
     const saved = window.localStorage.getItem(KEY_TAB);
-    if (
-      saved === "TSLA" ||
-      saved === "SPX" ||
-      saved === "SPX_VECINOS" ||
-      saved === "SPX_0DTE" ||
-      saved === "VECINOS_2" ||
-      saved === "VECINOS_3" ||
-      saved === "buscar"
-    ) {
-      setTab(saved);
+    if (VISIBLE_TABS.includes(saved as Tab)) {
+      setTab(saved as Tab);
     }
   }, []);
 
@@ -49,18 +50,6 @@ export default function PruebaDeFuegoPage() {
       <div className="ideas-body">
         <div className="view-toggle-row">
           <div className="view-toggle">
-            <button className={tab === "TSLA" ? "active" : ""} onClick={() => pickTab("TSLA")}>
-              TSLA
-            </button>
-            <button className={tab === "SPX" ? "active" : ""} onClick={() => pickTab("SPX")}>
-              SPX
-            </button>
-            <button className={tab === "SPX_VECINOS" ? "active" : ""} onClick={() => pickTab("SPX_VECINOS")}>
-              SPX vecinos
-            </button>
-            <button className={tab === "SPX_0DTE" ? "active" : ""} onClick={() => pickTab("SPX_0DTE")}>
-              Agente ODTE
-            </button>
             <button className={tab === "VECINOS_2" ? "active" : ""} onClick={() => pickTab("VECINOS_2")}>
               Contratos vecinos 2.0
             </button>
@@ -69,6 +58,9 @@ export default function PruebaDeFuegoPage() {
             </button>
             <button className={tab === "buscar" ? "active" : ""} onClick={() => pickTab("buscar")}>
               Búsqueda de contratos
+            </button>
+            <button className={tab === "GRANDES" ? "active" : ""} onClick={() => pickTab("GRANDES")}>
+              Grandes empresas
             </button>
           </div>
         </div>
@@ -80,6 +72,7 @@ export default function PruebaDeFuegoPage() {
         {tab === "VECINOS_2" && <ContratosVecinos2Tab />}
         {tab === "VECINOS_3" && <ContratosVecinos3Tab />}
         {tab === "buscar" && <ContractSearchTab />}
+        {tab === "GRANDES" && <GrandesEmpresasTab />}
       </div>
     </main>
   );
