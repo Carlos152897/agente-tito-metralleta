@@ -475,3 +475,42 @@ export async function fetchContractActivitySummaries(
 
   return out;
 }
+
+/**
+ * Igual que `fetchContractActivitySummaries`, pero agrupando VARIOS símbolos
+ * OCC bajo una misma clave antes de resumir — pedido explícito de Carlos
+ * (2026-08-20, "Grandes empresas"): con varios vencimientos semanales en
+ * juego a la vez (ver `selectWeeklyExpirations`, lib/grandesEmpresas.ts), el
+ * mismo strike de $230 call puede existir el miércoles Y el viernes, y hay
+ * que tratarlos como UNA sola actividad combinada en ese nivel de precio, no
+ * dos strikes separados. Concatena los buckets crudos de todos los símbolos
+ * de un grupo ANTES de `summarizeActivity` (no suma resúmenes ya hechos) para
+ * que la tendencia (`trend`) también salga bien calculada sobre la serie de
+ * tiempo real combinada, no solo los totales.
+ */
+export async function fetchContractActivitySummariesGrouped(
+  groups: Map<string, string[]>,
+  opts: { period?: string; concurrency?: number } = {},
+): Promise<Map<string, ActivitySummary>> {
+  const allSymbols = [...new Set([...groups.values()].flat())];
+  const concurrency = opts.concurrency ?? 8;
+  const bucketsBySymbol = new Map<string, TradeSummaryBucket[]>();
+
+  for (let i = 0; i < allSymbols.length; i += concurrency) {
+    const chunk = allSymbols.slice(i, i + concurrency);
+    const results = await Promise.all(
+      chunk.map(async (symbol) => {
+        const buckets = await fetchContractTradeSummary(symbol, { period: opts.period });
+        return [symbol, buckets] as const;
+      }),
+    );
+    for (const [symbol, buckets] of results) bucketsBySymbol.set(symbol, buckets);
+  }
+
+  const out = new Map<string, ActivitySummary>();
+  for (const [key, symbols] of groups) {
+    const merged = symbols.flatMap((s) => bucketsBySymbol.get(s) ?? []);
+    out.set(key, summarizeActivity(merged));
+  }
+  return out;
+}

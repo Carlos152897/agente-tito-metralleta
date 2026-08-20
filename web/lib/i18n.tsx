@@ -29,6 +29,7 @@ const es: Dict = {
     marketAnalysis: "Análisis del mercado",
     ajustes: "Ajustes",
     sections: "Secciones",
+    moreTabs: "Más secciones",
   },
   header: {
     searchPlaceholder: "Buscar ticker…",
@@ -480,6 +481,7 @@ const en: Dict = {
     marketAnalysis: "Market Analysis",
     ajustes: "Settings",
     sections: "Sections",
+    moreTabs: "More sections",
   },
   header: {
     searchPlaceholder: "Search ticker…",

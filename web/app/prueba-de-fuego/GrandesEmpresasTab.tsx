@@ -46,7 +46,7 @@ interface Result {
   isPreMarket: boolean;
   marketOpen: boolean;
   magnet: Magnet | null;
-  expiration: string;
+  expirations: string[];
   bars: TfBar[];
   premarketWindows: ChartPremarketWindow[];
   premarketRejections: RejectionPoint[];
@@ -59,6 +59,8 @@ interface Result {
 const money0 = (n: number) => `${n < 0 ? "-" : ""}$${Math.abs(n).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
 const dec = (v: number | null | undefined, d = 2) => (v == null ? "—" : v.toFixed(d));
 const etTime = () => new Date().toLocaleTimeString("en-US", { timeZone: "America/New_York", hour12: false });
+const fmtExpiration = (d: string) =>
+  new Date(`${d}T00:00:00Z`).toLocaleDateString("es-ES", { day: "numeric", month: "short", timeZone: "UTC" });
 
 export default function GrandesEmpresasTab() {
   const [data, setData] = useState<Result | null>(null);
@@ -151,6 +153,12 @@ export default function GrandesEmpresasTab() {
             <span className={`ge-mkt ${data.marketOpen ? "ge-mkt-on" : "ge-mkt-off"}`}>
               {data.marketOpen ? "🟢 mercado abierto" : data.isPreMarket ? "🟡 pre-market" : "🔴 mercado cerrado"}
             </span>
+            {data.expirations.length > 0 && (
+              <span className="ge-expirations">
+                {data.expirations.length === 1 ? "Vencimiento: " : "Vencimientos: "}
+                {data.expirations.map(fmtExpiration).join(" · ")}
+              </span>
+            )}
           </div>
           {data.magnet && (
             <div className="ge-magnet-box">
@@ -186,8 +194,10 @@ export default function GrandesEmpresasTab() {
       {data?.suggestions && <SpreadSuggestions s={data.suggestions} />}
 
       <p className="ge-foot">
-        Se actualiza sola cada 60s. Dinero simulado — no es consejo financiero. El vencimiento usado es el más
-        próximo disponible en Massive (no siempre 0DTE — no todas estas empresas tienen opciones diarias). El
+        Se actualiza sola cada 60s. Dinero simulado — no es consejo financiero. Vencimientos usados según el
+        día de la semana que se está operando (nunca cruza a la semana siguiente): lunes combina 0DTE de hoy +
+        miércoles + viernes; martes combina miércoles + viernes; miércoles combina 0DTE de hoy + viernes;
+        jueves usa solo viernes; viernes usa solo el 0DTE de hoy. El
         imán sale del GEX agregado real de MarketSnack; el call/put y los targets salen del mismo motor de
         "Contratos vecinos 3.0" (Premium Traded confirma dónde está el dinero, Net Premium confirma la
         dirección). La dirección se marca "✅ confirmado" recién al sostenerse {PERSISTENCE_REQUIRED} lecturas
@@ -368,6 +378,7 @@ const CSS = `
 .ge-mkt { align-self: flex-start; font-size: 11.5px; padding: 2px 8px; border-radius: 999px; font-weight: 600; margin-top: 2px; }
 .ge-mkt-on { background: var(--green-bg); color: var(--green-dark); border: 1px solid var(--green); }
 .ge-mkt-off { background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); }
+.ge-expirations { font-size: 11px; color: var(--faint); margin-top: 1px; }
 
 .ge-premarket-banner { border-radius: 10px; padding: 12px 16px; margin: 0 0 16px; font-size: 14px; border: 1px solid var(--border); }
 .ge-pm-up { background: var(--green-bg); color: var(--green-dark); border-color: var(--green); }

@@ -126,6 +126,12 @@ html, body {
 .lang-switch:focus { border-color: var(--accent); }
 
 /* ── Navegación entre vistas (Ticker / Ideas / Wheel / Time & Sales) ── */
+.nav-tabs-wrap {
+  position: relative;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
 .nav-tabs {
   display: flex;
   align-items: center;
@@ -137,11 +143,37 @@ html, body {
   /* Se achica y scrollea internamente antes que empujar el buscador/idioma
      fuera de la pantalla (ver .hb-brand/.hb-search/.hb-right). */
   min-width: 0;
+  width: 100%;
   overflow-x: auto;
   scrollbar-width: none;
 }
 .nav-tabs::-webkit-scrollbar { display: none; }
-.nav-tabs.standalone { display: inline-flex; margin-bottom: 20px; overflow-x: visible; }
+.nav-tabs.standalone { display: inline-flex; margin-bottom: 20px; overflow-x: visible; width: auto; }
+/* Aviso visible de que hay más pestañas a la derecha — antes el scroll
+   horizontal era invisible (scrollbar oculta a propósito) y pestañas como
+   "Ajustes" quedaban fuera de la vista sin ninguna pista. */
+.nav-tabs-more {
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: -14px 0 14px -6px var(--bg);
+  z-index: 1;
+}
+.nav-tabs-more:hover { background: var(--panel-2); }
 .nav-tab {
   display: inline-flex; align-items: center; gap: 6px;
   font-size: 13px; font-weight: 600; line-height: 1;

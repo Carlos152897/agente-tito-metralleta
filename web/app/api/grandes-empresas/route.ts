@@ -30,14 +30,19 @@ import {
   fetchAssetPrice,
   fetchAssetPriceChart,
   fetchGexStats,
-  fetchContractActivitySummaries,
+  fetchContractActivitySummariesGrouped,
   MarketSnackError,
 } from "@/lib/marketsnack";
 import { isMarketOpen, isPreMarket, filterPremarketBars } from "@/lib/marketHours";
-import { daysToExpiration, etTimeToUnix, hoursToExpirationClose, marketDateStr } from "@/lib/occ";
+import { etTimeToUnix, hoursToExpirationClose, marketDateStr } from "@/lib/occ";
 import { findPivots, clusterPivots } from "@/lib/levels";
 import { contratosVecinos3Signal, NEIGHBOR_COUNT, type ActivityLevel } from "@/lib/contratosVecinos3";
-import { GRANDES_EMPRESAS_TICKERS, DEFAULT_GRANDES_EMPRESA, NEAR_TERM_DTE_MAX } from "@/lib/grandesEmpresas";
+import {
+  GRANDES_EMPRESAS_TICKERS,
+  DEFAULT_GRANDES_EMPRESA,
+  NEAR_TERM_DTE_MAX,
+  selectWeeklyExpirations,
+} from "@/lib/grandesEmpresas";
 import { fetchNestedOptionChain, TastytradeError } from "@/lib/tastytrade";
 import { fetchZeroDteChain } from "@/lib/tastytradeChain";
 import { atmIV } from "@/lib/zerodte";
@@ -73,52 +78,63 @@ export async function GET(request: Request) {
       return Response.json({ error: `Sin precio en vivo de ${TICKER} ahora mismo.` }, { status: 502 });
     }
 
-    const expirations = [...new Set(chain.contracts.map((c) => c.expiration))]
-      .filter((e) => daysToExpiration(e, now) >= 0)
-      .sort((a, b) => daysToExpiration(a, now) - daysToExpiration(b, now));
-    const nearExpiration = expirations[0] ?? null;
-    if (!nearExpiration) {
+    // Vencimientos "semanales" (pedido explícito de Carlos, 2026-08-20): NO
+    // 0DTE — el motor de Contratos 3.0 nació para índices que expiran hoy
+    // mismo, pero estas empresas se operan a la semana. Puede devolver más de
+    // uno (p. ej. un martes trae miércoles Y viernes, ver
+    // `selectWeeklyExpirations` para el porqué) — se combinan todos como una
+    // sola "actividad semanal" por strike, no por vencimiento individual.
+    const allExpirations = [...new Set(chain.contracts.map((c) => c.expiration))];
+    const nearExpirations = selectWeeklyExpirations(allExpirations, now);
+    if (nearExpirations.length === 0) {
       return Response.json({ error: `Sin vencimientos de ${TICKER} disponibles ahora mismo.` }, { status: 502 });
     }
 
-    const nearRows = chain.contracts.filter((c) => c.expiration === nearExpiration);
+    const nearExpirationSet = new Set(nearExpirations);
+    const nearRows = chain.contracts.filter((c) => nearExpirationSet.has(c.expiration));
     const strikeSet = new Set<number>();
-    const symbolByStrikeType = new Map<string, string>();
+    const symbolsByStrikeType = new Map<string, string[]>();
     for (const c of nearRows) {
       strikeSet.add(c.strike);
       const cleanSymbol = c.optionTicker.startsWith("O:") ? c.optionTicker.slice(2) : c.optionTicker;
-      symbolByStrikeType.set(`${c.strike}|${c.contractType}`, cleanSymbol);
+      const key = `${c.strike}|${c.contractType}`;
+      const arr = symbolsByStrikeType.get(key);
+      if (arr) arr.push(cleanSymbol);
+      else symbolsByStrikeType.set(key, [cleanSymbol]);
     }
     const strikes = [...strikeSet];
     const above = strikes.filter((s) => s > spot).sort((a, b) => a - b).slice(0, NEIGHBOR_COUNT);
     const below = strikes.filter((s) => s < spot).sort((a, b) => b - a).slice(0, NEIGHBOR_COUNT);
 
-    const callSymbol = (s: number) => symbolByStrikeType.get(`${s}|call`) ?? null;
-    const putSymbol = (s: number) => symbolByStrikeType.get(`${s}|put`) ?? null;
-    const occSymbols = [
-      ...above.flatMap((s) => [callSymbol(s), putSymbol(s)]).filter((s): s is string => s != null),
-      ...below.flatMap((s) => [putSymbol(s), callSymbol(s)]).filter((s): s is string => s != null),
-    ];
-    const activityBySymbol = await fetchContractActivitySummaries(occSymbols);
+    const callSymbols = (s: number) => symbolsByStrikeType.get(`${s}|call`) ?? [];
+    const putSymbols = (s: number) => symbolsByStrikeType.get(`${s}|put`) ?? [];
+    // Solo se agrupa una clave strike|tipo si ese strike realmente tiene
+    // contrato de ese tipo en algún vencimiento cercano — un strike sin
+    // ningún call real (por ejemplo) NO debe convertirse en un nivel de
+    // actividad falso "sin operaciones" (ver aboveLevels/belowLevels abajo).
+    const activityGroups = new Map<string, string[]>();
+    for (const s of [...above, ...below]) {
+      const cs = callSymbols(s);
+      const ps = putSymbols(s);
+      if (cs.length > 0) activityGroups.set(`${s}|call`, cs);
+      if (ps.length > 0) activityGroups.set(`${s}|put`, ps);
+    }
+    const activityByKey = await fetchContractActivitySummariesGrouped(activityGroups);
 
     const aboveLevels: ActivityLevel[] = above
       .map((strike): ActivityLevel | null => {
-        const symbol = callSymbol(strike);
-        const activity = symbol ? activityBySymbol.get(symbol) : undefined;
+        const activity = activityByKey.get(`${strike}|call`);
         if (!activity) return null;
-        const otherSymbol = putSymbol(strike);
-        const otherActivity = otherSymbol ? (activityBySymbol.get(otherSymbol) ?? null) : null;
+        const otherActivity = activityByKey.get(`${strike}|put`) ?? null;
         return { strike, type: "call", activity, otherActivity };
       })
       .filter((l): l is ActivityLevel => l != null);
 
     const belowLevels: ActivityLevel[] = below
       .map((strike): ActivityLevel | null => {
-        const symbol = putSymbol(strike);
-        const activity = symbol ? activityBySymbol.get(symbol) : undefined;
+        const activity = activityByKey.get(`${strike}|put`);
         if (!activity) return null;
-        const otherSymbol = callSymbol(strike);
-        const otherActivity = otherSymbol ? (activityBySymbol.get(otherSymbol) ?? null) : null;
+        const otherActivity = activityByKey.get(`${strike}|call`) ?? null;
         return { strike, type: "put", activity, otherActivity };
       })
       .filter((l): l is ActivityLevel => l != null);
@@ -271,7 +287,7 @@ export async function GET(request: Request) {
             gammaFlip: magnetBucket.gamma_flip,
           }
         : null,
-      expiration: nearExpiration,
+      expirations: nearExpirations,
       bars: chartBars,
       premarketWindows,
       premarketRejections,
