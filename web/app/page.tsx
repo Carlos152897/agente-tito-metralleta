@@ -352,12 +352,23 @@ export default function Dashboard() {
     { name: t("categories.cnfName"), note: t("categories.cnfQ"), score: validation?.score ?? null, weight: 15 },
   ];
 
+  if (!started && !busy) {
+    // Portada: panel oscuro de punta a punta, sin el header claro arriba ni
+    // el padding/max-width de `.wrap` alrededor — pedido explícito de Carlos
+    // ("no quiero que se vea blanco de fondo y luego oscuro, quiero todo
+    // oscuro"). El resto de la app (una vez que hay ticker) sigue con el
+    // header claro y `.wrap` de siempre, sin cambios.
+    return (
+      <main className="hero-page">
+        <HeroLanding onSearch={runSearch} />
+      </main>
+    );
+  }
+
   return (
     <>
       <HeaderBar company={company} busy={busy} showSearch={started || busy} onSearch={runSearch} />
       <main className="wrap page-stack">
-
-        {!started && !busy && <HeroLanding onSearch={runSearch} />}
 
         {busy && <AnalysisLoader ticker={ticker} steps={steps} />}
 
