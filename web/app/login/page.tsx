@@ -34,7 +34,7 @@ function LoginForm() {
 
   return (
     <form className="login-card" onSubmit={submit}>
-      <img className="login-logo" src="/logo.jpeg" alt="Visionary Trades" />
+      <img className="login-logo" src="/logo.png" alt="Visionary Trades" />
       <h1>Visionary Trades</h1>
       <p className="login-sub">Acceso privado — pide la contraseña a Carlos.</p>
       <input

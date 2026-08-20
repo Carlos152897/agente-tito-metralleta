@@ -31,7 +31,7 @@ export default function HeroLanding({ onSearch }: { onSearch: (t: string) => voi
     <div className="hero">
       <div className="hero-topbar">
         <div className="hero-wordmark">
-          <img src="/logo.jpeg" alt="" className="hero-wordmark-icon" />
+          <img src="/logo.png" alt="" className="hero-wordmark-icon" />
           <div>
             <div className="hero-wordmark-name">
               VISIONARY <span>TRADES</span>
@@ -49,7 +49,7 @@ export default function HeroLanding({ onSearch }: { onSearch: (t: string) => voi
       <div className="hero-tagline">Discipline today. Freedom tomorrow.</div>
 
       <div className="hero-logo-wrap">
-        <img src="/logo.jpeg" alt="Visionary Trades" className="hero-logo" />
+        <img src="/logo.png" alt="Visionary Trades" className="hero-logo" />
       </div>
 
       <div className="hero-search-row">
@@ -97,7 +97,7 @@ export default function HeroLanding({ onSearch }: { onSearch: (t: string) => voi
         </div>
 
         <div className="hero-stat-center">
-          <img src="/logo.jpeg" alt="" />
+          <img src="/logo.png" alt="" />
         </div>
 
         <div className="hero-stat-card risk">

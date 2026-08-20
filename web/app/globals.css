@@ -73,6 +73,7 @@ html, body {
    al resto fuera de la pantalla. */
 .hb-brand, .hb-search, .hb-right { flex-shrink: 0; }
 .hb-brand { display: flex; align-items: center; gap: 10px; }
+.hb-brand-link { display: flex; align-items: center; gap: 10px; text-decoration: none; color: inherit; }
 .hb-logo {
   width: 30px; height: 30px; border-radius: 8px;
   background: linear-gradient(135deg, #6d8dff, #9b6dff);
