@@ -59,19 +59,19 @@ export default function MoneyFlowCard({
       label: t("moneyflow.pcRatio"),
       value: pcRatio.toFixed(2),
       sub: pcRatio < 0.7 ? t("moneyflow.bullishBand") : pcRatio > 1 ? t("moneyflow.bearishBand") : t("moneyflow.balanced"),
-      color: pcRatio < 0.7 ? "#12b76a" : pcRatio > 1 ? "#f04438" : "#101828",
+      color: pcRatio < 0.7 ? "#12b76a" : pcRatio > 1 ? "#f04438" : "var(--text)",
     },
     conviction && {
       label: t("moneyflow.avgSpread"),
       value: conviction.spread.avgPct != null ? `${conviction.spread.avgPct.toFixed(2)}%` : "—",
       sub: conviction.spread.avgPct != null && conviction.spread.avgPct < 2 ? t("moneyflow.veryLiquid") : t("moneyflow.midLiquidity"),
-      color: "#101828",
+      color: "var(--text)",
     },
     structure && {
       label: t("moneyflow.volAboveOI"),
       value: `${structure.volOI.pct.toFixed(0)}%`,
       sub: t("moneyflow.newPositions"),
-      color: structure.volOI.pct >= 50 ? "#12b76a" : "#101828",
+      color: structure.volOI.pct >= 50 ? "#12b76a" : "var(--text)",
     },
   ].filter(Boolean) as { label: string; value: string; sub: string; color: string }[];
 

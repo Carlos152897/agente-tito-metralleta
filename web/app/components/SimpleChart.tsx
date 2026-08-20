@@ -133,7 +133,7 @@ export default function SimpleChart({
             series={series}
             targets={targets}
             levels={nearLevels}
-            theme="light"
+            theme="dark"
             height="100%"
             animate
           />

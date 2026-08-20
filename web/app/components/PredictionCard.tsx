@@ -7,9 +7,9 @@ import { useLocale, type LocaleCtx } from "@/lib/i18n";
 import { money, px } from "../format";
 
 const KIND: Record<Scenario["kind"], { key: string; color: string; bg: string }> = {
-  bear: { key: "prediction.bearCase", color: "#d92d20", bg: "#fef3f2" },
-  base: { key: "prediction.baseCase", color: "#101828", bg: "#f8f9fb" },
-  bull: { key: "prediction.bullCase", color: "#027a48", bg: "#f6fef9" },
+  bear: { key: "prediction.bearCase", color: "var(--red)", bg: "var(--red-bg)" },
+  base: { key: "prediction.baseCase", color: "var(--text)", bg: "var(--panel-2)" },
+  bull: { key: "prediction.bullCase", color: "var(--green-dark)", bg: "var(--green-bg)" },
 };
 
 function ScenarioBox({ s, t }: { s: Scenario; t: LocaleCtx["t"] }) {

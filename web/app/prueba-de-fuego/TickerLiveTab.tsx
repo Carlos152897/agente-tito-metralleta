@@ -179,7 +179,7 @@ export default function TickerLiveTab({ ticker }: { ticker: "TSLA" | "SPX" }) {
             {suggestion.role === "gex_only" && " (sin confirmar todavía con flujo agresivo real)"}
           </p>
           {suggestion.reversalWarning && (
-            <p className="wheel-disclaimer" style={{ fontSize: 12, color: "#b54708" }}>
+            <p className="wheel-disclaimer" style={{ fontSize: 12, color: "var(--amber-text)" }}>
               ⚠ {suggestion.reversalWarning}
             </p>
           )}

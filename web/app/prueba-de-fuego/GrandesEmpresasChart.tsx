@@ -80,17 +80,17 @@ export default function GrandesEmpresasChart({
       const chart = createChart(containerRef.current, {
         layout: {
           background: { type: ColorType.Solid, color: "transparent" },
-          textColor: "#6b7280",
+          textColor: "#9aa5c0",
           fontFamily: "ui-sans-serif, system-ui, sans-serif",
         },
         grid: {
-          vertLines: { color: "#e5e7eb60" },
-          horzLines: { color: "#e5e7eb60" },
+          vertLines: { color: "#26304250" },
+          horzLines: { color: "#26304250" },
         },
         crosshair: { mode: CrosshairMode.Normal },
-        rightPriceScale: { borderColor: "#e5e7eb" },
+        rightPriceScale: { borderColor: "#263049" },
         timeScale: {
-          borderColor: "#e5e7eb",
+          borderColor: "#263049",
           timeVisible: true,
           secondsVisible: false,
           tickMarkFormatter: (t: number) => hmET(t),

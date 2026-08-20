@@ -61,7 +61,7 @@ export default function LevelsCard({ r, ticker }: { r: LevelsReport; ticker: str
           {(r.keyResistance || r.keySupport) && (
             <div className="lvl-key">
               {r.keyResistance && (
-                <div className="lvl-key-box" style={{ borderColor: `${RES}33`, background: "#fef3f2" }}>
+                <div className="lvl-key-box" style={{ borderColor: `${RES}33`, background: "var(--red-bg)" }}>
                   <div className="lvl-key-label" style={{ color: RES }}>{t("levelsCard.keyResistance")}</div>
                   <div className="lvl-key-price" style={{ color: RES }}>${px.format(r.keyResistance.price)}</div>
                   <div className="lvl-key-sub">
@@ -71,7 +71,7 @@ export default function LevelsCard({ r, ticker }: { r: LevelsReport; ticker: str
                 </div>
               )}
               {r.keySupport && (
-                <div className="lvl-key-box" style={{ borderColor: `${SUP}33`, background: "#f6fef9" }}>
+                <div className="lvl-key-box" style={{ borderColor: `${SUP}33`, background: "var(--green-bg)" }}>
                   <div className="lvl-key-label" style={{ color: SUP }}>{t("levelsCard.keySupport")}</div>
                   <div className="lvl-key-price" style={{ color: SUP }}>${px.format(r.keySupport.price)}</div>
                   <div className="lvl-key-sub">

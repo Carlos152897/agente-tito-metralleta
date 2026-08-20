@@ -17,7 +17,7 @@ function ivColor(ivPct: number): string {
   if (ivPct >= 90) return "#f04438";
   if (ivPct >= 61) return "#f79009";
   if (ivPct >= 40) return "#12b76a";
-  return "#667085";
+  return "var(--muted)";
 }
 
 /** Fecha real + días restantes — nunca uno sin el otro. */

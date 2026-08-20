@@ -101,11 +101,11 @@ export default function ZeroDteChart({
   return (
     <div className="z-chart-wrap">
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label={`Chart de ${ticker} con niveles del agente`}>
-        <rect x="0" y="0" width={W} height={H} fill="#ffffff" />
+        <rect x="0" y="0" width={W} height={H} fill="var(--panel)" />
         {ticks.map((p, i) => (
           <g key={i}>
-            <line x1={chartL} y1={y(p)} x2={chartR} y2={y(p)} stroke="#f2f4f7" strokeWidth="1" />
-            <text x={chartL} y={y(p) - 3} fill="#98a2b3" fontSize="9">{p.toFixed(0)}</text>
+            <line x1={chartL} y1={y(p)} x2={chartR} y2={y(p)} stroke="var(--border-soft)" strokeWidth="1" />
+            <text x={chartL} y={y(p) - 3} fill="var(--faint)" fontSize="9">{p.toFixed(0)}</text>
           </g>
         ))}
 

@@ -1,24 +1,34 @@
 :root {
-  --bg: #f3f4f6;
-  --panel: #ffffff;
-  --panel-2: #f8f9fb;
-  --border: #e6e8ec;
-  --border-soft: #f2f4f7;
-  --text: #101828;
-  --muted: #667085;
-  --faint: #98a2b3;
+  /* Tema oscuro (ago 2026, pedido explícito de Carlos: "que todo el
+     proyecto sea oscuro"). MISMOS nombres de variable que el tema claro
+     anterior — todo lo que ya usaba var(--x) se re-tematiza solo. Los
+     colores SEMÁNTICOS (verde/rojo/ámbar/azul de acento) se dejaron
+     IGUALES al tema claro a propósito — son los mismos que ~18-20 archivos
+     .tsx siguen usando hardcodeados en vez de var() (heredado del rebrand
+     oscuro original de jul-2026, que ya los daba por buenos sobre fondo
+     oscuro), así que cambiarlos acá habría creado dos tonos de verde/rojo
+     distintos conviviendo en la misma app. Solo bg/panel/texto/bordes
+     cambian de verdad. */
+  --bg: #05070d;
+  --panel: #131a2b;
+  --panel-2: #0f1522;
+  --border: #263049;
+  --border-soft: #1c2438;
+  --text: #f5f7fb;
+  --muted: #9aa5c0;
+  --faint: #6b7591;
   --accent: #2f6bff;
-  --accent-dim: #dbe6ff;
+  --accent-dim: rgba(47, 107, 255, 0.22);
   --green: #12b76a;
   --green-dark: #0e9f5f;
-  --green-bg: #e7f8f0;
+  --green-bg: rgba(18, 183, 106, 0.14);
   --red: #f04438;
   --red-soft: #f97066;
-  --red-bg: #fee9e7;
+  --red-bg: rgba(240, 68, 56, 0.14);
   --amber: #f79009;
-  --amber-bg: #fff7e6;
-  --amber-border: #f5d9a0;
-  --amber-text: #b54708;
+  --amber-bg: rgba(247, 144, 9, 0.14);
+  --amber-border: rgba(247, 144, 9, 0.4);
+  --amber-text: #fdb022;
   --call: #12b76a;
   --put: #f97066;
 
@@ -904,7 +914,9 @@ tfoot .totals td {
   border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; width: 170px;
   background: var(--panel-2); }
 .risk-input:focus { outline: 2px solid var(--accent-dim); border-color: var(--accent); }
-.risk-slider { width: 100%; accent-color: var(--accent); cursor: pointer; }
+.risk-slider { width: 100%; accent-color: var(--accent); cursor: pointer; background: transparent; }
+.risk-slider::-webkit-slider-runnable-track { height: 6px; border-radius: 3px; background: var(--border-soft); }
+.risk-slider::-moz-range-track { height: 6px; border-radius: 3px; background: var(--border-soft); }
 .risk-scale { display: flex; justify-content: space-between; font-size: 11px; color: var(--faint); }
 .risk-budgets { display: flex; gap: var(--space-md); flex-wrap: wrap;
   border-top: 1px solid var(--border-soft); padding-top: var(--space-sm); }
@@ -1094,8 +1106,31 @@ tfoot .totals td {
 }
 
 /* ── Hero de portada (Visionary Trades) ──────────────────────────────── */
-.hero { display: flex; flex-direction: column; align-items: center; text-align: center;
-  gap: 10px; padding: 28px 24px 48px; }
+/* Panel oscuro propio, a pedido explícito de Carlos con una imagen de
+   referencia (mockup original del rebrand) — el resto de la app se queda en
+   tema claro, esto es SOLO la portada. Tokens redefinidos localmente acá
+   adentro: como son variables CSS, cualquier `var(--x)` de los estilos de
+   abajo (heredados sin cambios del layout claro) resuelve al valor oscuro
+   automáticamente dentro de este árbol, sin tocar el :root global. */
+/* `.hero-page` reemplaza a `.wrap` SOLO en la portada — sin max-width ni
+   padding, para que `.hero` pueda ocupar el viewport entero de punta a
+   punta (nada de margen claro del `body` alrededor). */
+.hero-page { margin: 0; padding: 0; min-height: 100vh; }
+
+/* Ya no redefine tokens propios — :root es oscuro para toda la app ahora,
+   así que hereda los mismos var() que cualquier otra página. Lo único
+   propio de la portada es el layout de punta a punta y el brillo del
+   fondo. */
+.hero {
+  color: var(--text);
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+  gap: 10px; padding: 32px 28px 52px;
+  min-height: 100vh;
+  background:
+    radial-gradient(ellipse 820px 420px at 18% -8%, rgba(47,107,255,0.20), transparent 60%),
+    radial-gradient(ellipse 820px 420px at 85% 8%, rgba(155,109,255,0.16), transparent 58%),
+    var(--bg);
+}
 
 .hero-topbar { display: flex; align-items: center; justify-content: space-between;
   width: 100%; max-width: 1100px; margin-bottom: 8px; }
@@ -1104,12 +1139,22 @@ tfoot .totals td {
 .hero-wordmark-name { font-size: 17px; font-weight: 800; letter-spacing: 0.06em; color: var(--text); }
 .hero-wordmark-name span { color: var(--green); }
 .hero-wordmark-tag { font-size: 11px; color: var(--muted); margin-top: 1px; }
+.hero-topbar-right { display: flex; align-items: center; gap: 10px; }
 .hero-status { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600;
   padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel); }
 .hero-status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
 .hero-status.open { color: var(--green-dark); }
 .hero-status.open .dot { background: var(--green); }
 .hero-status.closed { color: var(--muted); }
+
+.hero-tickers { display: flex; gap: 22px; flex-wrap: wrap; justify-content: center;
+  width: 100%; max-width: 1100px; padding: 10px 0 2px; }
+.hero-ticker { display: flex; align-items: baseline; gap: 7px; font-size: 13px; }
+.hero-ticker-sym { font-weight: 700; color: var(--text); }
+.hero-ticker-price { color: var(--muted); font-variant-numeric: tabular-nums; }
+.hero-ticker-chg { font-weight: 700; font-variant-numeric: tabular-nums; }
+.hero-ticker-chg.up { color: var(--green); }
+.hero-ticker-chg.down { color: var(--red); }
 
 .hero-greeting { font-size: 26px; font-weight: 700; letter-spacing: -0.01em; margin-top: 8px; }
 .hero-tagline { font-size: 14px; color: var(--muted); margin-top: -6px; }
@@ -1134,6 +1179,31 @@ tfoot .totals td {
 .hero-chip { font: inherit; font-size: 13px; font-weight: 700; padding: 7px 18px; border-radius: 999px;
   border: 1.5px solid var(--border); background: var(--panel-2); cursor: pointer; }
 .hero-chip:hover { filter: brightness(1.3); }
+
+.hero-quick-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px;
+  width: 100%; max-width: 1000px; margin-top: 30px; }
+.hero-quick-card {
+  --card-color: var(--accent);
+  display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+  text-align: left; padding: 18px 18px 16px; border-radius: 16px;
+  border: 1px solid var(--border); background: var(--panel);
+  text-decoration: none; color: var(--text);
+  transition: transform .15s, border-color .15s, box-shadow .15s;
+}
+.hero-quick-card:hover {
+  border-color: var(--card-color); transform: translateY(-2px);
+  box-shadow: 0 8px 24px -8px color-mix(in srgb, var(--card-color) 45%, transparent);
+  text-decoration: none;
+}
+.hero-quick-icon { width: 42px; height: 42px; border-radius: 12px; display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--card-color) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--card-color) 35%, transparent); }
+.hero-quick-title { font-size: 14.5px; font-weight: 700; margin-top: 2px; }
+.hero-quick-desc { font-size: 12px; color: var(--muted); line-height: 1.4; }
+
+@media (max-width: 860px) {
+  .hero-quick-grid { grid-template-columns: repeat(2, 1fr); }
+}
 
 .hero-motto { font-size: 20px; font-weight: 700; margin-top: 36px; }
 .hero-motto-accent { color: var(--green); }
@@ -1163,6 +1233,7 @@ tfoot .totals td {
   .hero-topbar { flex-direction: column; gap: 10px; align-items: flex-start; }
   .hero-stats-row { grid-template-columns: 1fr; }
   .hero-stat-center { display: none; }
+  .hero-quick-grid { grid-template-columns: 1fr; }
 }
 
 /* ============ Ajustes — cookie de MarketSnack (/ajustes) ============ */

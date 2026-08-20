@@ -10,7 +10,7 @@ export interface SentimentPart {
 }
 
 function colorFor(score100: number): string {
-  return score100 >= 60 ? "#12b76a" : score100 >= 45 ? "#667085" : "#f04438";
+  return score100 >= 60 ? "#12b76a" : score100 >= 45 ? "var(--muted)" : "#f04438";
 }
 
 /**
@@ -47,22 +47,22 @@ export default function SentimentCard({ ticker, parts }: { ticker: string; parts
           <div className="sent-marker" style={{ left: `${score}%` }} />
           <div className="sent-band">
             <div style={{ borderRadius: "6px 2px 2px 6px", background: "#f97066" }} />
-            <div style={{ background: "#d9a0a0" }} />
-            <div style={{ background: "#d0d5dd" }} />
-            <div style={{ background: "#9adbb9" }} />
+            <div style={{ background: "color-mix(in srgb, #f97066 55%, var(--panel-2))" }} />
+            <div style={{ background: "var(--border-soft)" }} />
+            <div style={{ background: "color-mix(in srgb, #32d583 55%, var(--panel-2))" }} />
             <div style={{ borderRadius: "2px 6px 6px 2px", background: "#32d583" }} />
           </div>
         </div>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#667085", marginTop: 6 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--muted)", marginTop: 6 }}>
           <div>{t("sentiment.bearish")}</div><div>{t("sentiment.neutral")}</div><div>{t("sentiment.bullish")}</div>
         </div>
       </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 12, borderTop: "1px solid #f2f4f7", paddingTop: 16 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12, borderTop: "1px solid var(--border-soft)", paddingTop: 16 }}>
         <div className="sent-head-label">{t("sentiment.breakdown")}</div>
         {parts.map((p) => {
           const s100 = p.score != null ? p.score * 10 : null;
-          const c = s100 != null ? colorFor(s100) : "#d0d5dd";
+          const c = s100 != null ? colorFor(s100) : "var(--border-soft)";
           return (
             <div key={p.name} className="sent-part">
               <div>

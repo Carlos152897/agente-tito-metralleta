@@ -44,7 +44,7 @@ export default function ActivityCard({ rows, unusualCount }: { rows: FlowRow[]; 
           <div className="card-title">{t("activity.title")}</div>
           <div className="card-sub">{t("activity.sub")}</div>
         </div>
-        <div style={{ display: "flex", gap: 14, fontSize: 12, color: "#667085", whiteSpace: "nowrap" }}>
+        <div style={{ display: "flex", gap: 14, fontSize: 12, color: "var(--muted)", whiteSpace: "nowrap" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}><span className="legend-dot" style={{ background: "#12b76a" }} />{t("activity.calls")}</div>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}><span className="legend-dot" style={{ background: "#f97066" }} />{t("activity.puts")}</div>
         </div>
