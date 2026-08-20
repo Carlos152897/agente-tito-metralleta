@@ -14,6 +14,7 @@ const TABS = [
   { href: "/flow", key: "nav.timeSales", icon: "⚡" },
   { href: "/prueba-de-fuego", key: "nav.pruebaDeFuego", icon: "🔥" },
   { href: "/unusual-swing", key: "nav.unusualSwing", icon: "🦄" },
+  { href: "/analisis-mercado", key: "nav.marketAnalysis", icon: "🌍" },
   { href: "/ajustes", key: "nav.ajustes", icon: "⚙️" },
 ];
 

@@ -140,6 +140,44 @@ export async function fetchUnderlyingQuote(symbol: string, isIndex: boolean): Pr
   return n(q.last) ?? n(q.mark) ?? null;
 }
 
+export interface MacroQuote {
+  symbol: string;
+  last: number;
+  prevClose: number;
+  dayHigh: number | null;
+  dayLow: number | null;
+}
+
+/**
+ * Cotización con `prev-close` real incluido — para "Análisis del mercado"
+ * (ago 2026, pedido explícito de Carlos), que necesita el % movido de cada
+ * instrumento macro (VIX, futuros de índice, bonos, oro, petróleo, bitcoin),
+ * no solo el precio. Verificado en vivo: `market-data/by-type` YA trae
+ * `prev-close`/`prev-close-date` en la respuesta cruda para índices Y
+ * futuros — `fetchUnderlyingQuote`/`fetchFuturesQuote` (arriba) lo
+ * descartaban porque solo les hacía falta el precio. Función nueva en vez de
+ * tocar esas dos: son de producción (SPX/NDX/ES/NQ en vivo), no arriesgarlas
+ * por un campo que solo necesita este caso de uso nuevo.
+ */
+export async function fetchMacroQuote(params: { index?: string; future?: string }): Promise<MacroQuote | null> {
+  const qs = new URLSearchParams(
+    params.index ? { index: params.index } : { future: params.future ?? "" },
+  );
+  const data = await tastyGet<{ items: Record<string, string>[] }>("/market-data/by-type", qs);
+  const q = data.items?.[0];
+  if (!q) return null;
+  const n = (v: string | undefined) => (v != null && Number.isFinite(Number(v)) ? Number(v) : null);
+  const last = n(q.last) ?? n(q.mark);
+  const prevClose = n(q["prev-close"]);
+  if (last == null || prevClose == null) return null;
+  return {
+    symbol: q.symbol ?? params.index ?? params.future ?? "",
+    last, prevClose,
+    dayHigh: n(q["day-high-price"]),
+    dayLow: n(q["day-low-price"]),
+  };
+}
+
 // ── Futuros (ES/NQ) — Carlos pidió datos reales de /ES y /NQ para poder
 // operar mientras el mercado de acciones/índice está cerrado (CME cotiza
 // casi 24/5). Verificado en vivo (ago 2026): /instruments/futures da el

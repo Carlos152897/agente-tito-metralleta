@@ -223,6 +223,61 @@ export async function fetchAssetPrice(ticker: string): Promise<number | null> {
   return price != null && price > 0 ? price : null;
 }
 
+export interface AssetSnapshot {
+  price: number | null;
+  regularChangePct: number | null;
+  extendedChangePct: number | null;
+  extendedType: string | null; // "Pre-market" | "After hours" | null
+  marketStatus: string | null;
+  earningsDate: string | null;
+}
+
+/**
+ * Igual que `fetchAssetPrice` pero sin descartar el resto de la respuesta —
+ * para "Análisis del mercado" (ago 2026): necesita el % movido en regular Y
+ * en pre-market/after-hours por separado (no solo el precio resuelto), y de
+ * paso trae `earnings_date` (real, cuando MarketSnack ya lo tiene agendado —
+ * `null` la mayor parte del año, entre temporadas de resultados). Función
+ * nueva en vez de ensanchar `fetchAssetPrice`: esa la usan rutas de
+ * producción que solo necesitan el número.
+ */
+export async function fetchAssetSnapshot(ticker: string): Promise<AssetSnapshot | null> {
+  const clean = ticker.trim().toUpperCase();
+  if (!clean) return null;
+  const res = await fetch(`${BASE_URL}/api/assets/${encodeURIComponent(clean)}`, {
+    headers: { Accept: "application/json", Cookie: await cookie() },
+    cache: "no-store",
+    redirect: "manual",
+  });
+
+  if (res.status === 401 || res.status === 403 || (res.status >= 300 && res.status < 400)) {
+    throw new MarketSnackError(
+      "Sesión de MarketSnack inválida o expirada. Actualiza la cookie en /ajustes.",
+      res.status,
+    );
+  }
+  if (!res.ok) return null;
+
+  const json: {
+    latest_price?: number;
+    regular_price?: number;
+    regular_price_change?: { percentage?: number };
+    extended_price_change?: { percentage?: number };
+    extended_price_type?: string;
+    market_status?: string;
+    earnings_date?: string | null;
+  } = await res.json();
+
+  return {
+    price: json.latest_price ?? json.regular_price ?? null,
+    regularChangePct: json.regular_price_change?.percentage ?? null,
+    extendedChangePct: json.extended_price_change?.percentage ?? null,
+    extendedType: json.extended_price_type ?? null,
+    marketStatus: json.market_status ?? null,
+    earningsDate: json.earnings_date ?? null,
+  };
+}
+
 export interface AssetChartPoint {
   t: string;
   v: number;
