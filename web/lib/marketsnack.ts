@@ -451,8 +451,8 @@ export async function fetchContractPremiumSummaries(
  * 3.0" (lib/contratosVecinos3.ts): resume con `summarizeActivity` en vez de
  * `summarizeTradeBuckets` — a diferencia de esa, acá el `mid_premium` SÍ
  * cuenta (es "Premium Traded" total, no solo la dirección) y se conserva una
- * tendencia reciente (mitad más nueva de los buckets de hoy vs. la más
- * vieja).
+ * tendencia reciente (ritmo de los últimos ~10 min contra el ritmo previo del
+ * día — ver `summarizeActivity` para el detalle del salto repentino).
  */
 export async function fetchContractActivitySummaries(
   occSymbols: string[],

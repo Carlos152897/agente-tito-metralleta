@@ -1,6 +1,6 @@
 // "Grandes empresas" (Prueba de Fuego, ago 2026, pedido explícito de Carlos):
 // universo curado — las Magnificent Seven (AAPL, MSFT, GOOGL, AMZN, NVDA,
-// META, TSLA) + PLTR, IREN, NFLX, SPCX, INTC, ORCL. Reusa el motor de
+// META, TSLA) + PLTR, IREN, NFLX, SPCX, INTC, ORCL, HOOD. Reusa el motor de
 // "Contratos vecinos 3.0" (lib/contratosVecinos3.ts) tal cual — solo cambia
 // de dónde sale la cadena de opciones (Massive, vencimiento más cercano
 // disponible, no 0DTE fijo de índice — ver lib/massive.ts `fetchNearTermChain`).
@@ -26,6 +26,7 @@ export const GRANDES_EMPRESAS: GrandesEmpresaTicker[] = [
   { id: "SPCX", label: "SPCX" },
   { id: "INTC", label: "INTC" },
   { id: "ORCL", label: "ORCL" },
+  { id: "HOOD", label: "HOOD" },
 ];
 
 export const GRANDES_EMPRESAS_TICKERS = new Set(GRANDES_EMPRESAS.map((t) => t.id));

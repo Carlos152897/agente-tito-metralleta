@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  applyPersistence, contratosVecinos3Signal, PERSISTENCE_REQUIRED, summarizeActivity,
+  applyPersistence, contratosVecinos3Signal, evaluateCapCandidate, PERSISTENCE_REQUIRED, summarizeActivity,
   type ActivityLevel, type ContratosVecinos3Signal, type TradeSummaryBucketLike,
 } from "./contratosVecinos3";
 
@@ -8,8 +8,19 @@ function bucket(t: string, ask: number, bid: number, mid = 0): TradeSummaryBucke
   return { t, ask_premium: ask, bid_premium: bid, mid_premium: mid };
 }
 
-function level(strike: number, type: "call" | "put", totalPremium: number, netPremium: number): ActivityLevel {
-  return { strike, type, activity: { totalPremium, netPremium, trend: "estable" } };
+function level(
+  strike: number, type: "call" | "put", totalPremium: number, netPremium: number,
+  trend: "subiendo" | "bajando" | "estable" = "estable",
+): ActivityLevel {
+  return { strike, type, activity: { totalPremium, netPremium, trend } };
+}
+
+/** Como `level`, pero con el tipo CONTRARIO también presente en el mismo strike (para `capReversal`). */
+function levelWithOther(strike: number, type: "call" | "put", totalPremium: number, netPremium: number, otherNetPremium: number): ActivityLevel {
+  return {
+    strike, type, activity: { totalPremium, netPremium, trend: "estable" },
+    otherActivity: { totalPremium: Math.abs(otherNetPremium), netPremium: otherNetPremium, trend: "estable" },
+  };
 }
 
 describe("summarizeActivity", () => {
@@ -21,6 +32,35 @@ describe("summarizeActivity", () => {
   it("net premium = ask − bid, el mid queda afuera de la dirección", () => {
     const s = summarizeActivity([bucket("2026-01-01T00:00:00Z", 100, 40, 10)]);
     expect(s.netPremium).toBe(60);
+  });
+
+  it("net premium NO se acumula — es solo el ÚLTIMO bucket (pedido explícito de Carlos, 2026-08-24)", () => {
+    // Caso real: SPX 2026-08-21, call $7670, 9:30-9:40am ET. El acumulado del
+    // día venía vendido (mañana con más bid que ask), pero el bucket de las
+    // 9:40 solo fue comprador (ask 696,232 vs bid 320,166). El acumulado daba
+    // -351,493 — invisible que ESE bucket puntual ya era comprador. Con
+    // netPremium = solo el último bucket, se ve la compra real de AHORA.
+    const s = summarizeActivity([
+      bucket("2026-08-21T13:30:00.000Z", 552_969, 913_261), // apertura, vendido
+      bucket("2026-08-21T13:35:00.000Z", 796_901, 988_929), // vendido
+      bucket("2026-08-21T14:35:00.000Z", 569_844, 438_455), // comprado
+      bucket("2026-08-21T14:40:00.000Z", 696_232, 320_166), // último bucket: comprado fuerte
+    ]);
+    expect(s.netPremium).toBe(696_232 - 320_166);
+    expect(s.netPremium).not.toBe(552_969 - 913_261 + 796_901 - 988_929 + 569_844 - 438_455 + 696_232 - 320_166); // no es la suma acumulada
+  });
+
+  it("el orden de los buckets no importa — siempre usa el más reciente por timestamp, no el último del array", () => {
+    const s = summarizeActivity([
+      bucket("2026-01-01T00:10:00Z", 50, 200), // el más reciente por tiempo, pero PRIMERO en el array
+      bucket("2026-01-01T00:00:00Z", 999, 1), // más viejo, pero ÚLTIMO en el array
+    ]);
+    expect(s.netPremium).toBe(50 - 200);
+  });
+
+  it("sin buckets, net premium es 0 (no hay lectura que dar)", () => {
+    const s = summarizeActivity([]);
+    expect(s.netPremium).toBe(0);
   });
 
   it("con menos de 4 buckets no hay suficiente historia — tendencia 'estable'", () => {
@@ -47,6 +87,34 @@ describe("summarizeActivity", () => {
   it("sin buckets, todo en cero", () => {
     const s = summarizeActivity([]);
     expect(s).toEqual({ totalPremium: 0, netPremium: 0, trend: "estable" });
+  });
+
+  it("salto repentino en los últimos 10 min NO se diluye con muchas horas de historia previa plana", () => {
+    // 20 buckets planos (100 c/u, ritmo base = 100/bucket) + un salto real
+    // (500, 500) en los últimos dos — comparar mitad-del-día-vs-mitad-del-día
+    // (versión vieja) hubiera promediado el salto contra 10 buckets de
+    // historia y no hubiera cruzado el umbral. Comparando ritmo reciente vs.
+    // ritmo previo sí lo detecta.
+    const flat = Array.from({ length: 20 }, (_, i) => bucket(`2026-01-01T${String(i).padStart(2, "0")}:00:00Z`, 100, 0));
+    const spike = [bucket("2026-01-01T20:00:00Z", 500, 0), bucket("2026-01-01T21:00:00Z", 500, 0)];
+    const s = summarizeActivity([...flat, ...spike]);
+    expect(s.trend).toBe("subiendo");
+  });
+
+  it("acumulación lenta y pareja de TODO el día ya NO cuenta como 'subiendo' (no es repentina)", () => {
+    // Cada bucket un poquito más grande que el anterior, sin ningún salto —
+    // el ritmo reciente (últimos 2) es apenas mayor al ritmo base, muy por
+    // debajo del umbral de salto (2x).
+    const gradual = Array.from({ length: 10 }, (_, i) => bucket(`2026-01-01T${String(i).padStart(2, "0")}:00:00Z`, 100 + i * 5, 0));
+    const s = summarizeActivity(gradual);
+    expect(s.trend).toBe("estable");
+  });
+
+  it("contrato sin actividad previa que de golpe empieza a operarse cuenta como 'subiendo' (el salto más repentino posible)", () => {
+    const dead = Array.from({ length: 8 }, (_, i) => bucket(`2026-01-01T${String(i).padStart(2, "0")}:00:00Z`, 0, 0));
+    const sudden = [bucket("2026-01-01T08:00:00Z", 50_000, 0), bucket("2026-01-01T09:00:00Z", 50_000, 0)];
+    const s = summarizeActivity([...dead, ...sudden]);
+    expect(s.trend).toBe("subiendo");
   });
 });
 
@@ -270,21 +338,183 @@ describe("contratosVecinos3Signal — compra real detrás de la pared del lado P
   });
 });
 
+describe("contratosVecinos3Signal — actividad inusual (Premium Traded subiendo AHORA)", () => {
+  it("marca target1.unusual cuando el Premium Traded del strike venía subiendo", () => {
+    const above: ActivityLevel[] = [level(105, "call", 500_000, 300_000, "subiendo")];
+    const signal = contratosVecinos3Signal({ spot: 100, above, below: [] });
+    expect(signal.target1?.unusual).toBe(true);
+    expect(signal.reason).toContain("Actividad inusual");
+    expect(signal.reason).toContain("$105");
+  });
+
+  it("target1.unusual queda false con actividad alta pero estable/bajando (dinero acumulado, no repentino)", () => {
+    const above: ActivityLevel[] = [level(105, "call", 500_000, 300_000, "bajando")];
+    const signal = contratosVecinos3Signal({ spot: 100, above, below: [] });
+    expect(signal.target1?.unusual).toBe(false);
+    expect(signal.reason).not.toContain("Actividad inusual");
+  });
+
+  it("beyondWall/reversalWatch también llevan el flag (comparten el tipo ContratosVecinos3Target)", () => {
+    const below: ActivityLevel[] = [
+      level(7805, "put", 11_355_381, -703_519), // pared
+      level(7800, "put", 13_608_254, 36_778, "subiendo"), // compra real y repentina detrás
+    ];
+    const signal = contratosVecinos3Signal({ spot: 7807.01, above: [], below });
+    expect(signal.breakoutWatch?.unusual).toBe(true);
+  });
+});
+
+describe("contratosVecinos3Signal — capReversal (confirmación de punto máximo con Net Premium)", () => {
+  it("contraSideAggressive: el put también entra al ask en el MISMO strike del target call → posible agotamiento", () => {
+    // 105 es el único target (nada más lejos que compare Premium Traded, así
+    // que capStrike por volumen no dispara) — pero el put ahí también está
+    // siendo comprado agresivamente (net premium positivo).
+    const above: ActivityLevel[] = [levelWithOther(105, "call", 500_000, 300_000, 50_000)];
+    const signal = contratosVecinos3Signal({ spot: 100, above, below: [] });
+    expect(signal.capReversal?.strike).toBe(105);
+    expect(signal.capReversal?.contraSideAggressive).toBe(true);
+    expect(signal.capReversal?.nextStrikeSelling).toBe(false);
+    expect(signal.reason).toContain("Posible agotamiento en $105");
+  });
+
+  it("nextStrikeSelling: el siguiente strike (mismo tipo) ya tiene net premium negativo → confirma resistencia justo después", () => {
+    const above: ActivityLevel[] = [
+      level(105, "call", 500_000, 300_000), // target
+      level(110, "call", 200_000, -80_000), // siguiente: ya se vende
+    ];
+    const signal = contratosVecinos3Signal({ spot: 100, above, below: [] });
+    expect(signal.capReversal?.strike).toBe(105);
+    expect(signal.capReversal?.nextStrikeSelling).toBe(true);
+    expect(signal.capReversal?.contraSideAggressive).toBe(false);
+  });
+
+  it("sin tensión en el mismo strike NI venta en el siguiente, capReversal queda null", () => {
+    const above: ActivityLevel[] = [
+      levelWithOther(105, "call", 500_000, 300_000, -20_000), // put vendiendo ahí, no comprando — sin tensión
+      level(110, "call", 200_000, 100_000), // siguiente sigue comprado (positivo), no vendiendo
+    ];
+    const signal = contratosVecinos3Signal({ spot: 100, above, below: [] });
+    expect(signal.capReversal).toBeNull();
+  });
+
+  it("detrás de una pared real (wallStrike), capReversal no se calcula — la pared ya frenó el camino", () => {
+    const above: ActivityLevel[] = [levelWithOther(105, "call", 500_000, -300_000, 50_000)]; // pared, no target
+    const signal = contratosVecinos3Signal({ spot: 100, above, below: [] });
+    expect(signal.wallStrike).toBe(105);
+    expect(signal.target1).toBeNull();
+    expect(signal.capReversal).toBeNull();
+  });
+});
+
+describe("evaluateCapCandidate — ejemplo real de Carlos (SPX en 7700, actividad explotando en 7725)", () => {
+  // Camino limpio: 7705→7710→7715→7720 todos comprados y en aumento, puts
+  // vendiendo en esos mismos strikes; 7725 explota (trend "subiendo"); 7730
+  // confirma (menos plata, vendido); abajo del spot los puts no agreden.
+  const cleanPath: ActivityLevel[] = [
+    levelWithOther(7705, "call", 1_000_000, 200_000, -50_000),
+    levelWithOther(7710, "call", 1_500_000, 300_000, -80_000),
+    levelWithOther(7715, "call", 2_000_000, 400_000, -100_000),
+    levelWithOther(7720, "call", 2_500_000, 600_000, -150_000),
+    level(7725, "call", 8_000_000, 3_000_000, "subiendo"),
+    level(7730, "call", 1_200_000, -200_000),
+  ];
+  const cleanBelow: ActivityLevel[] = [level(7695, "put", 900_000, -100_000), level(7690, "put", 700_000, -50_000)];
+
+  it("confirma el candidato cuando los cinco chequeos pasan", () => {
+    const result = evaluateCapCandidate(cleanPath, cleanBelow);
+    expect(result?.strike).toBe(7725);
+    expect(result?.pathAllPositive).toBe(true);
+    expect(result?.pathBuildingUp).toBe(true);
+    expect(result?.pathOppositeClean).toBe(true);
+    expect(result?.nextStrikeConfirms).toBe(true);
+    expect(result?.opposingSideClean).toBe(true);
+    expect(result?.confirmed).toBe(true);
+  });
+
+  it("sin tendencia 'subiendo' en el strike de más actividad, no hay candidato (null)", () => {
+    const flat = cleanPath.map((l) => (l.strike === 7725 ? { ...l, activity: { ...l.activity, trend: "estable" as const } } : l));
+    expect(evaluateCapCandidate(flat, cleanBelow)).toBeNull();
+  });
+
+  it("un strike del camino vendido (net premium negativo) rompe pathAllPositive", () => {
+    const broken = cleanPath.map((l) => (l.strike === 7715 ? { ...l, activity: { ...l.activity, netPremium: -50_000 } } : l));
+    const result = evaluateCapCandidate(broken, cleanBelow);
+    expect(result?.pathAllPositive).toBe(false);
+    expect(result?.confirmed).toBe(false);
+  });
+
+  it("un bajón en medio del camino (no viene en aumento parejo) rompe pathBuildingUp", () => {
+    const dip = cleanPath.map((l) => (l.strike === 7715 ? { ...l, activity: { ...l.activity, totalPremium: 100_000 } } : l));
+    const result = evaluateCapCandidate(dip, cleanBelow);
+    expect(result?.pathBuildingUp).toBe(false);
+    expect(result?.confirmed).toBe(false);
+  });
+
+  it("el tipo contrario comprando en algún strike del camino rompe pathOppositeClean", () => {
+    const contested = cleanPath.map((l) =>
+      l.strike === 7710 ? { ...l, otherActivity: { totalPremium: 90_000, netPremium: 90_000, trend: "estable" as const } } : l,
+    );
+    const result = evaluateCapCandidate(contested, cleanBelow);
+    expect(result?.pathOppositeClean).toBe(false);
+    expect(result?.confirmed).toBe(false);
+  });
+
+  it("el strike siguiente (7730) todavía comprado o con más plata que el candidato rompe nextStrikeConfirms", () => {
+    const noConfirm = cleanPath.map((l) => (l.strike === 7730 ? { ...l, activity: { ...l.activity, netPremium: 50_000 } } : l));
+    const result = evaluateCapCandidate(noConfirm, cleanBelow);
+    expect(result?.nextStrikeConfirms).toBe(false);
+    expect(result?.confirmed).toBe(false);
+  });
+
+  it("agresión del lado opuesto del tablero (puts abajo del spot comprando) rompe opposingSideClean", () => {
+    const aggressiveBelow = [level(7695, "put", 900_000, 500_000), level(7690, "put", 700_000, -50_000)];
+    const result = evaluateCapCandidate(cleanPath, aggressiveBelow);
+    expect(result?.opposingSideClean).toBe(false);
+    expect(result?.confirmed).toBe(false);
+  });
+
+  it("sin levels del lado ganador, devuelve null", () => {
+    expect(evaluateCapCandidate([], cleanBelow)).toBeNull();
+  });
+
+  it("funciona simétrico para el lado PUT (ejemplo bajista de Carlos: actividad explotando en 7680 abajo)", () => {
+    const putPath: ActivityLevel[] = [
+      levelWithOther(7695, "put", 1_000_000, 200_000, -50_000),
+      levelWithOther(7690, "put", 1_500_000, 350_000, -90_000),
+      levelWithOther(7685, "put", 2_200_000, 500_000, -120_000),
+      level(7680, "put", 7_500_000, 2_800_000, "subiendo"),
+      level(7675, "put", 900_000, -180_000),
+    ];
+    const callsAbove: ActivityLevel[] = [level(7705, "call", 800_000, -90_000), level(7710, "call", 600_000, -40_000)];
+    const result = evaluateCapCandidate(putPath, callsAbove);
+    expect(result?.strike).toBe(7680);
+    expect(result?.confirmed).toBe(true);
+  });
+
+  it("integrado en contratosVecinos3Signal: capCandidate viaja en la señal completa y suma al texto de razón", () => {
+    const signal = contratosVecinos3Signal({ spot: 7700, above: cleanPath, below: cleanBelow });
+    expect(signal.capCandidate?.strike).toBe(7725);
+    expect(signal.capCandidate?.confirmed).toBe(true);
+    expect(signal.reason).toContain("Actividad explotando en $7725");
+    expect(signal.reason).toContain("candidato fuerte a punto máximo real");
+  });
+});
+
 describe("applyPersistence", () => {
   const call: ContratosVecinos3Signal = {
-    type: "call", target1: { strike: 105, totalPremium: 500_000, netPremium: 300_000 }, target2: null,
-    capStrike: null, wallStrike: null, stopLoss: null, supportingWall: null, breakoutWatch: null, reversalWatch: null, reason: "call",
+    type: "call", target1: { strike: 105, totalPremium: 500_000, netPremium: 300_000, unusual: false }, target2: null,
+    capStrike: null, capReversal: null, wallStrike: null, stopLoss: null, supportingWall: null, breakoutWatch: null, reversalWatch: null, capCandidate: null, reason: "call",
   };
   const callUpgraded: ContratosVecinos3Signal = {
-    ...call, target1: { strike: 110, totalPremium: 480_000, netPremium: 250_000 },
+    ...call, target1: { strike: 110, totalPremium: 480_000, netPremium: 250_000, unusual: false },
   };
   const put: ContratosVecinos3Signal = {
-    type: "put", target1: { strike: 95, totalPremium: 500_000, netPremium: 300_000 }, target2: null,
-    capStrike: null, wallStrike: null, stopLoss: null, supportingWall: null, breakoutWatch: null, reversalWatch: null, reason: "put",
+    type: "put", target1: { strike: 95, totalPremium: 500_000, netPremium: 300_000, unusual: false }, target2: null,
+    capStrike: null, capReversal: null, wallStrike: null, stopLoss: null, supportingWall: null, breakoutWatch: null, reversalWatch: null, capCandidate: null, reason: "put",
   };
   const noTarget: ContratosVecinos3Signal = {
-    type: null, target1: null, target2: null, capStrike: null, wallStrike: null, stopLoss: null,
-    supportingWall: null, breakoutWatch: null, reversalWatch: null, reason: "nada",
+    type: null, target1: null, target2: null, capStrike: null, capReversal: null, wallStrike: null, stopLoss: null,
+    supportingWall: null, breakoutWatch: null, reversalWatch: null, capCandidate: null, reason: "nada",
   };
 
   it(`con menos de ${PERSISTENCE_REQUIRED} lecturas, nunca está confirmado`, () => {

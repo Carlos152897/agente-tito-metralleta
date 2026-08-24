@@ -17,6 +17,7 @@ import { fetchAssetPrice, fetchContractActivitySummaries, MarketSnackError } fro
 import { isMarketOpen } from "@/lib/marketHours";
 import { etDate } from "@/lib/zerodte";
 import { contratosVecinos3Signal, NEIGHBOR_COUNT, type ActivityLevel } from "@/lib/contratosVecinos3";
+import { zeroDteGex } from "@/lib/zerodte";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -92,11 +93,19 @@ export async function GET(request: Request) {
 
     const signal = contratosVecinos3Signal({ spot, above: aboveLevels, below: belowLevels });
 
+    // Imán del GEX (`lib/zerodte.ts` → `zeroDteGex`, misma cadena ya
+    // descargada arriba) — SOLO informativo acá, pedido explícito de Carlos:
+    // "quiero que siempre me muestres... el precio al que está el imán... pero
+    // no quiero que tomes una decisión en base a esto". El motor de la señal
+    // (`contratosVecinos3Signal`) nunca lo lee.
+    const magnetStrike = zeroDteGex(rows, spot).kingStrike;
+
     return Response.json({
       ticker: TICKER,
       asOf: now.toISOString(),
       spot,
       marketOpen: isMarketOpen(now),
+      magnetStrike,
       above: aboveLevels,
       below: belowLevels,
       signal,

@@ -1,6 +1,6 @@
 // GET /api/grandes-empresas?ticker=AAPL|MSFT|... — "Grandes empresas"
 // (Prueba de Fuego, ago 2026, pedido explícito de Carlos): Magnificent Seven
-// + PLTR, IREN, NFLX, SPCX, INTC, ORCL. Mismo motor que "Contratos vecinos
+// + PLTR, IREN, NFLX, SPCX, INTC, ORCL, HOOD. Mismo motor que "Contratos vecinos
 // 3.0" (lib/contratosVecinos3.ts, el dinero real de MarketSnack decide todo,
 // sin GEX) pero sobre el vencimiento más cercano disponible de Massive en vez
 // del 0DTE fijo de SPX/SPY/QQQ — ver lib/massive.ts `fetchNearTermChain`.

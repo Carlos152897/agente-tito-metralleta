@@ -1,7 +1,7 @@
 "use client";
 
 // "Grandes empresas" (Prueba de Fuego, ago 2026, pedido explícito de Carlos):
-// Magnificent Seven + PLTR, IREN, NFLX, SPCX, INTC, ORCL. Reusa el motor de
+// Magnificent Seven + PLTR, IREN, NFLX, SPCX, INTC, ORCL, HOOD. Reusa el motor de
 // "Contratos vecinos 3.0" (lib/contratosVecinos3.ts) para el call/put con dos
 // targets — ver ContratosVecinos3Tab.tsx, mismo patrón de SignalBox/TargetChip.
 // Suma: imán real de MarketSnack (GEX agregado, lib/spxLevels.ts), % movido en
@@ -125,7 +125,7 @@ export default function GrandesEmpresasTab() {
       <header className="ge-head">
         <div>
           <h1>Grandes empresas</h1>
-          <p>Magnificent Seven + PLTR, IREN, NFLX, SPCX, INTC, ORCL — Premium Traded real (MarketSnack) + imán del GEX real.</p>
+          <p>Magnificent Seven + PLTR, IREN, NFLX, SPCX, INTC, ORCL, HOOD — Premium Traded real (MarketSnack) + imán del GEX real.</p>
         </div>
         <div className="ge-controls">
           {lastUpdated && <span className="ge-updated">actualizado {etTime()} ET</span>}
@@ -198,10 +198,10 @@ export default function GrandesEmpresasTab() {
         día de la semana que se está operando (nunca cruza a la semana siguiente): lunes combina 0DTE de hoy +
         miércoles + viernes; martes combina miércoles + viernes; miércoles combina 0DTE de hoy + viernes;
         jueves usa solo viernes; viernes usa solo el 0DTE de hoy. El
-        imán sale del GEX agregado real de MarketSnack; el call/put y los targets salen del mismo motor de
-        "Contratos vecinos 3.0" (Premium Traded confirma dónde está el dinero, Net Premium confirma la
-        dirección). La dirección se marca "✅ confirmado" recién al sostenerse {PERSISTENCE_REQUIRED} lecturas
-        seguidas.
+imán sale del GEX agregado real de MarketSnack; el call/put y los targets salen del mismo motor de
+        "Contratos vecinos 3.0" (Premium Traded acumulado del día confirma dónde está el dinero, Net Premium
+        del ÚLTIMO bucket de 5 min — no acumulado — confirma la dirección de AHORA). La dirección se marca
+        "✅ confirmado" recién al sostenerse {PERSISTENCE_REQUIRED} lecturas seguidas.
       </p>
     </div>
   );
@@ -229,6 +229,7 @@ function SignalBox({ signal }: { signal: PersistentSignal }) {
         )}
         {signal.wallStrike != null && <span className="ge-advice-tag ge-advice-tag-wait">🧱 pared en ${signal.wallStrike}</span>}
         {signal.capStrike != null && <span className="ge-advice-tag ge-advice-tag-wait">⛔ probable techo ${signal.capStrike}</span>}
+        {signal.capReversal && <span className="ge-advice-tag ge-advice-tag-wait">🔄 posible agotamiento ${signal.capReversal.strike}</span>}
       </div>
       <div className="ge-targets-row">
         <TargetChip label="Target 1" target={signal.target1} />
@@ -247,16 +248,54 @@ function SignalBox({ signal }: { signal: PersistentSignal }) {
             <div className="ge-chip-sub">venta de {signal.supportingWall.type === "call" ? "calls" : "puts"} · refuerza la tesis</div>
           </div>
         )}
+        {signal.capReversal && (
+          <div className="ge-chip ge-chip-reversal">
+            <div className="ge-chip-label">Posible agotamiento</div>
+            <div className="ge-chip-value">${signal.capReversal.strike}</div>
+            <div className="ge-chip-sub">
+              {[
+                signal.capReversal.contraSideAggressive && "lado contrario también al ask ahí",
+                signal.capReversal.nextStrikeSelling && "venta ya en el siguiente strike",
+              ].filter(Boolean).join(" · ")}
+            </div>
+          </div>
+        )}
         {signal.breakoutWatch && (
-          <div className="ge-chip ge-chip-breakout">
+          <div className={`ge-chip ge-chip-breakout ${signal.breakoutWatch.unusual ? "ge-chip-unusual" : ""}`}>
             <div className="ge-chip-label">Vigilar detrás de la pared</div>
             <div className="ge-chip-value">${signal.breakoutWatch.strike}</div>
-            <div className="ge-chip-sub">compra real · necesita que ${signal.wallStrike} ceda primero</div>
+            <div className="ge-chip-sub">
+              compra real · necesita que ${signal.wallStrike} ceda primero
+              {signal.breakoutWatch.unusual && <span className="ge-chip-flag"> · ⚡ actividad inusual</span>}
+            </div>
           </div>
         )}
       </div>
+      {signal.capCandidate && (
+        <div className={`ge-capcand ${signal.capCandidate.confirmed ? "ge-capcand-confirmed" : "ge-capcand-pending"}`}>
+          <div className="ge-capcand-head">
+            {signal.capCandidate.confirmed ? "🎯" : "🔍"} Candidato a punto máximo real: <b>${signal.capCandidate.strike}</b>
+            <span className="ge-capcand-sub">(actividad explotando — camino spot→strike chequeado abajo)</span>
+          </div>
+          <ul className="ge-capcand-checks">
+            <CheckItem ok={signal.capCandidate.pathAllPositive} label="Todo el camino comprado (net premium positivo en cada strike)" />
+            <CheckItem ok={signal.capCandidate.pathBuildingUp} label="Premium Traded en aumento parejo hacia el candidato" />
+            <CheckItem ok={signal.capCandidate.pathOppositeClean} label="El tipo contrario no compite en el camino" />
+            <CheckItem ok={signal.capCandidate.nextStrikeConfirms} label="El strike siguiente ya confirma (menos plata y vendido)" />
+            <CheckItem ok={signal.capCandidate.opposingSideClean} label="El lado opuesto del tablero no agrede" />
+          </ul>
+        </div>
+      )}
       <p>{signal.reason}</p>
     </section>
+  );
+}
+
+function CheckItem({ ok, label }: { ok: boolean; label: string }) {
+  return (
+    <li className={ok ? "ge-check-ok" : "ge-check-fail"}>
+      {ok ? "✅" : "❌"} {label}
+    </li>
   );
 }
 
@@ -342,10 +381,15 @@ function SpreadSuggestions({ s }: { s: ZeroDteSuggestions }) {
 
 function TargetChip({ label, target }: { label: string; target: Target | null }) {
   return (
-    <div className="ge-chip">
+    <div className={`ge-chip ${target?.unusual ? "ge-chip-unusual" : ""}`}>
       <div className="ge-chip-label">{label}</div>
       <div className="ge-chip-value">{target ? `$${target.strike}` : "—"}</div>
-      {target && <div className="ge-chip-sub">{money0(target.totalPremium)} Premium Traded</div>}
+      {target && (
+        <div className="ge-chip-sub">
+          {money0(target.totalPremium)} Premium Traded
+          {target.unusual && <span className="ge-chip-flag"> · ⚡ actividad inusual</span>}
+        </div>
+      )}
     </div>
   );
 }
@@ -415,6 +459,19 @@ const CSS = `
 .ge-chip-stop { border-color: var(--amber-border); }
 .ge-chip-support { border-color: var(--accent); }
 .ge-chip-breakout { border-color: var(--border-soft); border-style: dashed; }
+.ge-chip-reversal { border-color: var(--red-soft); }
+.ge-chip-unusual { border-color: var(--amber-border); box-shadow: 0 0 0 1px var(--amber-border) inset; }
+.ge-chip-flag { color: var(--amber-text); font-weight: 700; }
+
+.ge-capcand { margin-top: 12px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border-soft); background: var(--panel-2); }
+.ge-capcand-confirmed { border-color: var(--green); }
+.ge-capcand-pending { border-color: var(--amber-border); }
+.ge-capcand-head { font-size: 13px; font-weight: 700; }
+.ge-capcand-sub { font-weight: 400; color: var(--faint); font-size: 11.5px; margin-left: 4px; }
+.ge-capcand-checks { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.ge-capcand-checks li { font-size: 12.5px; }
+.ge-check-ok { color: var(--green-dark); }
+.ge-check-fail { color: var(--faint); }
 
 .ge-spreads { border: 1px solid var(--border); background: var(--panel); border-radius: 12px; padding: 16px 18px; margin: 0 0 16px; }
 .ge-spreads header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }

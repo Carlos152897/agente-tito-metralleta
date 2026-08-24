@@ -46,6 +46,7 @@ interface Result {
   asOf: string;
   spot: number;
   marketOpen: boolean;
+  magnetStrike: number | null;
   above: ActivityLevel[];
   below: ActivityLevel[];
   signal: ContratosVecinos3Signal;
@@ -149,6 +150,9 @@ export default function ContratosVecinos3Tab() {
         <div className="c3-meta">
           <span><b>{data.ticker}</b> 0DTE</span>
           <span>Spot <b>{data.spot.toFixed(2)}</b></span>
+          {data.magnetStrike != null && (
+            <span className="c3-magnet">🧲 Imán (GEX): <b>${data.magnetStrike}</b> — solo referencia, no decide la señal</span>
+          )}
         </div>
       )}
 
@@ -163,7 +167,8 @@ export default function ContratosVecinos3Tab() {
 
       <p className="c3-foot">
         Se actualiza sola cada 30s. Dinero simulado — no es consejo financiero. Premium Traded = toda la
-        actividad real de hoy en ese strike (compra + venta); Net Premium confirma la dirección (positivo =
+        actividad real de HOY en ese strike (acumulado, compra + venta); Net Premium confirma la dirección
+        con la lectura de AHORA MISMO, del último bucket de 5 min — nunca acumulado del día (positivo =
         compra agresiva, negativo = venta). Solo se confirma un target donde hay actividad alta Y compra
         agresiva a la vez — actividad alta pero vendida es una pared, no una entrada. La dirección se marca
         "✅ confirmado" recién al sostenerse {PERSISTENCE_REQUIRED} lecturas seguidas (evita operar
@@ -200,6 +205,9 @@ function SignalBox({ signal }: { signal: PersistentSignal }) {
         {signal.capStrike != null && (
           <span className="c3-advice-tag c3-advice-tag-wait">⛔ probable techo ${signal.capStrike}</span>
         )}
+        {signal.capReversal && (
+          <span className="c3-advice-tag c3-advice-tag-wait">🔄 posible agotamiento ${signal.capReversal.strike}</span>
+        )}
       </div>
       <div className="c3-targets-row">
         <TargetChip label="Target 1" target={signal.target1} />
@@ -218,34 +226,78 @@ function SignalBox({ signal }: { signal: PersistentSignal }) {
             <div className="c3-chip-sub">venta de {signal.supportingWall.type === "call" ? "calls" : "puts"} · refuerza la tesis</div>
           </div>
         )}
+        {signal.capReversal && (
+          <div className="c3-chip c3-chip-reversal">
+            <div className="c3-chip-label">Posible agotamiento</div>
+            <div className="c3-chip-value">${signal.capReversal.strike}</div>
+            <div className="c3-chip-sub">
+              {[
+                signal.capReversal.contraSideAggressive && "lado contrario también al ask ahí",
+                signal.capReversal.nextStrikeSelling && "venta ya en el siguiente strike",
+              ].filter(Boolean).join(" · ")}
+            </div>
+          </div>
+        )}
         {signal.breakoutWatch && (
-          <div className="c3-chip c3-chip-breakout">
+          <div className={`c3-chip c3-chip-breakout ${signal.breakoutWatch.unusual ? "c3-chip-unusual" : ""}`}>
             <div className="c3-chip-label">Vigilar detrás de la pared</div>
             <div className="c3-chip-value">${signal.breakoutWatch.strike}</div>
-            <div className="c3-chip-sub">compra real · necesita que ${signal.wallStrike} ceda primero</div>
+            <div className="c3-chip-sub">
+              compra real · necesita que ${signal.wallStrike} ceda primero
+              {signal.breakoutWatch.unusual && <span className="c3-chip-flag"> · ⚡ actividad inusual</span>}
+            </div>
           </div>
         )}
       </div>
+      {signal.capCandidate && (
+        <div className={`c3-capcand ${signal.capCandidate.confirmed ? "c3-capcand-confirmed" : "c3-capcand-pending"}`}>
+          <div className="c3-capcand-head">
+            {signal.capCandidate.confirmed ? "🎯" : "🔍"} Candidato a punto máximo real: <b>${signal.capCandidate.strike}</b>
+            <span className="c3-capcand-sub">(actividad explotando — camino spot→strike chequeado abajo)</span>
+          </div>
+          <ul className="c3-capcand-checks">
+            <CheckItem ok={signal.capCandidate.pathAllPositive} label="Todo el camino comprado (net premium positivo en cada strike)" />
+            <CheckItem ok={signal.capCandidate.pathBuildingUp} label="Premium Traded en aumento parejo hacia el candidato" />
+            <CheckItem ok={signal.capCandidate.pathOppositeClean} label="El tipo contrario no compite en el camino" />
+            <CheckItem ok={signal.capCandidate.nextStrikeConfirms} label="El strike siguiente ya confirma (menos plata y vendido)" />
+            <CheckItem ok={signal.capCandidate.opposingSideClean} label="El lado opuesto del tablero no agrede" />
+          </ul>
+        </div>
+      )}
       <p>{signal.reason}</p>
     </section>
   );
 }
 
+function CheckItem({ ok, label }: { ok: boolean; label: string }) {
+  return (
+    <li className={ok ? "c3-check-ok" : "c3-check-fail"}>
+      {ok ? "✅" : "❌"} {label}
+    </li>
+  );
+}
+
 function TargetChip({ label, target }: { label: string; target: Target | null }) {
   return (
-    <div className="c3-chip">
+    <div className={`c3-chip ${target?.unusual ? "c3-chip-unusual" : ""}`}>
       <div className="c3-chip-label">{label}</div>
       <div className="c3-chip-value">{target ? `$${target.strike}` : "—"}</div>
-      {target && <div className="c3-chip-sub">{money0(target.totalPremium)} Premium Traded</div>}
+      {target && (
+        <div className="c3-chip-sub">
+          {money0(target.totalPremium)} Premium Traded
+          {target.unusual && <span className="c3-chip-flag"> · ⚡ actividad inusual</span>}
+        </div>
+      )}
     </div>
   );
 }
 
 function ActivityTable({ title, levels, signal }: { title: string; levels: ActivityLevel[]; signal: ContratosVecinos3Signal | null }) {
   const keyStrikes = new Set(
-    [signal?.target1?.strike, signal?.target2?.strike, signal?.wallStrike, signal?.stopLoss?.strike, signal?.breakoutWatch?.strike].filter(
-      (s): s is number => s != null,
-    ),
+    [
+      signal?.target1?.strike, signal?.target2?.strike, signal?.wallStrike, signal?.stopLoss?.strike,
+      signal?.breakoutWatch?.strike, signal?.capReversal?.strike,
+    ].filter((s): s is number => s != null),
   );
   const maxPremium = Math.max(1, ...levels.map((l) => l.activity.totalPremium));
 
@@ -312,6 +364,7 @@ const CSS = `
 .c3-meta { display: flex; gap: 18px; flex-wrap: wrap; align-items: center; margin: 18px 0 14px;
   color: var(--muted); font-size: 13.5px; }
 .c3-meta b { color: var(--text); }
+.c3-magnet { color: var(--accent); }
 
 .c3-advice { border: 2px solid var(--border); border-radius: 12px; padding: 16px 18px; margin: 0 0 16px; background: var(--panel); }
 .c3-advice-call { border-color: var(--green); background: var(--green-bg); }
@@ -326,6 +379,16 @@ const CSS = `
 .c3-advice-tag-wait { background: var(--amber-bg); color: var(--amber-text); border-color: var(--amber-border); }
 .c3-advice p { margin: 8px 0 0; font-size: 13.5px; line-height: 1.5; color: var(--text); }
 
+.c3-capcand { margin-top: 12px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border-soft); background: var(--panel-2); }
+.c3-capcand-confirmed { border-color: var(--green); }
+.c3-capcand-pending { border-color: var(--amber-border); }
+.c3-capcand-head { font-size: 13px; font-weight: 700; }
+.c3-capcand-sub { font-weight: 400; color: var(--faint); font-size: 11.5px; margin-left: 4px; }
+.c3-capcand-checks { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.c3-capcand-checks li { font-size: 12.5px; }
+.c3-check-ok { color: var(--green-dark); }
+.c3-check-fail { color: var(--faint); }
+
 .c3-targets-row { display: flex; gap: 12px; flex-wrap: wrap; }
 .c3-chip { background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: 8px;
   padding: 10px 14px; min-width: 130px; }
@@ -335,6 +398,9 @@ const CSS = `
 .c3-chip-stop { border-color: var(--amber-border); }
 .c3-chip-support { border-color: var(--accent); }
 .c3-chip-breakout { border-color: var(--border-soft); border-style: dashed; }
+.c3-chip-reversal { border-color: var(--red-soft); }
+.c3-chip-unusual { border-color: var(--amber-border); box-shadow: 0 0 0 1px var(--amber-border) inset; }
+.c3-chip-flag { color: var(--amber-text); font-weight: 700; }
 
 .c3-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; margin: 0 0 16px; }
 .c3-box { border: 1px solid var(--border); background: var(--panel); border-radius: 12px; padding: 16px 18px; }

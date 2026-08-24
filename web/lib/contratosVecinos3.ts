@@ -10,7 +10,11 @@
 //   2. El Net Premium en ESOS puntos confirma la dirección: en calls,
 //      positivo = compra agresiva = alcista, negativo = venta = resistencia;
 //      en puts, positivo = compra agresiva = bajista/cobertura, negativo =
-//      venta = soporte (misma convención que ya usa lib/magnetWall.ts).
+//      venta = soporte (misma convención que ya usa lib/magnetWall.ts). Es
+//      la lectura del ÚLTIMO bucket de 5 min, NUNCA acumulado del día — ver
+//      `summarizeActivity`. Pedido explícito de Carlos (2026-08-24, con un
+//      ejemplo real de MarketSnack): "¿ahora mismo se está comprando o
+//      vendiendo?", no "¿quién ganó el día completo?".
 //   3. Donde la actividad es baja, es candidato a stop-loss/límite — se
 //      confirma también con el Net Premium ahí (si es negativo del lado que
 //      se está mirando).
@@ -57,14 +61,42 @@ export interface ActivitySummary {
 }
 
 /**
+ * Cuántos buckets de 5 min (10 min con RECENT_WINDOW_BUCKETS=2) cuentan como
+ * "ahora mismo" para detectar un salto repentino — ni un solo bucket (mucho
+ * ruido, un solo trade grande lo dispara) ni tantos que dejen de ser "recién".
+ */
+export const RECENT_WINDOW_BUCKETS = 2;
+/** Ritmo reciente ≥ este múltiplo del ritmo previo del propio contrato → "subiendo" (salto real, no ruido de un bucket). */
+export const SPIKE_UP_RATIO = 2;
+/** Ritmo reciente ≤ este múltiplo del ritmo previo → "bajando". Simétrico a SPIKE_UP_RATIO. */
+export const SPIKE_DOWN_RATIO = 0.5;
+
+/**
  * Resume los buckets de 5 min de UN contrato en actividad total + neta +
  * tendencia reciente. A diferencia de `summarizeTradeBuckets`
  * (neighborContracts.ts, que descarta el mid a propósito porque solo le
- * interesa la dirección), acá el mid SÍ cuenta — "Premium Traded" es toda la
- * plata que se movió, no solo la agresiva. La tendencia compara la mitad más
- * reciente de los buckets de hoy contra la mitad más vieja (no un solo
- * bucket, que sería ruido) — con menos de 4 buckets no hay suficiente
- * historia todavía y se reporta "estable".
+ * interesa la dirección), acá el mid SÍ cuenta en `totalPremium` —
+ * "Premium Traded" es toda la plata que se movió en el día, no solo la
+ * agresiva, y por eso SÍ es acumulado: dónde está el dinero es una pregunta
+ * de todo el día.
+ *
+ * `netPremium`, en cambio, NO se acumula (pedido explícito de Carlos,
+ * 2026-08-24, con un ejemplo real de MarketSnack a mano): es el ask−bid del
+ * ÚLTIMO bucket de 5 min nada más — "¿ahora mismo se está comprando o
+ * vendiendo?", no "¿quién ganó la pulseada del día completo?". Un contrato
+ * puede llevar toda la mañana vendido en acumulado y en ESTE momento estar
+ * comprándose fuerte — con la versión acumulada eso quedaba invisible hasta
+ * que el acumulado del día entero cruzaba a positivo, mucho después de que
+ * la compra real ya había empezado. Sin buckets, `netPremium` es 0.
+ *
+ * La tendencia (`trend`) SÍ sigue siendo sobre una ventana — es un concepto
+ * distinto (detectar un salto repentino en el RITMO de actividad, no la
+ * dirección) y necesita comparar contra una base para saber qué es "repentino".
+ * Compara el ritmo por bucket de los últimos `RECENT_WINDOW_BUCKETS` contra
+ * el ritmo por bucket de todo lo anterior en el día — sin actividad previa
+ * pero SÍ actividad reciente cuenta como salto (dinero apareciendo de la
+ * nada es el caso más repentino de todos). Con menos de 4 buckets no hay
+ * suficiente historia todavía ("estable").
  */
 export function summarizeActivity(buckets: TradeSummaryBucketLike[]): ActivitySummary {
   let askPremium = 0;
@@ -76,18 +108,27 @@ export function summarizeActivity(buckets: TradeSummaryBucketLike[]): ActivitySu
     midPremium += b.mid_premium;
   }
   const totalPremium = askPremium + bidPremium + midPremium;
-  const netPremium = askPremium - bidPremium;
 
   const sorted = [...buckets].sort((a, b) => Date.parse(a.t) - Date.parse(b.t));
+  const latest = sorted[sorted.length - 1] ?? null;
+  const netPremium = latest ? latest.ask_premium - latest.bid_premium : 0;
+
   let trend: ActivityTrend = "estable";
   if (sorted.length >= 4) {
-    const mid = Math.floor(sorted.length / 2);
     const sum = (xs: TradeSummaryBucketLike[]) =>
       xs.reduce((s, x) => s + x.ask_premium + x.bid_premium + x.mid_premium, 0);
-    const older = sum(sorted.slice(0, mid));
-    const recent = sum(sorted.slice(mid));
-    if (recent > older * 1.1) trend = "subiendo";
-    else if (recent < older * 0.9) trend = "bajando";
+    const recentCount = Math.min(RECENT_WINDOW_BUCKETS, sorted.length - 2); // deja al menos 2 buckets de base
+    const recentBuckets = sorted.slice(sorted.length - recentCount);
+    const baseBuckets = sorted.slice(0, sorted.length - recentCount);
+    const recentRate = sum(recentBuckets) / recentBuckets.length;
+    const baseRate = sum(baseBuckets) / baseBuckets.length;
+
+    if (baseRate > 0) {
+      if (recentRate >= baseRate * SPIKE_UP_RATIO) trend = "subiendo";
+      else if (recentRate <= baseRate * SPIKE_DOWN_RATIO) trend = "bajando";
+    } else if (recentRate > 0) {
+      trend = "subiendo"; // no había nada antes y ahora sí: el salto más repentino posible
+    }
   }
 
   return { totalPremium, netPremium, trend };
@@ -113,6 +154,37 @@ export interface ContratosVecinos3Target {
   strike: number;
   totalPremium: number;
   netPremium: number;
+  /**
+   * `true` si el Premium Traded de este strike venía en tendencia "subiendo"
+   * (ver `summarizeActivity`) al momento de la lectura — actividad real
+   * entrando AHORA, no solo un número grande acumulado en el día. Pedido
+   * explícito de Carlos: distinguir "aquí siempre hubo mucho dinero" de "aquí
+   * está entrando mucho dinero de golpe" (actividad inusual/repentina).
+   */
+  unusual: boolean;
+}
+
+/**
+ * Confirmación de "punto máximo de llegada" con Net Premium (distinta de
+ * `capStrike`, que solo mira si el Premium Traded TOTAL cae). Pedido
+ * explícito de Carlos, dos chequeos independientes sobre el ÚLTIMO target
+ * confirmado del lado ganador:
+ *
+ *   1. `contraSideAggressive` — en el MISMO strike, el tipo CONTRARIO
+ *      también se está comprando agresivamente (ask): si vas en CALL y ahí
+ *      mismo los PUTS también entran al ask, hay tensión real en ese punto —
+ *      los dos lados apostando fuerte al mismo tiempo, posible agotamiento.
+ *   2. `nextStrikeSelling` — el siguiente contrato (mismo tipo, un strike
+ *      más allá) ya tiene net premium NEGATIVO — venta real confirmándose
+ *      justo después, reforzando que el camino no sigue mucho más.
+ *
+ * Cualquiera de los dos ya es señal (no hace falta que se den los dos a la
+ * vez) — se exponen por separado para que se vea cuál disparó.
+ */
+export interface CapReversalSignal {
+  strike: number;
+  contraSideAggressive: boolean;
+  nextStrikeSelling: boolean;
 }
 
 export interface StopLossLevel {
@@ -138,6 +210,8 @@ interface SideWalk {
   beyondWall: ContratosVecinos3Target | null;
   /** Strike donde el Premium Traded empezó a caer justo después del último target — probable máximo. */
   capStrike: number | null;
+  /** Confirmación con Net Premium (tensión en el mismo strike y/o venta en el siguiente) de que el último target es el punto máximo — ver `CapReversalSignal`. */
+  capReversal: CapReversalSignal | null;
   /** Primer strike de actividad baja (posible stop-loss), confirmado con net premium negativo ahí. */
   lowActivity: StopLossLevel | null;
   /**
@@ -166,7 +240,7 @@ interface SideWalk {
  */
 function walkSide(levels: ActivityLevel[], type: "call" | "put", globalMaxPremium: number): SideWalk {
   const empty: SideWalk = {
-    type, targets: [], wallStrike: null, beyondWall: null, capStrike: null, lowActivity: null, leadPremium: 0,
+    type, targets: [], wallStrike: null, beyondWall: null, capStrike: null, capReversal: null, lowActivity: null, leadPremium: 0,
   };
   if (levels.length === 0) return empty;
 
@@ -186,15 +260,16 @@ function walkSide(levels: ActivityLevel[], type: "call" | "put", globalMaxPremiu
     if (leadPremium === 0) leadPremium = lvl.activity.totalPremium;
 
     if (lvl.activity.netPremium > 0) {
+      const unusual = lvl.activity.trend === "subiendo";
       if (wallStrike == null) {
-        targets.push({ strike: lvl.strike, totalPremium: lvl.activity.totalPremium, netPremium: lvl.activity.netPremium });
+        targets.push({ strike: lvl.strike, totalPremium: lvl.activity.totalPremium, netPremium: lvl.activity.netPremium, unusual });
         stopIndex = i;
         if (targets.length >= MAX_TARGETS) break;
       } else {
         // Ya pasamos una pared real — esto NO es un target (el precio
         // primero tiene que romper la pared), pero es compra real que antes
         // quedaba invisible porque el camino frenaba en la primera pared.
-        beyondWall = { strike: lvl.strike, totalPremium: lvl.activity.totalPremium, netPremium: lvl.activity.netPremium };
+        beyondWall = { strike: lvl.strike, totalPremium: lvl.activity.totalPremium, netPremium: lvl.activity.netPremium, unusual };
         break;
       }
     } else if (wallStrike == null) {
@@ -212,10 +287,22 @@ function walkSide(levels: ActivityLevel[], type: "call" | "put", globalMaxPremiu
   // actividad después del último target confirmado; si decae, ese último
   // target es el probable techo del movimiento.
   let capStrike: number | null = null;
+  let capReversal: CapReversalSignal | null = null;
   if (targets.length > 0 && wallStrike == null) {
     const next = levels[stopIndex + 1];
     const last = targets[targets.length - 1];
+    const lastLevel = levels[stopIndex];
     if (next && next.activity.totalPremium < last.totalPremium) capStrike = last.strike;
+
+    // Confirmación con Net Premium (independiente de `capStrike`, que solo
+    // mira volumen total): ¿el tipo contrario en el MISMO strike también
+    // entra al ask (tensión real)? ¿el siguiente strike ya vende (net
+    // premium negativo)? Cualquiera de los dos ya cuenta.
+    const contraSideAggressive = lastLevel?.otherActivity != null && lastLevel.otherActivity.netPremium > 0;
+    const nextStrikeSelling = next != null && next.activity.netPremium < 0;
+    if (contraSideAggressive || nextStrikeSelling) {
+      capReversal = { strike: last.strike, contraSideAggressive, nextStrikeSelling };
+    }
   }
 
   // Zona de baja actividad = candidato a stop-loss, confirmado por net
@@ -232,7 +319,7 @@ function walkSide(levels: ActivityLevel[], type: "call" | "put", globalMaxPremiu
     }
   }
 
-  return { type, targets, wallStrike, beyondWall, capStrike, lowActivity, leadPremium };
+  return { type, targets, wallStrike, beyondWall, capStrike, capReversal, lowActivity, leadPremium };
 }
 
 export interface SupportingWall {
@@ -253,6 +340,8 @@ export interface ContratosVecinos3Signal {
   target2: ContratosVecinos3Target | null;
   /** Strike donde la actividad ya empezó a decaer — probable techo del movimiento. `null` si no se detectó. */
   capStrike: number | null;
+  /** Confirmación del punto máximo con Net Premium (tensión en el mismo strike y/o venta en el siguiente) — ver `CapReversalSignal`. `null` si ninguna de las dos se dio. */
+  capReversal: CapReversalSignal | null;
   /** Pared de venta real (lado ganador) que frenó el camino antes de completar los targets, si pasó. */
   wallStrike: number | null;
   /** Nivel de baja actividad del lado CONTRARIO a la dirección — referencia de stop-loss. */
@@ -284,6 +373,8 @@ export interface ContratosVecinos3Signal {
    * lado perdedor, una posible reversión gestándose.
    */
   reversalWatch: ReversalWatch | null;
+  /** Validación de camino limpio hacia el strike de actividad EXPLOTANDO del lado ganador — ver `evaluateCapCandidate`. `null` sin candidato (nada con tendencia "subiendo" todavía). */
+  capCandidate: CapCandidateConfirmation | null;
   reason: string;
 }
 
@@ -293,6 +384,85 @@ export interface ContratosVecinos3Input {
   above: ActivityLevel[];
   /** Strikes < spot, actividad de PUTS, ordenados del más cercano al spot hacia afuera. */
   below: ActivityLevel[];
+}
+
+/** Un strike del camino spot→candidato, con lo mínimo para mostrar por qué pasó o falló. */
+export interface CapCandidatePathStep {
+  strike: number;
+  totalPremium: number;
+  netPremium: number;
+  /** Net premium del tipo CONTRARIO en el mismo strike — `null` si ese strike no tiene contrato contrario con datos. */
+  otherNetPremium: number | null;
+}
+
+/**
+ * Validación de "camino limpio" hacia un strike con actividad EXPLOTANDO
+ * (pedido explícito de Carlos, con dos ejemplos prácticos a mano — SPX en
+ * 7700 con actividad disparándose en 7725 arriba / 7680 abajo). Solo se
+ * calcula cuando el strike de más Premium Traded del lado viene en tendencia
+ * "subiendo" (`summarizeActivity` — un salto real, no un número grande de
+ * siempre — "le están dando duro" literalmente significa esto). Cuatro
+ * chequeos, cada uno puede fallar solo:
+ *
+ *   1. `pathAllPositive` — TODOS los strikes entre el spot y el candidato
+ *      (7705, 7710, 7715, 7720 en el ejemplo) tienen net premium POSITIVO del
+ *      tipo primario, sin importar si son de actividad alta o baja — a
+ *      diferencia de `walkSide`, que ignora los strikes de baja actividad sin
+ *      mirar su signo.
+ *   2. `pathBuildingUp` — el Premium Traded va aumentando strike a strike a
+ *      medida que se acerca al candidato (no un pico aislado en medio de un
+ *      camino plano).
+ *   3. `pathOppositeClean` — en esos MISMOS strikes del camino, el tipo
+ *      CONTRARIO (puts arriba del spot, calls abajo) tiene net premium
+ *      negativo o nulo — no hay compra agresiva contraria compitiendo en el
+ *      camino.
+ *   4. `opposingSideClean` — el lado OPUESTO del tablero entero (puts abajo
+ *      del spot si el candidato es un call arriba) no muestra agresión propia
+ *      (net premium positivo) — "que no haya tanta agresividad debajo".
+ *
+ * Más allá del candidato, reusa la misma idea de `capReversal`/`capStrike`:
+ * el siguiente strike (7730 en el ejemplo) no debería haber crecido tanto en
+ * Premium Traded y su net premium debería ser negativo — `nextStrikeConfirms`.
+ */
+export interface CapCandidateConfirmation {
+  strike: number;
+  path: CapCandidatePathStep[];
+  pathAllPositive: boolean;
+  pathBuildingUp: boolean;
+  pathOppositeClean: boolean;
+  nextStrikeConfirms: boolean;
+  opposingSideClean: boolean;
+  /** `true` solo si los cinco chequeos pasaron — candidato fuerte a punto máximo real. */
+  confirmed: boolean;
+}
+
+export function evaluateCapCandidate(levels: ActivityLevel[], opposingLevels: ActivityLevel[]): CapCandidateConfirmation | null {
+  if (levels.length === 0) return null;
+  const candidate = levels.reduce((a, b) => (b.activity.totalPremium > a.activity.totalPremium ? b : a));
+  if (candidate.activity.trend !== "subiendo") return null; // sin salto real, no es "le están dando duro"
+
+  const idx = levels.indexOf(candidate);
+  const pathLevels = levels.slice(0, idx);
+  const path: CapCandidatePathStep[] = pathLevels.map((l) => ({
+    strike: l.strike,
+    totalPremium: l.activity.totalPremium,
+    netPremium: l.activity.netPremium,
+    otherNetPremium: l.otherActivity?.netPremium ?? null,
+  }));
+
+  const pathAllPositive = path.every((p) => p.netPremium > 0);
+  const pathBuildingUp = path.every((p, i) => (i === 0 || p.totalPremium >= path[i - 1].totalPremium));
+  const pathOppositeClean = path.every((p) => p.otherNetPremium == null || p.otherNetPremium <= 0);
+
+  const next = levels[idx + 1] ?? null;
+  const nextStrikeConfirms = next == null || (next.activity.totalPremium < candidate.activity.totalPremium && next.activity.netPremium <= 0);
+
+  const opposingSideClean = opposingLevels.every((l) => l.activity.netPremium <= 0);
+
+  return {
+    strike: candidate.strike, path, pathAllPositive, pathBuildingUp, pathOppositeClean, nextStrikeConfirms, opposingSideClean,
+    confirmed: pathAllPositive && pathBuildingUp && pathOppositeClean && nextStrikeConfirms && opposingSideClean,
+  };
 }
 
 /**
@@ -333,8 +503,8 @@ export function contratosVecinos3Signal(input: ContratosVecinos3Input): Contrato
 
   if (above.leadPremium <= 0 && below.leadPremium <= 0) {
     return {
-      type: null, target1: null, target2: null, capStrike: null, wallStrike: null, stopLoss: null,
-      supportingWall: null, breakoutWatch: null, reversalWatch: null,
+      type: null, target1: null, target2: null, capStrike: null, capReversal: null, wallStrike: null, stopLoss: null,
+      supportingWall: null, breakoutWatch: null, reversalWatch: null, capCandidate: null,
       reason: "Sin actividad real (Premium Traded) suficiente en el vecindario todavía — no operar.",
     };
   }
@@ -362,10 +532,21 @@ export function contratosVecinos3Signal(input: ContratosVecinos3Input): Contrato
     (t1 ? `, confirmada con net premium positivo en $${t1.strike}` : "") +
     (t2 ? ` y $${t2.strike}` : "") +
     ` — sesgo ${dirWord}.`;
+  const unusualStrikes = [t1, t2].filter((t): t is ContratosVecinos3Target => t != null && t.unusual).map((t) => `$${t.strike}`);
+  if (unusualStrikes.length > 0) {
+    reason += ` Actividad inusual (Premium Traded subiendo AHORA, no solo acumulado) en ${unusualStrikes.join(" y ")}.`;
+  }
   if (winner.wallStrike != null) {
     reason += ` El camino se frenó en $${winner.wallStrike}: ahí hay actividad alta pero VENDIDA (pared real), no compra.`;
   } else if (winner.capStrike != null) {
     reason += ` La actividad cae justo después de $${winner.capStrike} — probable techo del movimiento.`;
+  }
+  if (winner.capReversal) {
+    const contraWord = winner.type === "call" ? "puts" : "calls";
+    const bits: string[] = [];
+    if (winner.capReversal.contraSideAggressive) bits.push(`los ${contraWord} también se están comprando agresivamente en $${winner.capReversal.strike} (mismo strike)`);
+    if (winner.capReversal.nextStrikeSelling) bits.push(`ya hay venta real en el strike siguiente`);
+    reason += ` Posible agotamiento en $${winner.capReversal.strike}: ${bits.join(" y ")}.`;
   }
   if (supportingWall) {
     reason += ` Refuerza la tesis: venta real de ${supportingWall.type === "call" ? "calls" : "puts"} en $${supportingWall.strike} — ${supportingWall.label} real del lado contrario.`;
@@ -382,10 +563,27 @@ export function contratosVecinos3Signal(input: ContratosVecinos3Input): Contrato
     reason += ` Ojo: del otro lado, detrás de su propia pared, ya hay compra real de ${loserSideWord} en $${reversalWatch.strike} — posible reversión gestándose.`;
   }
 
+  const winnerLevels = winner.type === "call" ? input.above : input.below;
+  const opposingLevels = winner.type === "call" ? input.below : input.above;
+  const capCandidate = evaluateCapCandidate(winnerLevels, opposingLevels);
+  if (capCandidate) {
+    if (capCandidate.confirmed) {
+      reason += ` Actividad explotando en $${capCandidate.strike} con el camino desde el spot limpio (todo comprado, en aumento, contrario vendiendo) — candidato fuerte a punto máximo real.`;
+    } else {
+      const fails: string[] = [];
+      if (!capCandidate.pathAllPositive) fails.push("algún strike del camino no está comprado");
+      if (!capCandidate.pathBuildingUp) fails.push("el Premium Traded no viene en aumento parejo");
+      if (!capCandidate.pathOppositeClean) fails.push("el tipo contrario compite en algún strike del camino");
+      if (!capCandidate.nextStrikeConfirms) fails.push("el strike siguiente todavía no confirma");
+      if (!capCandidate.opposingSideClean) fails.push("el lado opuesto del tablero tiene agresión propia");
+      reason += ` Actividad explotando en $${capCandidate.strike}, pero el camino no confirma del todo (${fails.join("; ")}) — no tratarlo todavía como punto máximo confiable.`;
+    }
+  }
+
   return {
     type: winner.type, target1: t1, target2: t2,
-    capStrike: winner.capStrike, wallStrike: winner.wallStrike, stopLoss, supportingWall,
-    breakoutWatch: winner.beyondWall, reversalWatch, reason,
+    capStrike: winner.capStrike, capReversal: winner.capReversal, wallStrike: winner.wallStrike, stopLoss, supportingWall,
+    breakoutWatch: winner.beyondWall, reversalWatch, capCandidate, reason,
   };
 }
 
@@ -415,8 +613,8 @@ export interface PersistentSignal extends ContratosVecinos3Signal {
 }
 
 const EMPTY_SIGNAL: ContratosVecinos3Signal = {
-  type: null, target1: null, target2: null, capStrike: null, wallStrike: null, stopLoss: null,
-  supportingWall: null, breakoutWatch: null, reversalWatch: null, reason: "Sin lecturas todavía.",
+  type: null, target1: null, target2: null, capStrike: null, capReversal: null, wallStrike: null, stopLoss: null,
+  supportingWall: null, breakoutWatch: null, reversalWatch: null, capCandidate: null, reason: "Sin lecturas todavía.",
 };
 
 /**
