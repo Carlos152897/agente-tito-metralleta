@@ -72,7 +72,7 @@ function etTime(iso: string): string {
 
 async function main() {
   const {
-    fetchGexStats, fetchContractTradeSummary,
+    fetchGexStats, fetchContractTradeSummary, fetchAssetPriceChart,
   } = await import("../../lib/marketsnack");
   const { fetchNestedOptionChain } = await import("../../lib/tastytrade");
   const { fetchBars } = await import("../../lib/massive");
@@ -248,19 +248,34 @@ async function main() {
   log(`SPX: ${spxResult.episodes.length} episodios, ${spxResult.confirmedReadings}/${spxResult.totalReadings} lecturas confirmadas.`);
 
   // ─────────────────────────── TSLA ───────────────────────────
-  const bars = await fetchBars("TSLA", 5, "minute", 10);
-  const dayBars = bars.filter((b) => {
-    const iso = new Date(b.time * 1000).toISOString();
-    if (!iso.startsWith(BACKTEST_DAY)) return false;
-    const hour = new Date(b.time * 1000).getUTCHours();
-    const min = new Date(b.time * 1000).getUTCMinutes();
-    const mins = hour * 60 + min;
-    return mins >= 13 * 60 + 30 && mins <= 20 * 60;
-  });
-  const tslaClock: ClockPoint[] = dayBars.map((b) => ({ t: new Date(b.time * 1000).toISOString(), spot: b.close }));
+  // Reloj maestro: MarketSnack (`fetchAssetPriceChart`, punto cada 5 min,
+  // SIEMPRE al día — es el mismo respaldo que ya usa "Grandes empresas" para
+  // el tramo de HOY, ver route.ts) en vez de Massive (`fetchBars`, atrasado
+  // ~1 día completo en este entorno — confirmado en vivo 2026-08-25: seguía
+  // sin la barra de hoy incluso después del cierre). Pedido explícito de
+  // Carlos ("no puedes con marketsnack?") al ver el backtest de TSLA
+  // bloqueado por el atraso de Massive. Se cae a Massive solo si MarketSnack
+  // no tiene nada para ese día (`period=1d` solo da el día más reciente).
+  function inRegularHours(iso: string): boolean {
+    const d = new Date(iso);
+    const mins = d.getUTCHours() * 60 + d.getUTCMinutes();
+    return mins >= 13 * 60 + 30 && mins <= 20 * 60; // 9:30-16:00 ET (horario de verano)
+  }
+  const msChart = await fetchAssetPriceChart("TSLA");
+  let dayPoints: { t: string; spot: number }[] = msChart
+    .filter((p) => p.t.startsWith(BACKTEST_DAY) && inRegularHours(p.t))
+    .map((p) => ({ t: p.t, spot: p.v }));
+  if (dayPoints.length === 0) {
+    log("TSLA: MarketSnack sin datos de este día — cayendo a Massive (fetchBars) como respaldo.");
+    const bars = await fetchBars("TSLA", 5, "minute", 10);
+    dayPoints = bars
+      .filter((b) => new Date(b.time * 1000).toISOString().startsWith(BACKTEST_DAY) && inRegularHours(new Date(b.time * 1000).toISOString()))
+      .map((b) => ({ t: new Date(b.time * 1000).toISOString(), spot: b.close }));
+  }
+  const tslaClock: ClockPoint[] = dayPoints;
   let tslaResult: ReturnType<typeof runReplay> = { episodes: [], totalReadings: 0, confirmedReadings: 0 };
   if (tslaClock.length > 0) {
-    const tslaPrices = dayBars.flatMap((b) => [b.high, b.low]);
+    const tslaPrices = dayPoints.map((p) => p.spot);
     const tslaMin = Math.min(...tslaPrices), tslaMax = Math.max(...tslaPrices);
 
     // MISMA lógica que el botón real "Grandes empresas" (app/api/grandes-
