@@ -1,10 +1,10 @@
 // "Unusual Swing Trades" — escáner de mercado completo para contratos con
-// actividad institucional inusual, horizonte de swing (60-90 días), no
+// actividad institucional inusual, horizonte de swing (30-120 días), no
 // day-trading. PURO — reusa FlowRow de lib/flow.ts, ya clasificado por
 // classifyFlow en la ruta.
 //
-// Criterio pedido por Carlos: fuera del dinero (OTM), vencimiento 60-90 días,
-// premium ≥$5M (ver MIN_PREMIUM en app/api/unusual-swing/route.ts — se aplica
+// Criterio pedido por Carlos: fuera del dinero (OTM), vencimiento 30-120 días,
+// premium ≥$2M (ver MIN_PREMIUM en app/api/unusual-swing/route.ts — se aplica
 // server-side, al pedirle el flujo a MarketSnack), volumen MUY grande y MUCHO
 // mayor al Open Interest (dinero nuevo entrando de golpe, no rotación), call o
 // put, ejecutado SOLO al ask (compra agresiva), y una sola pata (nunca
@@ -12,9 +12,11 @@
 
 import type { FlowRow } from "./flow";
 
-export const MAX_RESULTS = 10; // "entre 5 y 10 contratos, si es que se encuentran"
-export const MIN_DTE_SWING = 60;
-export const MAX_DTE_SWING = 90;
+// Subido de 10 a 20 (2026-08-20, pedido explícito de Carlos: "quiero más
+// contratos" — antes solo aparecía uno con la ventana de 60-90 días y $5M).
+export const MAX_RESULTS = 20;
+export const MIN_DTE_SWING = 30;
+export const MAX_DTE_SWING = 120;
 /**
  * Bajado de 3x a 1.5x el 2026-07-28, y de 1.5x a 1x el mismo día — Carlos pidió
  * quitar el múltiplo exacto: ya no importa cuánto mayor, solo que el volumen del
@@ -31,9 +33,9 @@ export function isOtm(row: FlowRow): boolean {
 }
 
 /**
- * ¿Es un contrato de "unusual swing trade"? OTM + vencimiento 60-90 días + volumen
+ * ¿Es un contrato de "unusual swing trade"? OTM + vencimiento 30-120 días + volumen
  * ≥300 contratos y mayor a su Open Interest + compra agresiva al ask + una sola pata.
- * El piso de premium ($5M) se aplica antes, server-side (ver route.ts).
+ * El piso de premium ($2M) se aplica antes, server-side (ver route.ts).
  */
 export function isUnusualSwingCandidate(row: FlowRow): boolean {
   if (!isOtm(row)) return false;

@@ -1,5 +1,5 @@
 // GET /api/unusual-swing — "Unusual Swing Trades": escanea TODO el mercado
-// buscando contratos OTM, vencimiento 60-90 días, premium ≥$5M, volumen muy
+// buscando contratos OTM, vencimiento 30-120 días, premium ≥$2M, volumen muy
 // grande y muy por encima del Open Interest, comprados agresivamente al ask,
 // una sola pata. Por SSE, calco del armado de app/api/contract-search/route.ts.
 
@@ -12,7 +12,7 @@ import type { UnusualSwingCandidate, UnusualSwingSseEvent } from "@/app/unusual-
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const MIN_PREMIUM = 5_000_000;
+const MIN_PREMIUM = 2_000_000;
 // 8 páginas (~400 trades) truncaba el escaneo antes de terminar el flujo del
 // día en cuanto un ticker muy activo (ej. XSP) concentraba las operaciones
 // grandes más recientes — dejaba fuera todo lo demás sin avisar (ver
@@ -55,7 +55,7 @@ export async function GET() {
         send({ type: "step", label: `Clasificando ${trades.length} operaciones…` });
         const { rows } = classifyFlow(trades, now);
 
-        send({ type: "step", label: "Buscando actividad inusual (OTM, 60-90 días, premium ≥$5M, volumen >> OI, al ask)…" });
+        send({ type: "step", label: "Buscando actividad inusual (OTM, 30-120 días, premium ≥$2M, volumen >> OI, al ask)…" });
         const candidates = dedupeByContract(rows).filter(isUnusualSwingCandidate);
         const top = rankUnusualSwing(candidates).slice(0, MAX_RESULTS);
 

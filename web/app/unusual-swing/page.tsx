@@ -210,7 +210,7 @@ export default function UnusualSwingPage() {
           <p className="wheel-disclaimer" style={{ fontSize: 13, lineHeight: 1.6 }}>
             Escanea TODO el mercado buscando contratos con actividad institucional inusual, para
             operar en los próximos días (no day-trading): fuera del dinero (OTM), vencimiento de
-            de 60 a 90 días, premium de al menos $5M, volumen muy grande y muy por encima del Open
+            de 30 a 120 días, premium de al menos $2M, volumen muy grande y muy por encima del Open
             Interest (dinero nuevo entrando de golpe), comprados agresivamente al ask, y una sola
             pata (nunca multileg).
             Los que encuentra se guardan solos, con la foto del momento (volumen y Open Interest de
@@ -242,7 +242,7 @@ export default function UnusualSwingPage() {
         {!busy && scanMeta?.truncated && (
           <div className="error">
             ⚠ El último escaneo se cortó a las {scanMeta.pages} páginas ({scanMeta.scanned.toLocaleString("en-US")}{" "}
-            operaciones ≥$5M) sin llegar al final del flujo del día — probablemente un ticker muy
+            operaciones ≥$2M) sin llegar al final del flujo del día — probablemente un ticker muy
             activo concentró la mayoría de las operaciones grandes y le comió el cupo de páginas a
             los demás. Puede haber contratos inusuales de otros tickers que este escaneo no llegó a ver.
           </div>

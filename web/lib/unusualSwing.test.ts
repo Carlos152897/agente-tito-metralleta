@@ -7,7 +7,7 @@ const NOW = new Date("2026-07-22T21:00:00Z");
 function trade(overrides: Partial<RawTrade>): RawTrade {
   return {
     id: 1,
-    symbol: "TSLA261001C00330000", // dte=71 desde NOW, dentro de la ventana de 60-90
+    symbol: "TSLA261001C00330000", // dte=71 desde NOW, dentro de la ventana de 30-120
     price: 5,
     size: 500,
     side: "ASKSIDE",
@@ -59,28 +59,28 @@ describe("isUnusualSwingCandidate", () => {
     expect(isUnusualSwingCandidate(rows[0])).toBe(false);
   });
 
-  it("rechaza vencimiento a más de 90 días", () => {
+  it("rechaza vencimiento a más de 120 días", () => {
     const { rows } = classifyFlow([trade({ symbol: "TSLA270101C00330000" })], NOW); // muy lejos
     expect(isUnusualSwingCandidate(rows[0])).toBe(false);
   });
 
-  it("rechaza vencimiento a menos de 60 días (dte=59)", () => {
-    const { rows } = classifyFlow([trade({ symbol: "TSLA260919C00330000" })], NOW); // dte=59
+  it("rechaza vencimiento a menos de 30 días (dte=29)", () => {
+    const { rows } = classifyFlow([trade({ symbol: "TSLA260820C00330000" })], NOW); // dte=29
     expect(isUnusualSwingCandidate(rows[0])).toBe(false);
   });
 
-  it("acepta justo en el borde de 60 días", () => {
-    const { rows } = classifyFlow([trade({ symbol: "TSLA260920C00330000" })], NOW); // dte=60
+  it("acepta justo en el borde de 30 días", () => {
+    const { rows } = classifyFlow([trade({ symbol: "TSLA260821C00330000" })], NOW); // dte=30
     expect(isUnusualSwingCandidate(rows[0])).toBe(true);
   });
 
-  it("acepta justo en el borde de 90 días", () => {
-    const { rows } = classifyFlow([trade({ symbol: "TSLA261020C00330000" })], NOW); // dte=90
+  it("acepta justo en el borde de 120 días", () => {
+    const { rows } = classifyFlow([trade({ symbol: "TSLA261119C00330000" })], NOW); // dte=120
     expect(isUnusualSwingCandidate(rows[0])).toBe(true);
   });
 
-  it("rechaza justo un día pasado el borde de 90 días (dte=91)", () => {
-    const { rows } = classifyFlow([trade({ symbol: "TSLA261021C00330000" })], NOW); // dte=91
+  it("rechaza justo un día pasado el borde de 120 días (dte=121)", () => {
+    const { rows } = classifyFlow([trade({ symbol: "TSLA261120C00330000" })], NOW); // dte=121
     expect(isUnusualSwingCandidate(rows[0])).toBe(false);
   });
 
