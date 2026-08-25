@@ -36,7 +36,7 @@ import {
 import { isMarketOpen, isPreMarket, filterPremarketBars } from "@/lib/marketHours";
 import { etTimeToUnix, hoursToExpirationClose, marketDateStr } from "@/lib/occ";
 import { findPivots, clusterPivots } from "@/lib/levels";
-import { contratosVecinos3Signal, NEIGHBOR_COUNT, type ActivityLevel } from "@/lib/contratosVecinos3";
+import { contratosVecinos3Signal, orderBookSentiment, NEIGHBOR_COUNT, type ActivityLevel } from "@/lib/contratosVecinos3";
 import {
   GRANDES_EMPRESAS_TICKERS,
   DEFAULT_GRANDES_EMPRESA,
@@ -147,6 +147,7 @@ export async function GET(request: Request) {
       .filter((l): l is ActivityLevel => l != null);
 
     const signal = contratosVecinos3Signal({ spot, above: aboveLevels, below: belowLevels });
+    const orderBook = orderBookSentiment({ spot, above: aboveLevels, below: belowLevels });
 
     // Pre-market — % movido y soportes/resistencias de HOY.
     //
@@ -313,6 +314,7 @@ export async function GET(request: Request) {
       above: aboveLevels,
       below: belowLevels,
       signal,
+      orderBook,
       suggestions,
     });
   } catch (err) {

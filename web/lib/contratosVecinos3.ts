@@ -58,6 +58,16 @@ export interface ActivitySummary {
   totalPremium: number; // "Premium Traded": ask + bid + mid, toda la actividad de hoy
   netPremium: number; // ask − bid: compra vs. venta agresiva
   trend: ActivityTrend;
+  /**
+   * Totales crudos del día (ask/bid/mid por separado, sin reducir a
+   * `netPremium`) — opcionales para no romper los fixtures de test viejos
+   * que construyen `ActivitySummary` a mano sin ellos (nadie más los lee;
+   * solo los usa `orderBookSentiment`, ver más abajo). `summarizeActivity`
+   * SIEMPRE los rellena en uso real.
+   */
+  askPremium?: number;
+  bidPremium?: number;
+  midPremium?: number;
 }
 
 /**
@@ -131,7 +141,7 @@ export function summarizeActivity(buckets: TradeSummaryBucketLike[]): ActivitySu
     }
   }
 
-  return { totalPremium, netPremium, trend };
+  return { totalPremium, netPremium, trend, askPremium, bidPremium, midPremium };
 }
 
 export interface ActivityLevel {
@@ -584,6 +594,129 @@ export function contratosVecinos3Signal(input: ContratosVecinos3Input): Contrato
     type: winner.type, target1: t1, target2: t2,
     capStrike: winner.capStrike, capReversal: winner.capReversal, wallStrike: winner.wallStrike, stopLoss, supportingWall,
     breakoutWatch: winner.beyondWall, reversalWatch, capCandidate, reason,
+  };
+}
+
+// ── Orden book balanceado + sesgo call/put (rebote vs. "desangrando") ──────
+//
+// Pedido explícito de Carlos (2026-08-25), inspirado en dos paneles reales de
+// MarketSnack ("Asset Order Book Side" y "Asset Premium Sentiment"):
+//
+//   1. Cuando el ORDER BOOK está BALANCEADO (el dinero ejecutado al bid y al
+//      ask del vecindario son casi iguales) → señal de posible REBOTE — el
+//      mercado no tiene un lado claro empujando, así que el precio tiende a
+//      rebotar en vez de seguir de largo.
+//   2. El PREMIUM SENTIMENT (cuánto dinero hay en calls vs. puts) dice DÓNDE
+//      está la atención; si ADEMÁS ese lado dominante se está comprando
+//      agresivamente al ask (no vendiendo), confirma la DIRECCIÓN — call al
+//      ask = alcista, put al ask = bajista (misma convención de siempre).
+//   3. Ejemplo dado por Carlos a mano: tras un rebote, si el put empieza a
+//      dominar Y el order book se desbalancea hacia el ask (compra agresiva
+//      de esos puts) → "se va a desangrar" — sesgo bajista real, no solo un
+//      rebote fallido.
+//
+// Solo INFORMATIVO por ahora (pedido explícito): no toca `walkSide` ni
+// `contratosVecinos3Signal` — es un panel aparte que Carlos lee y decide.
+//
+// Alcance de los datos: pedido explícito "cuando estás en vivo operando es
+// 0DTE... va a ser de ese día" — se calcula con el MISMO vecindario
+// (`ContratosVecinos3Input.above`/`below`, ya sea la cadena 0DTE de SPX/SPY/QQQ
+// o los vencimientos "de esta semana" de Grandes Empresas) y los MISMOS
+// totales de HOY que ya trae `summarizeActivity` — cero llamadas nuevas a
+// MarketSnack. El endpoint propio de MarketSnack (`/api/assets/{t}/sentiment`)
+// se investigó pero agrega TODO el historial/todos los vencimientos, no solo
+// hoy — no calzaba con lo que Carlos mira en vivo.
+
+/**
+ * Qué tan cerca tienen que estar el % ejecutado al bid y al ask (del total
+ * bid+mid+ask) para contar como "balanceado" — primer número, a ajustar tras
+ * ver esto en vivo unos días (mismo espíritu que el resto de umbrales del
+ * archivo, todos documentados y fáciles de tocar en un solo lugar).
+ */
+export const ORDER_BOOK_BALANCE_THRESHOLD_PCT = 8;
+
+export interface OrderBookSentiment {
+  askPremium: number;
+  bidPremium: number;
+  midPremium: number;
+  askPct: number;
+  bidPct: number;
+  midPct: number;
+  /** `true` si |askPct − bidPct| ≤ ORDER_BOOK_BALANCE_THRESHOLD_PCT. */
+  balanced: boolean;
+  callPremium: number;
+  putPremium: number;
+  /** El lado con más Premium Traded (calls vs puts) del vecindario — `null` si no hay actividad todavía. */
+  dominantSide: "call" | "put" | null;
+  /** Net premium AGREGADO (suma de todos los niveles) del lado dominante — positivo = se está comprando agresivamente al ask ahí. */
+  dominantNetPremium: number;
+  message: string;
+}
+
+function sumSide(levels: ActivityLevel[], pick: (l: ActivityLevel) => ActivitySummary | null | undefined) {
+  let ask = 0, bid = 0, mid = 0, total = 0, net = 0;
+  for (const l of levels) {
+    const a = pick(l);
+    if (!a) continue;
+    ask += a.askPremium ?? 0;
+    bid += a.bidPremium ?? 0;
+    mid += a.midPremium ?? 0;
+    total += a.totalPremium;
+    net += a.netPremium;
+  }
+  return { ask, bid, mid, total, net };
+}
+
+export function orderBookSentiment(input: ContratosVecinos3Input): OrderBookSentiment {
+  // Orden book: TODA la actividad del vecindario, sin importar tipo — calls
+  // arriba + puts abajo (los primarios) + el tipo contrario en cada strike.
+  const primary = sumSide([...input.above, ...input.below], (l) => l.activity);
+  const other = sumSide([...input.above, ...input.below], (l) => l.otherActivity);
+  const askPremium = primary.ask + other.ask;
+  const bidPremium = primary.bid + other.bid;
+  const midPremium = primary.mid + other.mid;
+  const bookTotal = askPremium + bidPremium + midPremium;
+  const askPct = bookTotal > 0 ? (askPremium / bookTotal) * 100 : 0;
+  const bidPct = bookTotal > 0 ? (bidPremium / bookTotal) * 100 : 0;
+  const midPct = bookTotal > 0 ? (midPremium / bookTotal) * 100 : 0;
+  const balanced = bookTotal > 0 && Math.abs(askPct - bidPct) <= ORDER_BOOK_BALANCE_THRESHOLD_PCT;
+
+  // Premium sentiment: calls = primario de `above` + contrario de `below`; puts = primario de `below` + contrario de `above`.
+  const calls = sumSide(input.above, (l) => l.activity);
+  const callsOther = sumSide(input.below, (l) => l.otherActivity);
+  const puts = sumSide(input.below, (l) => l.activity);
+  const putsOther = sumSide(input.above, (l) => l.otherActivity);
+  const callPremium = calls.total + callsOther.total;
+  const putPremium = puts.total + putsOther.total;
+  const callNet = calls.net + callsOther.net;
+  const putNet = puts.net + putsOther.net;
+
+  let dominantSide: "call" | "put" | null = null;
+  let dominantNetPremium = 0;
+  if (callPremium > 0 || putPremium > 0) {
+    dominantSide = callPremium >= putPremium ? "call" : "put";
+    dominantNetPremium = dominantSide === "call" ? callNet : putNet;
+  }
+
+  let message: string;
+  if (bookTotal === 0) {
+    message = "Sin actividad real todavía — sin lectura de order book.";
+  } else if (balanced) {
+    message = `⚖️ Order book balanceado (bid ${bidPct.toFixed(0)}% · ask ${askPct.toFixed(0)}%) — posible rebote.`;
+  } else if (dominantSide && dominantNetPremium > 0) {
+    const dirWord = dominantSide === "call" ? "ALCISTA" : "BAJISTA";
+    const sideWord = dominantSide === "call" ? "calls" : "puts";
+    message = `🩸 Desangrando ${dirWord} — más dinero en ${sideWord} y comprándose agresivamente al ask (bid ${bidPct.toFixed(0)}% · ask ${askPct.toFixed(0)}%).`;
+  } else if (dominantSide) {
+    const sideWord = dominantSide === "call" ? "calls" : "puts";
+    message = `Order book desbalanceado (bid ${bidPct.toFixed(0)}% · ask ${askPct.toFixed(0)}%), más dinero en ${sideWord}, pero sin compra agresiva confirmando todavía.`;
+  } else {
+    message = "Sin lectura clara todavía.";
+  }
+
+  return {
+    askPremium, bidPremium, midPremium, askPct, bidPct, midPct, balanced,
+    callPremium, putPremium, dominantSide, dominantNetPremium, message,
   };
 }
 

@@ -1,8 +1,22 @@
 import { describe, expect, it } from "vitest";
 import {
-  applyPersistence, contratosVecinos3Signal, evaluateCapCandidate, PERSISTENCE_REQUIRED, summarizeActivity,
+  applyPersistence, contratosVecinos3Signal, evaluateCapCandidate, orderBookSentiment, PERSISTENCE_REQUIRED, summarizeActivity,
   type ActivityLevel, type ContratosVecinos3Signal, type TradeSummaryBucketLike,
 } from "./contratosVecinos3";
+
+/** Nivel con ask/bid/mid explícitos (para `orderBookSentiment`) — `level()` de abajo no los setea. */
+function rawLevel(
+  strike: number, type: "call" | "put", parts: { ask: number; bid: number; mid?: number },
+): ActivityLevel {
+  const mid = parts.mid ?? 0;
+  return {
+    strike, type,
+    activity: {
+      totalPremium: parts.ask + parts.bid + mid, netPremium: parts.ask - parts.bid, trend: "estable",
+      askPremium: parts.ask, bidPremium: parts.bid, midPremium: mid,
+    },
+  };
+}
 
 function bucket(t: string, ask: number, bid: number, mid = 0): TradeSummaryBucketLike {
   return { t, ask_premium: ask, bid_premium: bid, mid_premium: mid };
@@ -86,7 +100,7 @@ describe("summarizeActivity", () => {
 
   it("sin buckets, todo en cero", () => {
     const s = summarizeActivity([]);
-    expect(s).toEqual({ totalPremium: 0, netPremium: 0, trend: "estable" });
+    expect(s).toEqual({ totalPremium: 0, netPremium: 0, trend: "estable", askPremium: 0, bidPremium: 0, midPremium: 0 });
   });
 
   it("salto repentino en los últimos 10 min NO se diluye con muchas horas de historia previa plana", () => {
@@ -115,6 +129,62 @@ describe("summarizeActivity", () => {
     const sudden = [bucket("2026-01-01T08:00:00Z", 50_000, 0), bucket("2026-01-01T09:00:00Z", 50_000, 0)];
     const s = summarizeActivity([...dead, ...sudden]);
     expect(s.trend).toBe("subiendo");
+  });
+});
+
+describe("orderBookSentiment", () => {
+  it("bid y ask casi iguales → balanceado, mensaje de posible rebote", () => {
+    const above = [rawLevel(105, "call", { ask: 100_000, bid: 95_000 })];
+    const below = [rawLevel(95, "put", { ask: 90_000, bid: 100_000 })];
+    const s = orderBookSentiment({ spot: 100, above, below });
+    expect(s.balanced).toBe(true);
+    expect(s.message).toMatch(/rebote/);
+  });
+
+  it("ejemplo de Carlos: puts dominan Y se compran agresivamente al ask → 'desangrando BAJISTA'", () => {
+    const above = [rawLevel(105, "call", { ask: 10_000, bid: 10_000 })]; // calls chicos y parejos
+    const below = [rawLevel(95, "put", { ask: 500_000, bid: 50_000 })]; // puts grandes, comprados fuerte al ask
+    const s = orderBookSentiment({ spot: 100, above, below });
+    expect(s.balanced).toBe(false);
+    expect(s.dominantSide).toBe("put");
+    expect(s.dominantNetPremium).toBeGreaterThan(0);
+    expect(s.message).toMatch(/BAJISTA/);
+  });
+
+  it("calls dominan y se compran al ask → 'desangrando ALCISTA'", () => {
+    const above = [rawLevel(105, "call", { ask: 500_000, bid: 50_000 })];
+    const below = [rawLevel(95, "put", { ask: 10_000, bid: 10_000 })];
+    const s = orderBookSentiment({ spot: 100, above, below });
+    expect(s.dominantSide).toBe("call");
+    expect(s.message).toMatch(/ALCISTA/);
+  });
+
+  it("desbalanceado pero el lado dominante se está VENDIENDO (net negativo) — no confirma dirección", () => {
+    const above = [rawLevel(105, "call", { ask: 10_000, bid: 10_000 })];
+    const below = [rawLevel(95, "put", { ask: 50_000, bid: 500_000 })]; // puts dominan pero VENDIDOS
+    const s = orderBookSentiment({ spot: 100, above, below });
+    expect(s.balanced).toBe(false);
+    expect(s.dominantSide).toBe("put");
+    expect(s.dominantNetPremium).toBeLessThan(0);
+    expect(s.message).not.toMatch(/Desangrando/);
+    expect(s.message).toMatch(/sin compra agresiva/);
+  });
+
+  it("suma el tipo CONTRARIO en cada strike (otherActivity) al order book y al sentiment del lado que corresponde", () => {
+    const above: ActivityLevel[] = [
+      { ...rawLevel(105, "call", { ask: 10_000, bid: 10_000 }), otherActivity: { totalPremium: 200_000, netPremium: 150_000, trend: "estable", askPremium: 175_000, bidPremium: 25_000, midPremium: 0 } },
+    ];
+    const below: ActivityLevel[] = [rawLevel(95, "put", { ask: 10_000, bid: 10_000 })];
+    const s = orderBookSentiment({ spot: 100, above, below });
+    // El "otherActivity" de arriba (105) es PUT (contrario de call) — debe sumar al lado put.
+    expect(s.putPremium).toBe(200_000 + 20_000); // 200k del otherActivity + 20k del put de abajo
+    expect(s.askPremium).toBe(10_000 + 175_000 + 10_000); // los 3 asks del vecindario
+  });
+
+  it("sin actividad en ningún lado — sin lectura", () => {
+    const s = orderBookSentiment({ spot: 100, above: [], below: [] });
+    expect(s.dominantSide).toBeNull();
+    expect(s.message).toMatch(/Sin actividad/);
   });
 });
 

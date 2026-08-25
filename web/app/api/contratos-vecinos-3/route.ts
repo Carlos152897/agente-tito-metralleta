@@ -16,7 +16,7 @@ import { TastytradeError } from "@/lib/tastytrade";
 import { fetchAssetPrice, fetchContractActivitySummaries, MarketSnackError } from "@/lib/marketsnack";
 import { isMarketOpen } from "@/lib/marketHours";
 import { etDate } from "@/lib/zerodte";
-import { contratosVecinos3Signal, NEIGHBOR_COUNT, type ActivityLevel } from "@/lib/contratosVecinos3";
+import { contratosVecinos3Signal, orderBookSentiment, NEIGHBOR_COUNT, type ActivityLevel } from "@/lib/contratosVecinos3";
 import { zeroDteGex } from "@/lib/zerodte";
 
 export const runtime = "nodejs";
@@ -92,6 +92,7 @@ export async function GET(request: Request) {
       .filter((l): l is ActivityLevel => l != null);
 
     const signal = contratosVecinos3Signal({ spot, above: aboveLevels, below: belowLevels });
+    const orderBook = orderBookSentiment({ spot, above: aboveLevels, below: belowLevels });
 
     // Imán del GEX (`lib/zerodte.ts` → `zeroDteGex`, misma cadena ya
     // descargada arriba) — SOLO informativo acá, pedido explícito de Carlos:
@@ -109,6 +110,7 @@ export async function GET(request: Request) {
       above: aboveLevels,
       below: belowLevels,
       signal,
+      orderBook,
     });
   } catch (err) {
     const message =

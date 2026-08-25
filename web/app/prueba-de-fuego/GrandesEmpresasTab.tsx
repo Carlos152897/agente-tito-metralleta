@@ -39,6 +39,16 @@ interface RejectionPoint {
   kind: "techo" | "piso";
 }
 
+interface OrderBookSentiment {
+  askPct: number;
+  bidPct: number;
+  midPct: number;
+  balanced: boolean;
+  dominantSide: "call" | "put" | null;
+  dominantNetPremium: number;
+  message: string;
+}
+
 interface Result {
   ticker: string;
   asOf: string;
@@ -55,6 +65,7 @@ interface Result {
   above: ActivityLevel[];
   below: ActivityLevel[];
   signal: ContratosVecinos3Signal;
+  orderBook: OrderBookSentiment;
   suggestions: ZeroDteSuggestions | null;
 }
 
@@ -305,6 +316,8 @@ export default function GrandesEmpresasTab() {
         );
       })()}
 
+      {data && <OrderBookBanner ob={data.orderBook} />}
+
       {signal && <SignalBox signal={signal} />}
 
       {data?.suggestions && <SpreadSuggestions s={data.suggestions} />}
@@ -320,6 +333,20 @@ imán sale del GEX agregado real de MarketSnack; el call/put y los targets salen
         "✅ confirmado" recién al sostenerse {PERSISTENCE_REQUIRED} lecturas seguidas.
       </p>
     </div>
+  );
+}
+
+/** Ver ContratosVecinos3Tab.tsx — mismo panel, mismo motor (lib/contratosVecinos3.ts → orderBookSentiment). */
+function OrderBookBanner({ ob }: { ob: OrderBookSentiment }) {
+  const bleeding = !ob.balanced && ob.dominantSide != null && ob.dominantNetPremium > 0;
+  const tone = ob.balanced ? "ob-neutral" : bleeding ? (ob.dominantSide === "call" ? "ob-bull" : "ob-bear") : "ob-flat";
+  return (
+    <section className={`ob-banner ${tone}`}>
+      <span className="ob-banner-msg">{ob.message}</span>
+      <span className="ob-banner-split">
+        bid <b>{ob.bidPct.toFixed(0)}%</b> · mid <b>{ob.midPct.toFixed(0)}%</b> · ask <b>{ob.askPct.toFixed(0)}%</b>
+      </span>
+    </section>
   );
 }
 
@@ -572,6 +599,20 @@ const CSS = `
 .ge-chart-status { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   font-size: 13px; color: var(--faint); z-index: 2; }
 .ge-chart-status-error { color: #b42318; }
+
+.ob-banner { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
+  border: 2px solid var(--border); border-radius: 12px; padding: 16px 20px; margin: 0 0 16px; }
+.ob-banner-msg { font-size: 18px; font-weight: 800; letter-spacing: -0.1px; }
+.ob-banner-split { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ob-banner-split b { color: var(--text); }
+.ob-neutral { border-color: var(--amber-border); background: var(--amber-bg); }
+.ob-neutral .ob-banner-msg { color: var(--amber-text); }
+.ob-bull { border-color: var(--green); background: var(--green-bg); }
+.ob-bull .ob-banner-msg { color: var(--green-dark); }
+.ob-bear { border-color: var(--red-soft); background: var(--red-bg); }
+.ob-bear .ob-banner-msg { color: #b42318; }
+.ob-flat { border-color: var(--border); background: var(--panel); }
+.ob-flat .ob-banner-msg { color: var(--muted); }
 
 .ge-advice { border: 2px solid var(--border); border-radius: 12px; padding: 16px 18px; margin: 0 0 16px; background: var(--panel); }
 .ge-advice-call { border-color: var(--green); background: var(--green-bg); }
