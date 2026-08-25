@@ -1,13 +1,14 @@
-# Quita la tarea programada de la alerta de pre-market.
+# Quita las tareas programadas de la alerta de pre-market (8:15 y 8:30).
 
-$TaskName = "VisionaryTrades-PremarketMoversAlert"
+$TaskNames = "VisionaryTrades-PremarketMoversAlert", "VisionaryTrades-PremarketMoversAlert-0830"
 
-schtasks /Delete /TN $TaskName /F
-
-if ($LASTEXITCODE -eq 0) {
-    Write-Host "Tarea '$TaskName' eliminada." -ForegroundColor Green
-} else {
-    Write-Host "No se pudo eliminar (¿ya estaba desinstalada?). Codigo $LASTEXITCODE." -ForegroundColor Yellow
+foreach ($TaskName in $TaskNames) {
+    schtasks /Delete /TN $TaskName /F
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "Tarea '$TaskName' eliminada." -ForegroundColor Green
+    } else {
+        Write-Host "No se pudo eliminar '$TaskName' (¿ya estaba desinstalada?). Codigo $LASTEXITCODE." -ForegroundColor Yellow
+    }
 }
 
 Read-Host "Presiona Enter para cerrar"

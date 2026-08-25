@@ -36,17 +36,26 @@ $RunnerCmd = Join-Path $ScriptDir "_run-scan.cmd"
 schtasks /Delete /TN $TaskName /F 2>$null | Out-Null
 
 schtasks /Create /TN $TaskName /TR "`"$RunnerCmd`"" /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 08:15 /RL LIMITED /F
+$ok1 = $LASTEXITCODE -eq 0
 
-if ($LASTEXITCODE -eq 0) {
+# Segunda corrida a las 8:30 (pedido explicito de Carlos, 2026-08-25): repite el mismo
+# escaneo de todo el mercado 15 min despues, para avisar de tickers que recien cruzaron
+# el +-5% entre las dos corridas.
+$TaskName2 = "VisionaryTrades-PremarketMoversAlert-0830"
+schtasks /Delete /TN $TaskName2 /F 2>$null | Out-Null
+schtasks /Create /TN $TaskName2 /TR "`"$RunnerCmd`"" /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 08:30 /RL LIMITED /F
+$ok2 = $LASTEXITCODE -eq 0
+
+if ($ok1 -and $ok2) {
     Write-Host ""
-    Write-Host "Tarea '$TaskName' instalada. Corre lunes a viernes a las 8:15am (hora de esta PC)." -ForegroundColor Green
-    Write-Host "Necesita que la PC este encendida a esa hora — si estaba apagada, Windows NO la corre despues sola."
+    Write-Host "Tareas '$TaskName' y '$TaskName2' instaladas. Corren lunes a viernes a las 8:15am y 8:30am (hora de esta PC)." -ForegroundColor Green
+    Write-Host "Necesita que la PC este encendida a esas horas — si estaba apagada, Windows NO las corre despues solas."
     Write-Host "Log en: $ScriptDir\..\..\data\premarket-movers.log"
-    Write-Host "Para revisarla:     schtasks /Query /TN `"$TaskName`" /V /FO LIST"
-    Write-Host "Para correrla ya:   schtasks /Run /TN `"$TaskName`""
-    Write-Host "Para desinstalarla: Desinstalar-AlertaPremarket.ps1"
+    Write-Host "Para revisarlas:     schtasks /Query /TN `"$TaskName`" /V /FO LIST"
+    Write-Host "Para correrlas ya:   schtasks /Run /TN `"$TaskName`""
+    Write-Host "Para desinstalarlas: Desinstalar-AlertaPremarket.ps1"
 } else {
-    Write-Host "schtasks fallo (codigo $LASTEXITCODE). Revisa el mensaje de arriba." -ForegroundColor Red
+    Write-Host "schtasks fallo instalando una de las dos tareas. Revisa el mensaje de arriba." -ForegroundColor Red
 }
 
 Read-Host "Presiona Enter para cerrar"
