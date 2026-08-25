@@ -704,9 +704,13 @@ export function orderBookSentiment(input: ContratosVecinos3Input): OrderBookSent
   } else if (balanced) {
     message = `⚖️ Order book balanceado (bid ${bidPct.toFixed(0)}% · ask ${askPct.toFixed(0)}%) — posible rebote.`;
   } else if (dominantSide && dominantNetPremium > 0) {
-    const dirWord = dominantSide === "call" ? "ALCISTA" : "BAJISTA";
-    const sideWord = dominantSide === "call" ? "calls" : "puts";
-    message = `🩸 Desangrando ${dirWord} — más dinero en ${sideWord} y comprándose agresivamente al ask (bid ${bidPct.toFixed(0)}% · ask ${askPct.toFixed(0)}%).`;
+    // "Desangrando" solo tiene sentido bajista (pedido explícito de Carlos:
+    // "si va a subir dime como to the moon ahahaha") — el lado alcista usa su
+    // propia frase, no la versión invertida de la bajista.
+    message =
+      dominantSide === "call"
+        ? `🚀 To the moon — más dinero en calls y comprándose agresivamente al ask (bid ${bidPct.toFixed(0)}% · ask ${askPct.toFixed(0)}%).`
+        : `🩸 Desangrando BAJISTA — más dinero en puts y comprándose agresivamente al ask (bid ${bidPct.toFixed(0)}% · ask ${askPct.toFixed(0)}%).`;
   } else if (dominantSide) {
     const sideWord = dominantSide === "call" ? "calls" : "puts";
     message = `Order book desbalanceado (bid ${bidPct.toFixed(0)}% · ask ${askPct.toFixed(0)}%), más dinero en ${sideWord}, pero sin compra agresiva confirmando todavía.`;

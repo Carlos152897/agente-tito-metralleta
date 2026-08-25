@@ -151,12 +151,13 @@ describe("orderBookSentiment", () => {
     expect(s.message).toMatch(/BAJISTA/);
   });
 
-  it("calls dominan y se compran al ask → 'desangrando ALCISTA'", () => {
+  it("calls dominan y se compran al ask → 'To the moon' (no 'desangrando', eso es solo bajista)", () => {
     const above = [rawLevel(105, "call", { ask: 500_000, bid: 50_000 })];
     const below = [rawLevel(95, "put", { ask: 10_000, bid: 10_000 })];
     const s = orderBookSentiment({ spot: 100, above, below });
     expect(s.dominantSide).toBe("call");
-    expect(s.message).toMatch(/ALCISTA/);
+    expect(s.message).toMatch(/moon/i);
+    expect(s.message).not.toMatch(/Desangrando/);
   });
 
   it("desbalanceado pero el lado dominante se está VENDIENDO (net negativo) — no confirma dirección", () => {
