@@ -334,6 +334,14 @@ async function main() {
   log(`Guardado en ${outPath}`);
 
   function summarize(ticker: string, r: ReturnType<typeof runReplay>) {
+    // `totalReadings === 0` = no hubo reloj (Massive todavía no publicó las
+    // barras de hoy, ~1 día de atraso conocido) — distinto de "0 episodios"
+    // reales, que sí significa que el motor corrió pero no confirmó ninguna
+    // señal. Mezclarlos hace parecer un día sin actividad cuando en realidad
+    // falta el dato — avisar la diferencia explícita en vez de mostrar 0W/0L.
+    if (r.totalReadings === 0) {
+      return { header: `${ticker}: sin datos todavía (la fuente de precio no publicó el día completo aún) — no es que no hubo señales, es que no se pudo correr.`, lines: [] };
+    }
     const wins = r.episodes.filter((e) => e.outcome.startsWith("GANADORA")).length;
     const losses = r.episodes.filter((e) => e.outcome.startsWith("PERDEDORA")).length;
     const flat = r.episodes.length - wins - losses;
