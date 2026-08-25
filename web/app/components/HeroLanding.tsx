@@ -17,77 +17,232 @@ interface HeroTicker {
   changePct: number | null;
 }
 
+// Mezcla un hex con blanco (amt>0, aclara) o negro (amt<0, oscurece) — para
+// derivar los 2-3 tonos que necesita cada ícono "de vidrio/3D" (claro arriba,
+// oscuro abajo) a partir del único color por tarjeta que ya existía.
+function shade(hex: string, amt: number): string {
+  const n = parseInt(hex.slice(1), 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  const t = amt < 0 ? 0 : 255;
+  const p = Math.min(1, Math.abs(amt));
+  const mix = (v: number) => Math.round((t - v) * p + v);
+  return `#${((1 << 24) + (mix(r) << 16) + (mix(g) << 8) + mix(b)).toString(16).slice(1)}`;
+}
+
 // Accesos rápidos — pedido explícito de Carlos a partir de un mockup de
-// referencia que solo tenía 4 (Day Trading/Ideas/Wheel/Time & Sales): el
-// proyecto ya tiene 8 secciones, así que se amplió a las 7 que tiene sentido
-// acceder rápido desde acá (Ticker queda afuera — la búsqueda de arriba ES
-// esa página). Un color/ícono propio por tarjeta, mismo lenguaje neón del
-// mockup, sin inventar íconos con emoji — SVG inline.
+// referencia con íconos "renderizados" (degradados + brillo de vidrio +
+// sombra), no líneas planas. Las primeras 4 (Day Trading/Ideas/Wheel/Time &
+// Sales) calcan ese mockup; las otras 4 secciones del proyecto se diseñaron
+// con el mismo lenguaje (gradiente claro→oscuro del color de la tarjeta vía
+// shade(), resalto blanco y drop-shadow) pero íconos propios. `gid` es el
+// prefijo de los ids de <linearGradient>/<radialGradient> de cada ícono —
+// tienen que ser únicos por tarjeta o un navegador puede resolver el
+// url(#id) del ícono equivocado al haber 8 SVG con el mismo id en la página.
 const QUICK_LINKS: {
-  href: string; label: string; desc: string; color: string; icon: (c: string) => React.ReactNode;
+  href: string; label: string; desc: string; color: string; gid: string;
+  icon: (c: string, gid: string) => React.ReactNode; pillIcon: (c: string) => React.ReactNode;
 }[] = [
   {
-    href: "/prueba-de-fuego", label: "Day Trading", desc: "Charts, setups and execution.", color: "#34d399",
-    icon: (c) => (
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M3 17l5-6 4 3 6-8" /><path d="M14 6h4v4" />
+    href: "/prueba-de-fuego", label: "Day Trading", desc: "Charts, setups and execution.", color: "#34d399", gid: "dt",
+    icon: (c, k) => {
+      const light = shade(c, 0.55), deep = shade(c, -0.55);
+      return (
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none">
+          <defs>
+            <linearGradient id={`${k}-body`} x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stopColor={light} /><stop offset="100%" stopColor={c} />
+            </linearGradient>
+          </defs>
+          <line x1="4" y1="20" x2="4" y2="12" stroke={deep} strokeWidth="1.6" strokeLinecap="round" />
+          <rect x="2.5" y="14" width="3" height="4" rx="0.9" fill={`url(#${k}-body)`} />
+          <line x1="11" y1="20" x2="11" y2="9" stroke={deep} strokeWidth="1.6" strokeLinecap="round" />
+          <rect x="9.5" y="11" width="3" height="5" rx="0.9" fill={`url(#${k}-body)`} />
+          <line x1="18" y1="18" x2="18" y2="4" stroke={deep} strokeWidth="1.6" strokeLinecap="round" />
+          <rect x="16.5" y="6" width="3" height="6" rx="0.9" fill={`url(#${k}-body)`} />
+          <path d="M2 19l6-6 5 2 7-11" stroke="#fff" strokeOpacity="0.92" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M17 4h3v3" stroke="#fff" strokeOpacity="0.92" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
+    },
+    pillIcon: (c) => (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2.2" strokeLinecap="round">
+        <path d="M6 20V14M12 20V9M18 20V4" />
       </svg>
     ),
   },
   {
-    href: "/ideas", label: "Ideas", desc: "High probability plays and watchlist.", color: "#fbbf24",
-    icon: (c) => (
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M9 18h6M10 21h4M12 3a6 6 0 00-4 10.5c.6.6 1 1.4 1 2.5h6c0-1.1.4-1.9 1-2.5A6 6 0 0012 3z" />
+    href: "/ideas", label: "Ideas", desc: "High probability plays and watchlist.", color: "#fbbf24", gid: "id",
+    icon: (c, k) => {
+      const dark = shade(c, -0.35);
+      return (
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none">
+          <defs>
+            <radialGradient id={`${k}-glass`} cx="40%" cy="32%" r="70%">
+              <stop offset="0%" stopColor="#fff8e1" /><stop offset="45%" stopColor={shade(c, 0.5)} /><stop offset="100%" stopColor={c} />
+            </radialGradient>
+            <linearGradient id={`${k}-base`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#cbd5e1" /><stop offset="100%" stopColor="#64748b" />
+            </linearGradient>
+          </defs>
+          <path d="M12 3a6.2 6.2 0 00-3.7 11.2c.7.55 1.2 1.35 1.2 2.3h5c0-.95.5-1.75 1.2-2.3A6.2 6.2 0 0012 3z" fill={`url(#${k}-glass)`} stroke={dark} strokeWidth="0.5" />
+          <path d="M10 9.6c0-1.1.9-2 2-2" stroke="#fff" strokeOpacity="0.85" strokeWidth="1" strokeLinecap="round" />
+          <rect x="9.3" y="17.1" width="5.4" height="2" rx="0.6" fill={`url(#${k}-base)`} />
+          <path d="M9.6 19.5h4.8M10 21h4" stroke="#94a3b8" strokeWidth="1" strokeLinecap="round" />
+        </svg>
+      );
+    },
+    pillIcon: (c) => (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill={c} stroke="none">
+        <path d="M12 2l2.9 6.26L21.5 9l-5 4.87L17.8 21 12 17.77 6.2 21l1.3-7.13-5-4.87 6.6-.74z" />
       </svg>
     ),
   },
   {
-    href: "/wheel", label: "Wheel", desc: "Cash secured puts strategy.", color: "#c084fc",
-    icon: (c) => (
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <circle cx="12" cy="12" r="9" /><path d="M12 3v18M3 12h18" />
+    href: "/wheel", label: "Wheel", desc: "Cash secured puts strategy.", color: "#c084fc", gid: "wh",
+    icon: (c, k) => {
+      const light = shade(c, 0.5), dark = shade(c, -0.45);
+      return (
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none">
+          <defs>
+            <linearGradient id={`${k}-shield`} x1="0" y1="0" x2="0.3" y2="1">
+              <stop offset="0%" stopColor={light} /><stop offset="60%" stopColor={c} /><stop offset="100%" stopColor={dark} />
+            </linearGradient>
+          </defs>
+          <path d="M12 3l7 3v5c0 5-3.2 8.5-7 10-3.8-1.5-7-5-7-10V6l7-3z" fill={`url(#${k}-shield)`} stroke={dark} strokeWidth="0.5" />
+          <path d="M12 8v8M14.3 10c0-1.05-1-1.9-2.3-1.9s-2.3.85-2.3 1.9 1 1.5 2.3 1.8 2.3.75 2.3 1.9-1 1.9-2.3 1.9-2.3-.85-2.3-1.9" stroke="#fff" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
+    },
+    pillIcon: (c) => (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M3 12a9 9 0 0115-6.7M21 12a9 9 0 01-15 6.7" />
+        <path d="M18 3v4h-4M6 21v-4h4" />
       </svg>
     ),
   },
   {
-    href: "/venta-de-primas", label: "Venta de Primas", desc: "Credit spreads de riesgo definido.", color: "#fb923c",
-    icon: (c) => (
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6" />
+    href: "/flow", label: "Time & Sales", desc: "Real-time flow and volume.", color: "#60a5fa", gid: "ts",
+    icon: (c, k) => {
+      const light = shade(c, 0.55), dark = shade(c, -0.4);
+      return (
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none">
+          <defs>
+            <linearGradient id={`${k}-ring`} x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stopColor={light} /><stop offset="100%" stopColor={dark} />
+            </linearGradient>
+            <radialGradient id={`${k}-face`} cx="40%" cy="35%" r="70%">
+              <stop offset="0%" stopColor="#ffffff" /><stop offset="100%" stopColor="#e2e8f0" />
+            </radialGradient>
+          </defs>
+          <circle cx="12" cy="12" r="9" fill={`url(#${k}-ring)`} />
+          <circle cx="12" cy="12" r="7" fill={`url(#${k}-face)`} />
+          <path d="M12 8v4.2l3 1.8" stroke={dark} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+          <circle cx="12" cy="12" r="1" fill={dark} />
+        </svg>
+      );
+    },
+    pillIcon: (c) => (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2.2" strokeLinecap="round">
+        <path d="M4 6h16M4 12h16M4 18h10" />
       </svg>
     ),
   },
   {
-    href: "/flow", label: "Time & Sales", desc: "Real-time flow and volume.", color: "#60a5fa",
-    icon: (c) => (
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <circle cx="12" cy="12" r="9" /><path d="M12 7v5l3.5 2" />
+    href: "/venta-de-primas", label: "Venta de Primas", desc: "Credit spreads de riesgo definido.", color: "#fb923c", gid: "vp",
+    icon: (c, k) => {
+      const light = shade(c, 0.55), dark = shade(c, -0.45);
+      return (
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none">
+          <defs>
+            <radialGradient id={`${k}-coin`} cx="38%" cy="32%" r="72%">
+              <stop offset="0%" stopColor={light} /><stop offset="55%" stopColor={c} /><stop offset="100%" stopColor={dark} />
+            </radialGradient>
+          </defs>
+          <circle cx="12" cy="12" r="9" fill={`url(#${k}-coin)`} stroke={dark} strokeWidth="0.6" />
+          <circle cx="12" cy="12" r="6.6" fill="none" stroke="#fff" strokeOpacity="0.35" strokeWidth="0.8" strokeDasharray="1.2 2.2" />
+          <path d="M12 7.3v9.4M14.3 9.3c0-1-1-1.8-2.3-1.8s-2.3.8-2.3 1.8 1 1.4 2.3 1.7 2.3.7 2.3 1.8-1 1.8-2.3 1.8-2.3-.8-2.3-1.8" stroke="#fff" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
+    },
+    pillIcon: (c) => (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="6.5" cy="6.5" r="2.2" /><circle cx="17.5" cy="17.5" r="2.2" /><path d="M6 18L18 6" />
       </svg>
     ),
   },
   {
-    href: "/unusual-swing", label: "Unusual Swing", desc: "Acumulación institucional real.", color: "#f472b6",
-    icon: (c) => (
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M3 12l4-5 4 3 4-6 6 8" /><circle cx="19" cy="6" r="2" />
+    href: "/unusual-swing", label: "Unusual Swing", desc: "Acumulación institucional real.", color: "#f472b6", gid: "us",
+    icon: (c, k) => {
+      const light = shade(c, 0.55), dark = shade(c, -0.4);
+      return (
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none">
+          <defs>
+            <linearGradient id={`${k}-spike`} x1="0" y1="1" x2="0.8" y2="0">
+              <stop offset="0%" stopColor={dark} /><stop offset="100%" stopColor={light} />
+            </linearGradient>
+          </defs>
+          <path d="M3 19l4-6 4 2.5 4-7 5.5 3.2" stroke={`url(#${k}-spike)`} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+          <circle cx="20.5" cy="12.5" r="2.1" fill={light} stroke={dark} strokeWidth="0.6" />
+          <path d="M20.3 8.9a4.5 4.5 0 013 3" stroke={light} strokeOpacity="0.55" strokeWidth="1" strokeLinecap="round" fill="none" />
+        </svg>
+      );
+    },
+    pillIcon: (c) => (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M6 8a6 6 0 0112 0c0 5 2 6 2 6H4s2-1 2-6z" /><path d="M10 21a2 2 0 004 0" />
       </svg>
     ),
   },
   {
-    href: "/analisis-mercado", label: "Análisis del mercado", desc: "Risk ON/OFF, VIX, Fed y noticias.", color: "#2dd4bf",
-    icon: (c) => (
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c2.5 2.5 3.5 5.5 3.5 9s-1 6.5-3.5 9c-2.5-2.5-3.5-5.5-3.5-9s1-6.5 3.5-9z" />
+    href: "/analisis-mercado", label: "Análisis del mercado", desc: "Risk ON/OFF, VIX, Fed y noticias.", color: "#2dd4bf", gid: "am",
+    icon: (c, k) => {
+      const dark = shade(c, -0.4);
+      return (
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none">
+          <defs>
+            <radialGradient id={`${k}-globe`} cx="38%" cy="32%" r="75%">
+              <stop offset="0%" stopColor={shade(c, 0.55)} /><stop offset="55%" stopColor={c} /><stop offset="100%" stopColor={dark} />
+            </radialGradient>
+          </defs>
+          <circle cx="12" cy="12" r="9" fill={`url(#${k}-globe)`} stroke={dark} strokeWidth="0.5" />
+          <ellipse cx="12" cy="12" rx="9" ry="3.6" fill="none" stroke={dark} strokeOpacity="0.55" strokeWidth="0.8" />
+          <path d="M12 3c2.3 2.3 3.4 5.4 3.4 9s-1.1 6.7-3.4 9c-2.3-2.3-3.4-5.4-3.4-9s1.1-6.7 3.4-9z" fill="none" stroke={dark} strokeOpacity="0.55" strokeWidth="0.8" />
+          <path d="M3.4 12h17.2" stroke={dark} strokeOpacity="0.55" strokeWidth="0.8" />
+        </svg>
+      );
+    },
+    pillIcon: (c) => (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M3 12h4l2 6 4-12 2 6h6" />
       </svg>
     ),
   },
   {
-    href: "/ajustes", label: "Ajustes", desc: "Cookie de MarketSnack y preferencias.", color: "#94a3b8",
-    icon: (c) => (
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <circle cx="12" cy="12" r="3" />
-        <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" />
+    href: "/ajustes", label: "Ajustes", desc: "Cookie de MarketSnack y preferencias.", color: "#94a3b8", gid: "aj",
+    icon: (c, k) => {
+      const light = shade(c, 0.6), dark = shade(c, -0.4);
+      return (
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none">
+          <defs>
+            <linearGradient id={`${k}-gear`} x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stopColor={light} /><stop offset="100%" stopColor={dark} />
+            </linearGradient>
+          </defs>
+          <path
+            d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"
+            fill={`url(#${k}-gear)`} stroke={dark} strokeWidth="0.4"
+          />
+          <circle cx="12" cy="12" r="3.4" fill="#0f172a" opacity="0.65" />
+          <circle cx="12" cy="12" r="3.4" fill="none" stroke={light} strokeOpacity="0.6" strokeWidth="0.6" />
+        </svg>
+      );
+    },
+    pillIcon: (c) => (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2.2" strokeLinecap="round">
+        <path d="M4 6h9M17 6h3M4 12h3M9 12h11M4 18h13M19 18h1" />
+        <circle cx="12" cy="6" r="1.6" fill={c} stroke="none" />
+        <circle cx="7" cy="12" r="1.6" fill={c} stroke="none" />
+        <circle cx="17" cy="18" r="1.6" fill={c} stroke="none" />
       </svg>
     ),
   },
@@ -193,9 +348,10 @@ export default function HeroLanding({ onSearch }: { onSearch: (t: string) => voi
       <div className="hero-quick-grid">
         {QUICK_LINKS.map((q) => (
           <Link key={q.href} href={q.href} className="hero-quick-card" style={{ ["--card-color" as string]: q.color }}>
-            <div className="hero-quick-icon">{q.icon(q.color)}</div>
+            <div className="hero-quick-badge">{q.icon(q.color, q.gid)}</div>
             <div className="hero-quick-title">{q.label}</div>
             <div className="hero-quick-desc">{q.desc}</div>
+            <div className="hero-quick-pill">{q.pillIcon(q.color)}</div>
           </Link>
         ))}
       </div>
