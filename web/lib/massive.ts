@@ -227,7 +227,7 @@ export async function fetchDailyBars(ticker: string, days = 365): Promise<DailyB
 export async function fetchBars(
   ticker: string,
   multiplier: number,
-  timespan: "day" | "minute",
+  timespan: "day" | "minute" | "hour" | "week",
   days: number,
 ): Promise<TfBar[]> {
   const clean = ticker.trim().toUpperCase();

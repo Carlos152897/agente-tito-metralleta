@@ -1,86 +1,59 @@
-// Lista curada A MANO de los tickers del S&P 500. Mismo patrón y misma
-// limitación que lib/wheelUniverse.ts: NO se valida contra el mercado, y la
-// composición real del índice cambia con cada rebalanceo trimestral (altas y
-// bajas) — si un ticker deja de pertenecer o se agrega uno nuevo, hay que
-// actualizar esta lista a mano. Se usa como allowlist post-filtrado sobre el
-// escaneo de TODO el mercado en app/api/contract-search/route.ts, porque
-// MarketSnack (paginate() en lib/marketsnack.ts) no ofrece un filtro de
-// índice/allowlist server-side — solo un ticker a la vez o nada.
+// Universo del S&P 500 para el buscador de "Grandes empresas" (ago 2026,
+// pedido explícito de Carlos: "un buscador de tickets... pero solo va a ser
+// de las 500 empresas del S&P500", con sugerencia por TICKER o por NOMBRE de
+// la empresa — "a veces no me sé el nombre del ticket pero puedo poner el
+// nombre de la empresa"). Snapshot de las 503 constituyentes reales (cruzado
+// contra Wikipedia al armar esta lista, ago 2026 — incluye altas recientes
+// como la escisión de Honeywell en HON/HONA y el spin-off FDX/FDXF, así que
+// NO es una lista vieja de memoria). El S&P 500 cambia su composición unas
+// pocas veces al año (altas/bajas por M&A, quiebras, rebalanceos) — si algún
+// ticker queda desactualizado, se corrige acá a mano, no hace falta un
+// pipeline de actualización automática para algo que se mueve tan poco.
 
-export const SP500_TICKERS: Set<string> = new Set([
-  // ── Tecnología / semiconductores / software ──
-  "AAPL", "MSFT", "NVDA", "GOOGL", "GOOG", "AMZN", "META", "AVGO", "ORCL", "CRM",
-  "ADBE", "CSCO", "ACN", "AMD", "QCOM", "TXN", "IBM", "INTU", "NOW", "AMAT",
-  "MU", "ADI", "LRCX", "KLAC", "SNPS", "CDNS", "PANW", "ANET", "APH", "CRWD",
-  "MSI", "ROP", "FTNT", "ADSK", "NXPI", "MCHP", "TEL", "GLW", "HPQ", "KEYS",
-  "TDY", "ON", "CTSH", "IT", "GDDY", "MPWR", "FSLR", "TER", "ENPH", "SWKS",
-  "GEN", "AKAM", "JBL", "JNPR", "NTAP", "TRMB", "WDC", "STX", "ZBRA", "PTC",
-  "FFIV", "EPAM", "HPE", "DELL", "SMCI", "VRSN", "CDW", "DAY",
+import sp500Raw from "./sp500.json";
 
-  // ── Comunicación / medios / internet ──
-  "NFLX", "TMUS", "DIS", "CMCSA", "VZ", "T", "CHTR", "EA", "TTWO", "WBD",
-  "OMC", "IPG", "LYV", "NWSA", "NWS", "FOXA", "FOX", "PARA",
+export interface Sp500Company {
+  ticker: string;
+  name: string;
+}
 
-  // ── Consumo discrecional / retail ──
-  "TSLA", "HD", "MCD", "NKE", "LOW", "SBUX", "TJX", "BKNG", "ORLY", "MAR",
-  "CMG", "ROST", "YUM", "AZO", "GM", "F", "HLT", "DHI", "LEN", "NVR",
-  "EBAY", "ULTA", "BBY", "DPZ", "POOL", "GPC", "APTV", "TSCO", "LVS", "MGM",
-  "WYNN", "RCL", "CCL", "NCLH", "EXPE", "RL", "DECK", "KMX", "GRMN", "LKQ",
-  "PHM", "BBWI", "CZR", "HAS",
+// Los datos viven en lib/sp500.json (no inline acá, y NO en data/ — esa
+// carpeta está en .gitignore para estado local acumulado/secretos, y este
+// JSON es código fuente que tiene que viajar con el repo) para que
+// scripts/premarket-movers-alert/scan.mjs —standalone, corre desde el
+// Programador de tareas de Windows sin pasar por TypeScript/Next, mismo
+// patrón que scripts/marketsnack-keepalive/— pueda leer EXACTAMENTE el mismo
+// universo con `fs.readFile` + `JSON.parse`, sin duplicar 503 líneas a mano
+// y sin arriesgarse a que las dos listas se desincronicen.
+export const SP500: Sp500Company[] = sp500Raw;
 
-  // ── Consumo básico ──
-  "WMT", "PG", "KO", "PEP", "COST", "PM", "MDLZ", "MO", "CL", "TGT",
-  "KMB", "GIS", "STZ", "SYY", "KDP", "KHC", "HSY", "MKC", "ADM", "TAP",
-  "CAG", "CHD", "CLX", "K", "SJM", "BG", "DG", "DLTR", "KR", "TSN",
-  "EL", "MNST", "WBA", "KVUE",
+export const SP500_TICKERS = new Set(SP500.map((c) => c.ticker));
 
-  // ── Salud ──
-  "UNH", "JNJ", "LLY", "ABBV", "MRK", "TMO", "ABT", "PFE", "DHR", "AMGN",
-  "ISRG", "SYK", "BSX", "ELV", "MDT", "GILD", "VRTX", "CVS", "CI", "REGN",
-  "ZTS", "HCA", "BDX", "IDXX", "EW", "A", "IQV", "MRNA", "BIIB", "CNC",
-  "HUM", "GEHC", "DXCM", "RMD", "MTD", "WAT", "STE", "COO", "ZBH", "BAX",
-  "VTRS", "CAH", "MCK", "COR", "HOLX", "TECH", "PODD", "ALGN", "INCY", "UHS",
-  "DVA", "CRL", "MOH", "RVTY",
+/**
+ * Autocompletado por ticker O por nombre de empresa (pedido explícito de
+ * Carlos: "a veces no me sé el nombre del ticket pero puedo poner el nombre
+ * de la empresa"). PURA — sin `fetch`, corre en el cliente en cada
+ * keystroke. Orden de relevancia: ticker exacto > ticker empieza con la
+ * búsqueda > nombre empieza con la búsqueda > nombre contiene la búsqueda en
+ * cualquier parte — así "AAPL" no queda enterrada bajo nombres que solo
+ * contienen esas letras en el medio.
+ */
+export function searchSp500(query: string, limit = 8): Sp500Company[] {
+  const q = query.trim().toUpperCase();
+  if (q.length === 0) return [];
+  const qName = query.trim().toLowerCase();
 
-  // ── Financiero ──
-  "BRK.B", "BRK-B", "BRKB", "JPM", "V", "MA", "BAC", "WFC", "GS", "MS", "SPGI", "AXP",
-  "BLK", "C", "SCHW", "CB", "PGR", "MMC", "ICE", "PNC", "USB", "AON",
-  "CME", "TFC", "AJG", "MCO", "COF", "TRV", "AIG", "MET", "BK", "AFL",
-  "PRU", "ALL", "FIS", "FITB", "STT", "DFS", "AMP", "HIG", "SYF", "GPN",
-  "NDAQ", "MTB", "WTW", "RJF", "CBOE", "KEY", "CFG", "HBAN", "NTRS", "RF",
-  "BRO", "PFG", "L", "GL", "CINF", "WRB", "MKTX", "IVZ", "FDS", "EG",
-  "JKHY", "ACGL", "PYPL",
+  const exact: Sp500Company[] = [];
+  const tickerPrefix: Sp500Company[] = [];
+  const namePrefix: Sp500Company[] = [];
+  const nameContains: Sp500Company[] = [];
 
-  // ── Industriales ──
-  "GE", "CAT", "RTX", "HON", "UNP", "BA", "DE", "LMT", "UPS", "ADP",
-  "ETN", "GD", "NOC", "ITW", "CSX", "EMR", "MMM", "WM", "PH", "TT",
-  "NSC", "FDX", "PCAR", "CARR", "JCI", "CMI", "GWW", "OTIS", "RSG", "AME",
-  "PAYX", "URI", "IR", "XYL", "ROK", "DOV", "FAST", "HWM", "VRSK", "EFX",
-  "BR", "CTAS", "LHX", "TDG", "SNA", "PWR", "IEX", "J", "SWK", "ODFL",
-  "CHRW", "PNR", "AOS", "GNRC", "LDOS", "NDSN", "MAS", "ALLE", "WAB", "HII",
-  "EXPD", "AXON",
+  for (const c of SP500) {
+    if (c.ticker === q) exact.push(c);
+    else if (c.ticker.startsWith(q)) tickerPrefix.push(c);
+    else if (c.name.toLowerCase().startsWith(qName)) namePrefix.push(c);
+    else if (c.name.toLowerCase().includes(qName)) nameContains.push(c);
+  }
 
-  // ── Energía ──
-  "XOM", "CVX", "COP", "SLB", "EOG", "MPC", "PSX", "VLO", "WMB", "OKE",
-  "KMI", "OXY", "HES", "BKR", "FANG", "TRGP", "HAL", "DVN", "CTRA", "EQT",
-  "APA",
-
-  // ── Materiales ──
-  "LIN", "SHW", "APD", "ECL", "FCX", "NEM", "NUE", "DOW", "CTVA", "PPG",
-  "VMC", "MLM", "DD", "LYB", "IFF", "ALB", "STLD", "AVY", "CE", "PKG",
-  "AMCR", "MOS", "IP", "EMN", "FMC",
-
-  // ── Utilities ──
-  "NEE", "SO", "DUK", "CEG", "AEP", "SRE", "D", "EXC", "XEL", "PEG",
-  "ED", "WEC", "AWK", "EIX", "PCG", "DTE", "PPL", "AEE", "ETR", "FE",
-  "CMS", "ATO", "CNP", "NI", "LNT", "EVRG", "NRG", "PNW",
-
-  // ── Real estate (REITs) ──
-  "PLD", "AMT", "EQIX", "PSA", "WELL", "DLR", "O", "SPG", "CCI", "VICI",
-  "SBAC", "AVB", "EQR", "EXR", "IRM", "CBRE", "INVH", "MAA", "ESS", "UDR",
-  "ARE", "VTR", "KIM", "CPT", "REG", "BXP", "HST", "FRT",
-
-  // ── Otros / conglomerados ──
-  "COIN", "PLTR", "UBER", "ABNB", "DASH", "SQ", "SHOP", "ROKU", "DDOG", "SNOW",
-  "NET", "TTD", "ZS", "OKTA", "TWLO", "DOCU", "PINS", "SNAP", "LYFT",
-]);
+  return [...exact, ...tickerPrefix, ...namePrefix, ...nameContains].slice(0, limit);
+}

@@ -13,6 +13,8 @@ import GrandesEmpresasChart, { type ChartLevelLine, type ChartPremarketWindow } 
 import type { TfBar } from "@/lib/types";
 import { applyPersistence, PERSISTENCE_REQUIRED, type ContratosVecinos3Signal, type PersistentSignal } from "@/lib/contratosVecinos3";
 import { GRANDES_EMPRESAS, DEFAULT_GRANDES_EMPRESA } from "@/lib/grandesEmpresas";
+import { searchSp500, SP500_TICKERS, type Sp500Company } from "@/lib/sp500";
+import { CHART_TIMEFRAMES, DEFAULT_CHART_TIMEFRAME, type ChartTimeframeId } from "@/lib/timeframeBars";
 import type { ZeroDteSuggestions } from "@/lib/zerodteSuggestions";
 
 const KEY_TICKER = "visionary.grandesEmpresas.ticker";
@@ -73,9 +75,29 @@ export default function GrandesEmpresasTab() {
   const historyRef = useRef<ContratosVecinos3Signal[]>([]);
   const [persistent, setPersistent] = useState<PersistentSignal | null>(null);
 
+  // Buscador de tickers del S&P 500 (ago 2026, pedido explícito de Carlos):
+  // deja elegir CUALQUIERA de las 500 empresas, no solo las 14 "guardadas"
+  // de arriba — sugerencia en vivo por ticker O por nombre de la empresa
+  // (`searchSp500`, lib/sp500.ts). Al elegir una, se comporta exactamente
+  // igual que tocar una pill: mismo `pickTicker`.
+  const [searchQuery, setSearchQuery] = useState("");
+  const [suggestions, setSuggestions] = useState<Sp500Company[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+
+  // Selector de temporalidad de la gráfica (ago 2026, pedido explícito de
+  // Carlos): la temporalidad por defecto ("15m") sigue viniendo de `data`
+  // (la ruta principal, con la vela de HOY pegada y el pre-market
+  // sombreado) — al elegir otra, se pide aparte a un endpoint liviano
+  // (app/api/grandes-empresas/chart/route.ts) que solo trae velas, sin
+  // recalcular toda la señal.
+  const [chartTf, setChartTf] = useState<ChartTimeframeId>(DEFAULT_CHART_TIMEFRAME);
+  const [altBars, setAltBars] = useState<TfBar[] | null>(null);
+  const [altLoading, setAltLoading] = useState(false);
+  const [altError, setAltError] = useState<string | null>(null);
+
   useEffect(() => {
     const saved = window.localStorage.getItem(KEY_TICKER);
-    if (saved && TICKER_IDS.has(saved)) setSelTicker(saved);
+    if (saved && (TICKER_IDS.has(saved) || SP500_TICKERS.has(saved))) setSelTicker(saved);
     setTickerReady(true);
   }, []);
 
@@ -85,6 +107,47 @@ export default function GrandesEmpresasTab() {
     setSelTicker(id);
     window.localStorage.setItem(KEY_TICKER, id);
   }, []);
+
+  const onSearchChange = useCallback((q: string) => {
+    setSearchQuery(q);
+    setSuggestions(searchSp500(q));
+    setShowSuggestions(true);
+  }, []);
+
+  const selectSuggestion = useCallback(
+    (c: Sp500Company) => {
+      pickTicker(c.ticker);
+      setSearchQuery("");
+      setSuggestions([]);
+      setShowSuggestions(false);
+    },
+    [pickTicker],
+  );
+
+  useEffect(() => {
+    if (!tickerReady || chartTf === DEFAULT_CHART_TIMEFRAME) return;
+    let cancelled = false;
+    setAltLoading(true);
+    setAltError(null);
+    fetch(`/api/grandes-empresas/chart?ticker=${selTicker}&tf=${chartTf}`, { cache: "no-store" })
+      .then(async (res) => {
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
+        if (cancelled) return;
+        setAltBars(json.bars as TfBar[]);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setAltError(e instanceof Error ? e.message : "Error desconocido");
+        setAltBars(null);
+      })
+      .finally(() => {
+        if (!cancelled) setAltLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tickerReady, selTicker, chartTf]);
 
   const load = useCallback(async (ticker: string) => {
     requestedTickerRef.current = ticker;
@@ -143,6 +206,31 @@ export default function GrandesEmpresasTab() {
         ))}
       </div>
 
+      <div className="ge-search">
+        <input
+          type="text"
+          value={searchQuery}
+          placeholder="Buscar en el S&P 500 por ticker o nombre (ej. Apple, MSFT)…"
+          onChange={(e) => onSearchChange(e.target.value)}
+          onFocus={() => searchQuery && setShowSuggestions(true)}
+          onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && suggestions[0]) selectSuggestion(suggestions[0]);
+            if (e.key === "Escape") setShowSuggestions(false);
+          }}
+        />
+        {showSuggestions && suggestions.length > 0 && (
+          <ul className="ge-search-list">
+            {suggestions.map((c) => (
+              <li key={c.ticker} onMouseDown={() => selectSuggestion(c)}>
+                <span className="ge-search-ticker">{c.ticker}</span>
+                <span className="ge-search-name">{c.name}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
       {error && <div className="ge-error">⚠ {error}</div>}
 
       {data && (
@@ -180,14 +268,42 @@ export default function GrandesEmpresasTab() {
         </div>
       )}
 
-      {data && data.bars.length > 0 && (
-        <section className="ge-chart-box">
-          <header><h2>15 min · últimos 20 días</h2><p>Franja gris = pre-market (4:00–9:30 ET) · líneas punteadas = puntos de rechazo del pre-market de hoy (se quedan visibles toda la sesión).</p></header>
-          <div className="ge-chart">
-            <GrandesEmpresasChart bars={data.bars} levels={chartLevels} premarketWindows={data.premarketWindows} />
-          </div>
-        </section>
-      )}
+      {data && data.bars.length > 0 && (() => {
+        const isDefaultTf = chartTf === DEFAULT_CHART_TIMEFRAME;
+        const shownBars = isDefaultTf ? data.bars : altBars;
+        const shownLevels = isDefaultTf ? chartLevels : [];
+        const shownWindows = isDefaultTf ? data.premarketWindows : [];
+        return (
+          <section className="ge-chart-box">
+            <header>
+              <div className="ge-chart-head-row">
+                <div>
+                  <h2>{isDefaultTf ? "15 min · últimos 20 días" : CHART_TIMEFRAMES.find((t) => t.id === chartTf)?.label}</h2>
+                  <p>
+                    {isDefaultTf
+                      ? "Franja gris = pre-market (4:00–9:30 ET) · líneas punteadas = puntos de rechazo del pre-market de hoy (se quedan visibles toda la sesión)."
+                      : "Histórico de Massive — puede no incluir la vela de hoy en vivo."}
+                  </p>
+                </div>
+                <div className="ge-tf-picker">
+                  {CHART_TIMEFRAMES.map((tf) => (
+                    <button key={tf.id} className={chartTf === tf.id ? "active" : ""} onClick={() => setChartTf(tf.id)}>
+                      {tf.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </header>
+            <div className="ge-chart">
+              {!isDefaultTf && altLoading && <div className="ge-chart-status">Cargando…</div>}
+              {!isDefaultTf && altError && <div className="ge-chart-status ge-chart-status-error">⚠ {altError}</div>}
+              {shownBars && shownBars.length > 0 && (
+                <GrandesEmpresasChart bars={shownBars} levels={shownLevels} premarketWindows={shownWindows} />
+              )}
+            </div>
+          </section>
+        );
+      })()}
 
       {signal && <SignalBox signal={signal} />}
 
@@ -410,6 +526,18 @@ const CSS = `
   font-size: 13px; border: 1px solid var(--border); background: var(--panel); color: var(--text); }
 .ge-tickers button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
+.ge-search { position: relative; max-width: 420px; margin: 0 0 16px; }
+.ge-search input { font: inherit; width: 100%; box-sizing: border-box; padding: 9px 14px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--panel); color: var(--text); }
+.ge-search input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.ge-search-list { position: absolute; z-index: 5; top: calc(100% + 4px); left: 0; right: 0; margin: 0; padding: 4px;
+  list-style: none; border: 1px solid var(--border); background: var(--panel); border-radius: 8px;
+  max-height: 280px; overflow-y: auto; box-shadow: 0 8px 24px rgba(0,0,0,.25); }
+.ge-search-list li { display: flex; align-items: baseline; gap: 8px; padding: 7px 10px; border-radius: 6px; cursor: pointer; }
+.ge-search-list li:hover { background: var(--panel-2); }
+.ge-search-ticker { font-weight: 700; font-size: 13px; }
+.ge-search-name { font-size: 12.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
 .ge-error { background: var(--red-bg); border: 1px solid var(--red-soft); color: #7a271a;
   padding: 12px 14px; border-radius: 8px; margin: 16px 0; }
 
@@ -430,12 +558,20 @@ const CSS = `
 
 .ge-chart-box { border: 1px solid var(--border); background: var(--panel); border-radius: 12px; padding: 16px 18px; margin: 0 0 16px; }
 .ge-chart-box header { margin-bottom: 8px; }
+.ge-chart-head-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
 .ge-chart-box h2 { margin: 0; font-size: 15px; }
 .ge-chart-box p { margin: 2px 0 0; font-size: 12px; color: var(--faint); }
-.ge-chart { height: clamp(280px, 40vw, 420px); }
+.ge-tf-picker { display: flex; gap: 4px; flex-wrap: wrap; }
+.ge-tf-picker button { font: inherit; font-size: 12px; font-weight: 600; padding: 5px 10px; border-radius: 6px;
+  cursor: pointer; border: 1px solid var(--border); background: var(--panel-2); color: var(--text); }
+.ge-tf-picker button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.ge-chart { height: clamp(280px, 40vw, 420px); position: relative; }
 .ge-chart-canvas-wrap { position: relative; width: 100%; height: 100%; }
 .ge-chart-overlay { position: absolute; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
 .ge-chart-canvas { position: relative; z-index: 1; width: 100%; height: 100%; }
+.ge-chart-status { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 13px; color: var(--faint); z-index: 2; }
+.ge-chart-status-error { color: #b42318; }
 
 .ge-advice { border: 2px solid var(--border); border-radius: 12px; padding: 16px 18px; margin: 0 0 16px; background: var(--panel); }
 .ge-advice-call { border-color: var(--green); background: var(--green-bg); }

@@ -43,6 +43,7 @@ import {
   NEAR_TERM_DTE_MAX,
   selectWeeklyExpirations,
 } from "@/lib/grandesEmpresas";
+import { SP500_TICKERS } from "@/lib/sp500";
 import { fetchNestedOptionChain, TastytradeError } from "@/lib/tastytrade";
 import { fetchZeroDteChain } from "@/lib/tastytradeChain";
 import { fetchTastytradeCandles } from "@/lib/tastytradeCandles";
@@ -56,7 +57,10 @@ export const dynamic = "force-dynamic";
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const requested = (searchParams.get("ticker") ?? DEFAULT_GRANDES_EMPRESA).trim().toUpperCase();
-  const TICKER = GRANDES_EMPRESAS_TICKERS.has(requested) ? requested : DEFAULT_GRANDES_EMPRESA;
+  // Además de las 14 empresas "guardadas" (pills de acceso rápido), acepta
+  // cualquier ticker real del S&P 500 buscado a mano — ver lib/sp500.ts.
+  const TICKER =
+    GRANDES_EMPRESAS_TICKERS.has(requested) || SP500_TICKERS.has(requested) ? requested : DEFAULT_GRANDES_EMPRESA;
   const now = new Date();
 
   try {
