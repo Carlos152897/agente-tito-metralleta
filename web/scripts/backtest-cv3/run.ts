@@ -64,6 +64,18 @@ async function sendTelegram(text: string) {
 
 function round5(n: number) { return Math.round(n / 5) * 5; }
 
+// Objetivo real de Carlos: entradas que muevan AL MENOS esta cantidad de
+// puntos (call o put), no solo "tocó el próximo strike confirmado". Medido
+// como MFE (Maximum Favorable Excursion) real entre entrada y salida —
+// independiente de si el propio target1/target2 del motor (que por
+// construcción es el strike vecino más cercano, casi siempre <5 pts) se llegó
+// a tocar o no. Pedido explícito 2026-08-25 tras ver que ninguno de los
+// episodios de TSLA de los dos días ya loggeados llegaba a 5 puntos reales.
+// Bajado a 4 el 2026-08-26 — Carlos confirmó "4 puntos está bien" tras ver
+// que a 4pts SPX no cambia (8/13, ningún episodio quedaba justo entre 4 y 5)
+// y TSLA sube de 18.5% a 26% (2 episodios que estaban justo en el límite).
+const MIN_MOVE_POINTS = 4;
+
 function etTime(iso: string): string {
   return new Intl.DateTimeFormat("es-AR", {
     timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hour12: false,
@@ -93,6 +105,29 @@ async function main() {
     target2Hit: { time: string; spot: number } | null;
     stopHit: { time: string; spot: number } | null;
     outcome: string;
+    /** Máximo movimiento real a favor (MFE) entre entrada y salida, en puntos — ver MIN_MOVE_POINTS arriba. */
+    maxFavorableMove: number;
+    maxFavorableTime: string | null;
+    maxFavorableSpot: number | null;
+    /** `true` si `maxFavorableMove >= MIN_MOVE_POINTS` — el objetivo real de Carlos, independiente de target1/target2. */
+    reachedMinMove: boolean;
+    /**
+     * GEX real de MarketSnack al momento de la entrada — instrumentado
+     * 2026-08-27 (pedido explícito de Carlos: "puedes usar el GEX de
+     * MarketSnack... quiero entradas más grandes") para poder correlacionar,
+     * con más días de backtest acumulados, si el régimen de GEX o la
+     * distancia a la pared real predicen mejor un MFE grande. Todavía NO se
+     * usa para decidir nada — solo se graba para analizar después.
+     */
+    gexAtEntry: {
+      netGex: number;
+      regime: "positivo" | "negativo";
+      callWall: number;
+      putWall: number;
+      magnet: number;
+      /** Distancia real (puntos) desde la entrada hasta la pared GEX del lado de la operación (call_wall si es CALL, put_wall si es PUT). */
+      distanceToWall: number;
+    } | null;
   }
 
   async function fetchStrikeBuckets(symbols: string[], period: string, concurrency = 10): Promise<Map<string, TradeSummaryBucketLike[]>> {
@@ -141,9 +176,28 @@ async function main() {
     });
   }
 
+  interface GexBucketLike { t: string; net_gex: number; call_wall: number; put_wall: number; magnet: number; }
+
+  /** GEX real más reciente disponible AL MOMENTO de `tIso` (nunca mirando al futuro, mismo criterio que el resto del backtest) — null si no hay ningún bucket todavía a esa hora. */
+  function gexAtTime(gexSeries: GexBucketLike[], tIso: string, type: "call" | "put", spot: number): Episode["gexAtEntry"] {
+    const upTo = gexSeries.filter((b) => Date.parse(b.t) <= Date.parse(tIso));
+    const latest = upTo.at(-1);
+    if (!latest) return null;
+    const wall = type === "call" ? latest.call_wall : latest.put_wall;
+    return {
+      netGex: latest.net_gex,
+      regime: latest.net_gex >= 0 ? "positivo" : "negativo",
+      callWall: latest.call_wall,
+      putWall: latest.put_wall,
+      magnet: latest.magnet,
+      distanceToWall: Math.abs(wall - spot),
+    };
+  }
+
   function runReplay(
     ticker: string, clock: ClockPoint[], strikes: number[],
     callBucketsByStrike: Map<number, TradeSummaryBucketLike[]>, putBucketsByStrike: Map<number, TradeSummaryBucketLike[]>,
+    gexSeries: GexBucketLike[] = [],
   ) {
     const history: ContratosVecinos3Signal[] = [];
     const readings: { t: string; spot: number; signal: ContratosVecinos3Signal; confirmed: boolean }[] = [];
@@ -182,6 +236,17 @@ async function main() {
       else if (ts < t1) ep.outcome = "PERDEDORA (tocó stop-loss)";
       else if (t1 === Infinity && ts === Infinity) ep.outcome = "SIN TOCAR (ni target1 ni stop-loss)";
       else ep.outcome = "EMPATE (mismo tick target1/stop-loss)";
+
+      for (const p of windowPoints) {
+        const favorable = ep.type === "call" ? p.spot - ep.entrySpot : ep.entrySpot - p.spot;
+        if (favorable > ep.maxFavorableMove) {
+          ep.maxFavorableMove = favorable;
+          ep.maxFavorableTime = p.t;
+          ep.maxFavorableSpot = p.spot;
+        }
+      }
+      ep.reachedMinMove = ep.maxFavorableMove >= MIN_MOVE_POINTS;
+
       episodes.push(ep);
     }
 
@@ -194,6 +259,8 @@ async function main() {
             stopLoss: r.signal.stopLoss?.strike ?? null, stopLossType: r.signal.stopLoss?.type ?? null,
             exitTime: null, exitReason: null, exitSpot: null,
             target1Hit: null, target2Hit: null, stopHit: null, outcome: "",
+            maxFavorableMove: 0, maxFavorableTime: null, maxFavorableSpot: null, reachedMinMove: false,
+            gexAtEntry: gexAtTime(gexSeries, r.t, r.signal.type, r.spot),
           };
         } else if (current.type !== r.signal.type) {
           closeEpisode(current, r.t, "reversal_confirmada", r.spot);
@@ -203,6 +270,8 @@ async function main() {
             stopLoss: r.signal.stopLoss?.strike ?? null, stopLossType: r.signal.stopLoss?.type ?? null,
             exitTime: null, exitReason: null, exitSpot: null,
             target1Hit: null, target2Hit: null, stopHit: null, outcome: "",
+            maxFavorableMove: 0, maxFavorableTime: null, maxFavorableSpot: null, reachedMinMove: false,
+            gexAtEntry: gexAtTime(gexSeries, r.t, r.signal.type, r.spot),
           };
         }
       }
@@ -244,27 +313,54 @@ async function main() {
     spxCallBucketsByStrike.set(s, spxAllBuckets.get(spxCallSym(s)) ?? []);
     spxPutBucketsByStrike.set(s, spxAllBuckets.get(spxPutSym(s)) ?? []);
   }
-  const spxResult = runReplay("SPX", spxClock, spxStrikes, spxCallBucketsByStrike, spxPutBucketsByStrike);
+  const spxResult = runReplay("SPX", spxClock, spxStrikes, spxCallBucketsByStrike, spxPutBucketsByStrike, gexDay);
   log(`SPX: ${spxResult.episodes.length} episodios, ${spxResult.confirmedReadings}/${spxResult.totalReadings} lecturas confirmadas.`);
 
   // ─────────────────────────── TSLA ───────────────────────────
-  // Reloj maestro: MarketSnack (`fetchAssetPriceChart`, punto cada 5 min,
-  // SIEMPRE al día — es el mismo respaldo que ya usa "Grandes empresas" para
-  // el tramo de HOY, ver route.ts) en vez de Massive (`fetchBars`, atrasado
-  // ~1 día completo en este entorno — confirmado en vivo 2026-08-25: seguía
-  // sin la barra de hoy incluso después del cierre). Pedido explícito de
-  // Carlos ("no puedes con marketsnack?") al ver el backtest de TSLA
-  // bloqueado por el atraso de Massive. Se cae a Massive solo si MarketSnack
-  // no tiene nada para ese día (`period=1d` solo da el día más reciente).
+  // Reloj maestro, en orden de preferencia:
+  // 1. Robinhood (`scripts/backtest-cv3/tsla-rh-clock.json`, {fecha: [{t,spot}]},
+  //    `open_price` real de barras de 5 min vía MCP `get_equity_historicals`,
+  //    bounds=regular) — pedido explícito de Carlos (2026-08-26) tras notar
+  //    que el precio de entrada de un episodio real (TSLA 10:10 ET) no
+  //    coincidía con lo que veía en su cuenta: MarketSnack dio $349.002 en
+  //    ese tick mientras la vela real de Robinhood de 14:10-14:15 UTC tuvo un
+  //    máximo de $348.70 — discrepancia real entre proveedores (~$0.3),
+  //    confirmado comparando ambas fuentes en vivo. Robinhood es la fuente
+  //    que Carlos efectivamente mira en su cuenta, así que gana cuando está
+  //    disponible. **Solo se puede poblar a mano, dentro de una sesión de
+  //    Claude con el MCP de Robinhood conectado** (mismo límite ya
+  //    documentado para SPX/spx-rh-clock.json: la tarea automática de
+  //    Windows corre standalone con `tsx`, sin sesión de Claude detrás, y NO
+  //    puede llamar MCP) — por eso este archivo NO se auto-actualiza solo;
+  //    si un día no está en el JSON, se cae sola al escalón 2 sin fallar.
+  // 2. MarketSnack (`fetchAssetPriceChart`, SIEMPRE al día — mismo respaldo
+  //    que ya usa "Grandes empresas" para el tramo de HOY, ver route.ts).
+  // 3. Massive (`fetchBars`) solo si ninguna de las dos anteriores tiene nada
+  //    (atrasado ~1 día completo en este entorno, confirmado en vivo
+  //    2026-08-25 — último recurso).
   function inRegularHours(iso: string): boolean {
     const d = new Date(iso);
     const mins = d.getUTCHours() * 60 + d.getUTCMinutes();
     return mins >= 13 * 60 + 30 && mins <= 20 * 60; // 9:30-16:00 ET (horario de verano)
   }
-  const msChart = await fetchAssetPriceChart("TSLA");
-  let dayPoints: { t: string; spot: number }[] = msChart
-    .filter((p) => p.t.startsWith(BACKTEST_DAY) && inRegularHours(p.t))
-    .map((p) => ({ t: p.t, spot: p.v }));
+  let dayPoints: { t: string; spot: number }[] = [];
+  try {
+    const rhClockByDay: Record<string, { t: string; spot: number }[]> = JSON.parse(
+      readFileSync(join(WEB_DIR, "scripts", "backtest-cv3", "tsla-rh-clock.json"), "utf8"),
+    );
+    if (rhClockByDay[BACKTEST_DAY]) {
+      dayPoints = rhClockByDay[BACKTEST_DAY];
+      log(`TSLA: reloj de Robinhood (tsla-rh-clock.json) para ${BACKTEST_DAY}, ${dayPoints.length} puntos.`);
+    }
+  } catch {
+    // sin archivo o sin ese día — se cae al escalón siguiente
+  }
+  if (dayPoints.length === 0) {
+    const msChart = await fetchAssetPriceChart("TSLA");
+    dayPoints = msChart
+      .filter((p) => p.t.startsWith(BACKTEST_DAY) && inRegularHours(p.t))
+      .map((p) => ({ t: p.t, spot: p.v }));
+  }
   if (dayPoints.length === 0) {
     log("TSLA: MarketSnack sin datos de este día — cayendo a Massive (fetchBars) como respaldo.");
     const bars = await fetchBars("TSLA", 5, "minute", 10);
@@ -336,7 +432,12 @@ async function main() {
       tslaCallBucketsByStrike.set(strike, callBuckets);
       tslaPutBucketsByStrike.set(strike, putBuckets);
     }
-    tslaResult = runReplay("TSLA", tslaClock, tslaStrikesNum, tslaCallBucketsByStrike, tslaPutBucketsByStrike);
+    // GEX real de TSLA (confirmado en vivo 2026-08-27: `gex_stats_chart` no
+    // es exclusivo de índices, cubre acciones individuales igual de
+    // completo) — instrumentado para correlacionar después con el MFE real.
+    const tslaGexAll = await fetchGexStats("TSLA", { period: "1d" }).catch(() => [] as any[]);
+    const tslaGexDay = (tslaGexAll as any[]).filter((b) => String(b.t).startsWith(BACKTEST_DAY));
+    tslaResult = runReplay("TSLA", tslaClock, tslaStrikesNum, tslaCallBucketsByStrike, tslaPutBucketsByStrike, tslaGexDay);
   } else {
     log("TSLA: sin barras de Massive para este día todavía — se omite.");
   }
@@ -361,9 +462,32 @@ async function main() {
     const losses = r.episodes.filter((e) => e.outcome.startsWith("PERDEDORA")).length;
     const flat = r.episodes.length - wins - losses;
     const pct = r.episodes.length > 0 ? Math.round((wins / r.episodes.length) * 100) : 0;
-    const lines = r.episodes.map((e) =>
-      `${etTime(e.entryTime)} ${e.type.toUpperCase()} @${e.entrySpot.toFixed(2)} → target ${e.target1} · ${e.outcome}`);
-    return { header: `${ticker}: ${r.episodes.length} episodios, ${wins}W/${losses}L/${flat} sin tocar (${pct}%)`, lines };
+    const minMoveCount = r.episodes.filter((e) => e.reachedMinMove).length;
+    const minMovePct = r.episodes.length > 0 ? Math.round((minMoveCount / r.episodes.length) * 100) : 0;
+    const lines = r.episodes.map((e) => {
+      const gexNote = e.gexAtEntry
+        ? ` · GEX ${e.gexAtEntry.regime === "positivo" ? "γ+" : "γ-"} (pared a ${e.gexAtEntry.distanceToWall.toFixed(1)}pts)`
+        : "";
+      return `${etTime(e.entryTime)} ${e.type.toUpperCase()} @${e.entrySpot.toFixed(2)} → target ${e.target1} · ${e.outcome} · máx a favor ${e.maxFavorableMove.toFixed(2)}pts${e.reachedMinMove ? ` ✅≥${MIN_MOVE_POINTS}` : ""}${gexNote}`;
+    });
+
+    // Desglose por régimen de GEX — pedido explícito de Carlos (2026-08-27):
+    // ir juntando evidencia real de si γ negativa (amplifica) da más
+    // episodios ≥MIN_MOVE_POINTS que γ positiva (pinea). Instrumentado hoy,
+    // todavía sin suficientes días para concluir nada — solo se reporta.
+    const withGex = r.episodes.filter((e) => e.gexAtEntry != null);
+    let gexBreakdown = "";
+    if (withGex.length > 0) {
+      const neg = withGex.filter((e) => e.gexAtEntry!.regime === "negativo");
+      const pos = withGex.filter((e) => e.gexAtEntry!.regime === "positivo");
+      const rate = (xs: typeof withGex) => xs.length > 0 ? `${xs.filter((e) => e.reachedMinMove).length}/${xs.length}` : "0/0";
+      gexBreakdown = ` · por régimen GEX: γ- ${rate(neg)} llegaron a ≥${MIN_MOVE_POINTS}pts, γ+ ${rate(pos)}`;
+    }
+
+    return {
+      header: `${ticker}: ${r.episodes.length} episodios, ${wins}W/${losses}L/${flat} sin tocar (${pct}%) · ${minMoveCount}/${r.episodes.length} llegaron a ≥${MIN_MOVE_POINTS}pts reales (${minMovePct}%)${gexBreakdown}`,
+      lines,
+    };
   }
   const spxSum = summarize("SPX", spxResult);
   const tslaSum = summarize("TSLA", tslaResult);

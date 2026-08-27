@@ -760,14 +760,14 @@ const EMPTY_SIGNAL: ContratosVecinos3Signal = {
  * de `PERSISTENCE_REQUIRED` lecturas en el historial, o si la última lectura
  * no tiene dirección/target1, nunca puede estar confirmada todavía.
  */
-export function applyPersistence(history: ContratosVecinos3Signal[]): PersistentSignal {
+export function applyPersistence(history: ContratosVecinos3Signal[], persistenceRequired: number = PERSISTENCE_REQUIRED): PersistentSignal {
   const latest = history.at(-1) ?? EMPTY_SIGNAL;
   if (latest.type == null || latest.target1 == null) {
     return { ...latest, confirmed: false };
   }
-  const window = history.slice(-PERSISTENCE_REQUIRED);
+  const window = history.slice(-persistenceRequired);
   const confirmed =
-    window.length >= PERSISTENCE_REQUIRED &&
+    window.length >= persistenceRequired &&
     window.every((s) => s.type === latest.type && s.target1 != null);
   return { ...latest, confirmed };
 }

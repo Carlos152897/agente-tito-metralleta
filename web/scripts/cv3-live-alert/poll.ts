@@ -78,8 +78,6 @@ function saveState(s: State) {
   writeFileSync(STATE_FILE, JSON.stringify(s, null, 2), "utf8");
 }
 
-const INDEX_TICKERS = new Set(["SPX", "SPY", "QQQ"]);
-
 async function main() {
   const { isMarketOpen } = await import("../../lib/marketHours");
   const now = new Date();
@@ -88,133 +86,22 @@ async function main() {
     return;
   }
 
-  const { contratosVecinos3Signal, orderBookSentiment, applyPersistence, NEIGHBOR_COUNT } = await import("../../lib/contratosVecinos3");
-  type ActivityLevel = import("../../lib/contratosVecinos3").ActivityLevel;
+  const { contratosVecinos3Signal, orderBookSentiment, applyPersistence } = await import("../../lib/contratosVecinos3");
   type ContratosVecinos3Signal = import("../../lib/contratosVecinos3").ContratosVecinos3Signal;
+  const { fetchLiveActivityLevels, fetchGexContext } = await import("../../lib/liveTickerActivity");
 
-  let spot = 0;
-  let aboveLevels: ActivityLevel[] = [];
-  let belowLevels: ActivityLevel[] = [];
-
-  if (INDEX_TICKERS.has(TICKER)) {
-    // SPX/SPY/QQQ — 0DTE vía tastytrade, misma lógica que
-    // app/api/contratos-vecinos-3/route.ts.
-    const { fetchZeroDteChain } = await import("../../lib/tastytradeChain");
-    const { fetchAssetPrice, fetchContractActivitySummaries } = await import("../../lib/marketsnack");
-    const { etDate } = await import("../../lib/zerodte");
-
-    const day = etDate(now);
-    const { rows, underlyingPrice } = await fetchZeroDteChain(TICKER, day);
-    if (rows.length === 0) {
-      log(`Sin cadena 0DTE de ${TICKER} disponible ahora mismo.`);
-      return;
-    }
-    const msPrice = await fetchAssetPrice(TICKER).catch(() => null);
-    spot = msPrice ?? underlyingPrice ?? 0;
-    if (!(spot > 0)) {
-      log(`Sin precio en vivo de ${TICKER} ahora mismo.`);
-      return;
-    }
-
-    const strikes = [...new Set(rows.map((r) => r.strike))];
-    const above = strikes.filter((s) => s > spot).sort((a, b) => a - b).slice(0, NEIGHBOR_COUNT);
-    const below = strikes.filter((s) => s < spot).sort((a, b) => b - a).slice(0, NEIGHBOR_COUNT);
-
-    const bySymbolKey = new Map<string, string>();
-    for (const r of rows) bySymbolKey.set(`${r.strike}|${r.contractType}`, r.optionTicker);
-    const callSymbol = (s: number) => bySymbolKey.get(`${s}|call`) ?? null;
-    const putSymbol = (s: number) => bySymbolKey.get(`${s}|put`) ?? null;
-    const occSymbols = [
-      ...above.flatMap((s) => [callSymbol(s), putSymbol(s)]).filter((s): s is string => s != null),
-      ...below.flatMap((s) => [putSymbol(s), callSymbol(s)]).filter((s): s is string => s != null),
-    ];
-    const activityBySymbol = await fetchContractActivitySummaries(occSymbols);
-
-    aboveLevels = above
-      .map((strike): ActivityLevel | null => {
-        const symbol = callSymbol(strike);
-        const activity = symbol ? activityBySymbol.get(symbol) : undefined;
-        if (!activity) return null;
-        const otherSymbol = putSymbol(strike);
-        const otherActivity = otherSymbol ? (activityBySymbol.get(otherSymbol) ?? null) : null;
-        return { strike, type: "call", activity, otherActivity };
-      })
-      .filter((l): l is ActivityLevel => l != null);
-    belowLevels = below
-      .map((strike): ActivityLevel | null => {
-        const symbol = putSymbol(strike);
-        const activity = symbol ? activityBySymbol.get(symbol) : undefined;
-        if (!activity) return null;
-        const otherSymbol = callSymbol(strike);
-        const otherActivity = otherSymbol ? (activityBySymbol.get(otherSymbol) ?? null) : null;
-        return { strike, type: "put", activity, otherActivity };
-      })
-      .filter((l): l is ActivityLevel => l != null);
-  } else {
-    // Equities (TSLA y el resto de "Grandes empresas") — vencimientos
-    // semanales reales vía Massive, misma lógica que
-    // app/api/grandes-empresas/route.ts (sin el resto de esa ruta: acá solo
-    // hace falta la señal de Contratos 3.0, no imán/pre-market/spreads).
-    const { fetchNearTermChain } = await import("../../lib/massive");
-    const { fetchAssetPrice, fetchContractActivitySummariesGrouped } = await import("../../lib/marketsnack");
-    const { selectWeeklyExpirations, NEAR_TERM_DTE_MAX } = await import("../../lib/grandesEmpresas");
-
-    const chain = await fetchNearTermChain(TICKER, { dteMax: NEAR_TERM_DTE_MAX, now });
-    const msPrice = await fetchAssetPrice(TICKER).catch(() => null);
-    spot = msPrice ?? chain.spot ?? 0;
-    if (!(spot > 0)) {
-      log(`Sin precio en vivo de ${TICKER} ahora mismo.`);
-      return;
-    }
-
-    const allExpirations = [...new Set(chain.contracts.map((c) => c.expiration))];
-    const nearExpirations = selectWeeklyExpirations(allExpirations, now);
-    if (nearExpirations.length === 0) {
-      log(`Sin vencimientos de ${TICKER} disponibles ahora mismo.`);
-      return;
-    }
-    const nearExpirationSet = new Set(nearExpirations);
-    const nearRows = chain.contracts.filter((c) => nearExpirationSet.has(c.expiration));
-    const strikeSet = new Set<number>();
-    const symbolsByStrikeType = new Map<string, string[]>();
-    for (const c of nearRows) {
-      strikeSet.add(c.strike);
-      const cleanSymbol = c.optionTicker.startsWith("O:") ? c.optionTicker.slice(2) : c.optionTicker;
-      const key = `${c.strike}|${c.contractType}`;
-      const arr = symbolsByStrikeType.get(key);
-      if (arr) arr.push(cleanSymbol); else symbolsByStrikeType.set(key, [cleanSymbol]);
-    }
-    const strikes = [...strikeSet];
-    const above = strikes.filter((s) => s > spot).sort((a, b) => a - b).slice(0, NEIGHBOR_COUNT);
-    const below = strikes.filter((s) => s < spot).sort((a, b) => b - a).slice(0, NEIGHBOR_COUNT);
-    const callSymbols = (s: number) => symbolsByStrikeType.get(`${s}|call`) ?? [];
-    const putSymbols = (s: number) => symbolsByStrikeType.get(`${s}|put`) ?? [];
-    const activityGroups = new Map<string, string[]>();
-    for (const s of [...above, ...below]) {
-      const cs = callSymbols(s);
-      const ps = putSymbols(s);
-      if (cs.length > 0) activityGroups.set(`${s}|call`, cs);
-      if (ps.length > 0) activityGroups.set(`${s}|put`, ps);
-    }
-    const activityByKey = await fetchContractActivitySummariesGrouped(activityGroups);
-
-    aboveLevels = above
-      .map((strike): ActivityLevel | null => {
-        const activity = activityByKey.get(`${strike}|call`);
-        if (!activity) return null;
-        const otherActivity = activityByKey.get(`${strike}|put`) ?? null;
-        return { strike, type: "call", activity, otherActivity };
-      })
-      .filter((l): l is ActivityLevel => l != null);
-    belowLevels = below
-      .map((strike): ActivityLevel | null => {
-        const activity = activityByKey.get(`${strike}|put`);
-        if (!activity) return null;
-        const otherActivity = activityByKey.get(`${strike}|call`) ?? null;
-        return { strike, type: "put", activity, otherActivity };
-      })
-      .filter((l): l is ActivityLevel => l != null);
+  // Resolución del vecindario (spot + niveles) extraída a
+  // lib/liveTickerActivity.ts — reusada también por scripts/telegram-qa/poll.ts.
+  const result = await fetchLiveActivityLevels(TICKER, now);
+  if (!result) {
+    log(`Sin datos en vivo de ${TICKER} ahora mismo (cadena o precio no disponible).`);
+    return;
   }
+  const { spot, above: aboveLevels, below: belowLevels } = result;
+  // GEX real (pedido explícito de Carlos, 2026-08-27: "quiero entradas más
+  // grandes... puedes usar el GEX de MarketSnack") — solo informativo, no
+  // cambia la señal todavía.
+  const gex = await fetchGexContext(TICKER).catch(() => null);
 
   const signal = contratosVecinos3Signal({ spot, above: aboveLevels, below: belowLevels });
   const orderBook = orderBookSentiment({ spot, above: aboveLevels, below: belowLevels });
@@ -258,6 +145,10 @@ async function main() {
           : `Candidato a punto máximo (sin confirmar del todo): $${persistent.capCandidate.strike}`);
       }
       lines.push(`Order book: ${orderBook.message}`);
+      if (gex) {
+        const { formatGexNote } = await import("../../lib/liveTickerActivity");
+        lines.push(formatGexNote(gex, persistent.type!, spot, persistent.target1!.strike));
+      }
       lines.push("", persistent.reason);
       await sendTelegram(lines.join("\n"));
     }
