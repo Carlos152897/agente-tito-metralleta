@@ -743,11 +743,13 @@ async function fetchIndexTastytrade(
   if (!streamerAlive) return null; // stream caído (proceso no corre) → REST
 
   // El vencimiento REAL que está mirando el streamer (viene de la cadena que
-  // pidió tastytrade) — puede no ser la fecha de HOY: un fin de semana, la
-  // próxima expiración listada es la del próximo día hábil (ej. domingo →
-  // lunes), y ese caso NO es "0DTE de hoy" aunque el streamer siga vivo.
+  // pidió tastytrade) — solo para MOSTRARLO bien (un fin de semana, la
+  // próxima expiración listada es la del próximo día hábil, ej. domingo →
+  // lunes). `isToday` sigue siendo "es la fecha que estás viendo" (ya
+  // garantizado arriba) — igual que el standalone: las tarjetas de "Mejor
+  // trade"/"GEX Ticket" se siguen mostrando con "mercado cerrado", no se
+  // esconden solo porque el streamer está mirando el próximo vencimiento.
   const expReal = acc.exp || day;
-  const isTodayReal = expReal === today;
 
   const rows = bucketsToRows(acc.buckets, expReal, ticker);
   if (rows.length === 0) return null; // sin cadena utilizable → REST
@@ -765,7 +767,7 @@ async function fetchIndexTastytrade(
   const totals = netAggressorTotals(acc);
   const netAggressorSign = totals.enough ? Math.sign(totals.net) : 0;
 
-  return buildResult(ticker, expReal, isTodayReal, rows, spot, false, rows.length, realtimeAgeSec, now, calibShiftPct, netAggressorSign);
+  return buildResult(ticker, expReal, true, rows, spot, false, rows.length, realtimeAgeSec, now, calibShiftPct, netAggressorSign);
 }
 
 /**
