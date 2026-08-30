@@ -56,7 +56,7 @@ export async function GET(request: Request) {
       } else {
         const min = etMinutes(new Date());
         const base = {
-          spot: result.spot ?? 0, magnet: result.gex.kingStrike, regime: result.gex.regime,
+          spot: result.spot ?? 0, magnet: result.gex.kingStrike, maxPain: null, regime: result.gex.regime,
           estimate: 0, rangeLow: 0, rangeHigh: 0, sigma: 0, minutesLeft: 0,
         };
         if (min >= OPEN_MIN && min < CLOSE_MIN) {

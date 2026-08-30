@@ -16,12 +16,12 @@ const KEY_TAB = "visionary.pruebaDeFuego.tab";
 
 type Tab = "TSLA" | "SPX" | "SPX_VECINOS" | "SPX_0DTE" | "VECINOS_2" | "VECINOS_3" | "buscar" | "GRANDES";
 
-// TSLA/SPX/SPX_VECINOS/SPX_0DTE: pedido explícito de Carlos (ago 2026) —
+// TSLA/SPX/SPX_VECINOS/SPX_0DTE/VECINOS_2/VECINOS_3: pedido explícito de Carlos (ago 2026) —
 // sacadas de la navegación visible, NO borradas. El componente, la ruta y el
 // `case` de render siguen intactos más abajo a propósito, por si hace falta
 // traerlas de vuelta: para eso alcanza con volver a agregar el `<button>`
 // correspondiente al array de abajo.
-const VISIBLE_TABS: Tab[] = ["VECINOS_2", "VECINOS_3", "buscar", "GRANDES"];
+const VISIBLE_TABS: Tab[] = ["SPX_0DTE", "buscar", "GRANDES"];
 const DEFAULT_TAB: Tab = "GRANDES";
 
 export default function PruebaDeFuegoPage() {
@@ -50,11 +50,8 @@ export default function PruebaDeFuegoPage() {
       <div className="ideas-body">
         <div className="view-toggle-row">
           <div className="view-toggle">
-            <button className={tab === "VECINOS_2" ? "active" : ""} onClick={() => pickTab("VECINOS_2")}>
-              Contratos vecinos 2.0
-            </button>
-            <button className={tab === "VECINOS_3" ? "active" : ""} onClick={() => pickTab("VECINOS_3")}>
-              Contratos 3.0
+            <button className={tab === "SPX_0DTE" ? "active" : ""} onClick={() => pickTab("SPX_0DTE")}>
+              Agente ODTE
             </button>
             <button className={tab === "buscar" ? "active" : ""} onClick={() => pickTab("buscar")}>
               Búsqueda de contratos

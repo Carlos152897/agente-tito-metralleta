@@ -12,12 +12,15 @@
 import { marketDateStr } from "./occ";
 import { expectedMove, probTouch } from "./expectedMove";
 import { bsCharm, bsVanna, chainIV, MAX_SANE_IV } from "./zerodteGex";
-import { evaluateEntry, noSetupReason, riskReward, type EntryDecision } from "./zerodteStrategy";
+import {
+  DEFAULT_PARAMS, dynamicParams, evaluateEntry, noSetupReason, riskReward, type EntryDecision,
+} from "./zerodteStrategy";
 import { fetchZeroDteChain } from "./tastytradeChain";
 import type { ContractType, ZRow } from "./zerodteTypes";
-import { loadFlow, netAggressorTotals, overlayRealtime } from "./zerodteFlow";
+import { bucketsToRows, loadFlow, netAggressorTotals, overlayRealtime, type FlowAccumulator } from "./zerodteFlow";
 import { INDEX_UNDERLYINGS } from "./zerodteTickers";
 import { buildSuggestions, type ZeroDteSuggestions } from "./zerodteSuggestions";
+import { isNativeFuture, loadNativeFuture, nativeFresh, rowsFromBuckets } from "./futuresNative";
 
 /** Cuántos strikes se toman de cada lado. */
 export const TOP_N = 10;
@@ -217,38 +220,51 @@ export function zeroDteGex(rows: ZRow[], spot: number, nearPct: number = GEX_NEA
   const raw = [...byStrike.entries()]
     .map(([strike, g]) => ({
       strike, netGex: g.callGex - g.putGex, callGex: g.callGex, putGex: g.putGex,
-      total: g.callGex + g.putGex,
     }))
     .sort((a, b) => a.strike - b.strike);
 
-  const maxTotal = Math.max(...raw.map((r) => r.total), 0);
+  // Concentración por |NET GEX| (estándar del "gamma wall/magnet": la barra NETA
+  // más grande), NO por gamma total (call+put) — con total el imán no coincidía
+  // con las barras del chart ni con referencias externas (GammaFlow/MenthorQ).
+  const maxAbsNet = Math.max(...raw.map((r) => Math.abs(r.netGex)), 0);
   const nodes: ZeroDteGexNode[] = raw.map((r) => ({
     strike: r.strike, netGex: r.netGex, callGex: r.callGex, putGex: r.putGex,
     side: (r.netGex >= 0 ? "call" : "put") as "call" | "put",
-    concentration: maxTotal > 0 ? r.total / maxTotal : 0,
+    concentration: maxAbsNet > 0 ? Math.abs(r.netGex) / maxAbsNet : 0,
   }));
 
   const king = nodes.reduce((a, b) => (b.concentration > a.concentration ? b : a));
 
+  // Gamma flip (frontera de régimen): el strike donde el netGex POR STRIKE cambia
+  // de signo, interpolado entre los dos strikes y tomando el cruce más CERCANO al
+  // spot — más robusto que el cruce del ACUMULADO (que en un total muy sesgado
+  // puede no cruzar cerca del spot y dar un flip lejano/espurio).
   let flipStrike: number | null = null;
-  let acc = 0;
-  let prev = 0;
-  for (const nd of raw) {
-    prev = acc;
-    acc += nd.netGex;
-    if (prev !== 0 && Math.sign(acc) !== Math.sign(prev)) {
-      flipStrike = nd.strike;
-      break;
+  let bestDist = Infinity;
+  for (let i = 1; i < raw.length; i++) {
+    const a = raw[i - 1], b = raw[i];
+    if (a.netGex !== 0 && Math.sign(b.netGex) !== Math.sign(a.netGex)) {
+      const span = Math.abs(a.netGex) + Math.abs(b.netGex);
+      const cross = span > 0 ? a.strike + (b.strike - a.strike) * (Math.abs(a.netGex) / span) : b.strike;
+      const dist = Math.abs(cross - spot);
+      if (dist < bestDist) { bestDist = dist; flipStrike = cross; }
     }
   }
 
   const totalNetGex = raw.reduce((s, r) => s + r.netGex, 0);
 
+  // Régimen = posición del SPOT respecto al flip (la frontera que importa para
+  // operar): arriba del flip = γ+ (ancla/pin); abajo = γ− (acelera). Más accionable
+  // que el signo del total, que puede ser + aunque el precio ya esté bajo el flip.
+  const regime: "positive" | "negative" = flipStrike != null
+    ? (spot >= flipStrike ? "positive" : "negative")
+    : (totalNetGex >= 0 ? "positive" : "negative");
+
   return {
     nodes: [...nodes].sort((a, b) => b.concentration - a.concentration),
     kingStrike: king.strike,
     flipStrike,
-    regime: totalNetGex >= 0 ? "positive" : "negative",
+    regime,
     totalNetGex,
     realGammaShare: considered > 0 ? withRealGamma / considered : 0,
     n: byStrike.size,
@@ -390,6 +406,9 @@ export interface ClosingForecast {
   minutesLeft: number;
   spot: number;
   magnet: number | null;
+  /** Max Pain (strike de menor valor intrínseco para los holders). Predictor de
+   *  cierre clásico, complementario al imán de gamma. null si no hay OI. */
+  maxPain: number | null;
   regime: "positive" | "negative";
   estimate: number;
   strike: number | null;
@@ -401,9 +420,50 @@ export interface ClosingForecast {
   fromDate?: string;
 }
 
+/**
+ * Max Pain: el precio de cierre donde el valor INTRÍNSECO total de las opciones en
+ * manos de los holders es MÍNIMO (los holders pierden lo más posible; los vendedores
+ * netos —los dealers— ganan). El precio tiende a gravitar ahí en la expiración. Es el
+ * predictor de cierre CLÁSICO, complementario al imán de gamma: el imán mide el
+ * hedging de los dealers; el Max Pain mide el OI intrínseco. PURA.
+ *
+ * Para cada precio candidato P (los strikes): Σ_K max(0,P−K)·callOI + max(0,K−P)·putOI.
+ * El argmin es el Max Pain. Ventana ±nearPct del spot (el cierre no se aleja hoy; un
+ * muro de OI lejano no fija el cierre de la sesión).
+ */
+export function maxPainStrike(rows: ZRow[], spot: number, nearPct: number = GEX_NEAR_PCT): number | null {
+  if (!(spot > 0) || rows.length === 0) return null;
+  const lo = spot * (1 - nearPct);
+  const hi = spot * (1 + nearPct);
+  const byK = new Map<number, { c: number; p: number }>();
+  for (const r of rows) {
+    if (r.strike < lo || r.strike > hi) continue;
+    const oi = r.openInterest;
+    if (!(oi > 0)) continue;
+    const e = byK.get(r.strike) ?? { c: 0, p: 0 };
+    if (r.contractType === "call") e.c += oi;
+    else e.p += oi;
+    byK.set(r.strike, e);
+  }
+  if (byK.size === 0) return null;
+
+  let best: number | null = null;
+  let bestPain = Infinity;
+  for (const P of byK.keys()) {
+    let pain = 0;
+    for (const [K, e] of byK) {
+      if (P > K) pain += (P - K) * e.c;
+      else if (P < K) pain += (K - P) * e.p;
+    }
+    if (pain < bestPain) { bestPain = pain; best = P; }
+  }
+  return best;
+}
+
 /** Pronóstico del strike de cierre a las 4:00pm ET. Solo activo 3-4pm. PURA. */
 export function closingForecast(
   spot: number, iv: number | null, gex: ZeroDteGex, now: Date = new Date(), strikeStep = 5,
+  maxPain: number | null = null,
 ): ClosingForecast | null {
   if (!(spot > 0) || iv == null || !(iv > 0)) return null;
 
@@ -431,14 +491,26 @@ export function closingForecast(
   else if (minutesLeft <= 15) confidence = "alta";
   else confidence = "media";
 
-  const note =
+  const baseNote =
     gex.regime === "positive" && magnet != null
       ? `Gamma positiva: los dealers tienden a anclar el cierre cerca de ${nfPts(magnet)}. Quedan ${minutesLeft.toFixed(0)} min y el margen de movimiento es +/-${sigma.toFixed(1)} pts.`
       : `Gamma negativa: sin efecto de anclaje fiable. El mejor estimado es el precio actual; un rompimiento puede alejarlo.`;
 
+  // Max Pain como segundo predictor. Si coincide con el imán de gamma (±1 strike) es
+  // CONFLUENCIA (dos métodos independientes de acuerdo → pin más firme); si diverge,
+  // se muestra el nivel para que el usuario lo tenga en cuenta. Solo tiene sentido la
+  // "confluencia" en γ+ (donde el imán ancla) — en γ− se muestra el nivel, neutro.
+  let mpNote = "";
+  if (maxPain != null) {
+    const confluye = gex.regime === "positive" && magnet != null && Math.abs(maxPain - magnet) <= strikeStep;
+    mpNote = confluye
+      ? ` Max Pain (OI) coincide en ${nfPts(maxPain)} → confluencia, pin más firme.`
+      : ` Max Pain (OI) en ${nfPts(maxPain)}.`;
+  }
+
   return {
-    phase: "live", minutesLeft, spot, magnet, regime: gex.regime, estimate, strike,
-    rangeLow, rangeHigh, sigma, confidence, note,
+    phase: "live", minutesLeft, spot, magnet, maxPain, regime: gex.regime, estimate, strike,
+    rangeLow, rangeHigh, sigma, confidence, note: baseNote + mpNote,
   };
 }
 
@@ -566,13 +638,186 @@ export interface ZeroDteResult {
   asOf: string;
 }
 
+// Antigüedad máxima (ms) del archivo del streamer de índice para tratarlo
+// como VIVO. Escribe cada ~10s; si supera esto, se cae a la cadena REST.
+const INDEX_STREAM_STALE_MS = 180_000;
+
+/**
+ * Deriva el spot del índice desde la cadena por PARIDAD PUT-CALL: en un strike
+ * K, forward = K + callMid − putMid; para 0DTE (T≈0) forward ≈ spot. Se usa el
+ * strike más ATM (donde |call − put| es mínimo → spreads estrechos, mid
+ * fiable), y se promedian los strikes contiguos para estabilizar. PURA. null
+ * si no hay call+put con quotes.
+ */
+function spotFromChain(rows: ZRow[]): number | null {
+  const byK = new Map<number, { c?: number; p?: number }>();
+  for (const r of rows) {
+    const mid = r.bid != null && r.ask != null ? (r.bid + r.ask) / 2 : null;
+    if (mid == null || !(mid > 0)) continue;
+    const e = byK.get(r.strike) ?? {};
+    if (r.contractType === "call") e.c = mid; else e.p = mid;
+    byK.set(r.strike, e);
+  }
+  const fwds = [...byK.entries()]
+    .filter(([, e]) => e.c != null && e.p != null)
+    .map(([K, e]) => ({ diff: Math.abs((e.c as number) - (e.p as number)), fwd: K + (e.c as number) - (e.p as number) }))
+    .sort((a, b) => a.diff - b.diff);
+  if (fwds.length === 0) return null;
+  const top = fwds.slice(0, 3).map((x) => x.fwd).sort((a, b) => a - b);
+  const spot = top[Math.floor(top.length / 2)];
+  return spot > 0 ? spot : null;
+}
+
+/** Arma el ZeroDteResult a partir de una cadena YA RESUELTA (rows + spot), sin
+ *  volver a pedir nada — comparten esto la ruta Tastytrade (streamer) y la
+ *  ruta REST (tastytradeChain), para no duplicar el cálculo de GEX/pronóstico. */
+function buildResult(
+  ticker: string, day: string, isToday: boolean, rows: ZRow[], spot: number | null,
+  delayed: boolean, realtimeStrikes: number, realtimeAgeSec: number | null,
+  now: Date, calibShiftPct: number, netAggressorSign: number,
+): ZeroDteResult {
+  const lines = buildChainTable(rows);
+  const iv = spot != null ? (atmIV(rows, spot) ?? chainIV(rows, spot)) : null;
+  const gex = zeroDteGex(rows, spot ?? 0);
+  const flow = dealerFlow(rows, spot ?? 0, iv, hoursToClose(now));
+  const maxPain = isToday && spot != null ? maxPainStrike(rows, spot) : null;
+
+  const sigmaClose = isToday && spot != null && iv != null && iv > 0
+    ? expectedMove(spot, iv, hoursToClose(now) / 24).sigma : null;
+  const entryParams = spot != null ? dynamicParams(spot, sigmaClose, ticker) : DEFAULT_PARAMS;
+  const entry = isToday && spot != null
+    ? evaluateEntry(spot, gex.regime, gex.kingStrike, gex.flipStrike, entryParams)
+    : null;
+
+  const suggestions = isToday && spot != null
+    ? buildSuggestions(rows, spot, iv, hoursToClose(now), entry, netAggressorSign)
+    : null;
+
+  return {
+    ticker: ticker.toUpperCase(),
+    expiration: day,
+    isToday,
+    spot,
+    delayed,
+    contractCount: rows.length,
+    realtimeStrikes,
+    realtimeAgeSec,
+    lines,
+    summary: summarize(rows),
+    forecast: isToday ? buildForecast(spot ?? 0, iv, lines, now, calibShiftPct) : null,
+    outlook: isToday ? shortTermOutlook(spot ?? 0, iv, gex, 5, flow) : null,
+    dealerFlow: isToday ? flow : null,
+    closing: isToday ? closingForecast(spot ?? 0, iv, gex, now, 5, maxPain) : null,
+    gex,
+    entry,
+    entryRR: entry ? riskReward(entry) : null,
+    noSetup: isToday && !entry && spot != null ? noSetupReason(spot, gex.regime, gex.kingStrike, entryParams) : null,
+    suggestions,
+    asOf: now.toISOString(),
+  };
+}
+
+/**
+ * Análisis 0DTE de un ÍNDICE/ETF (SPX, SPY, QQQ) con TASTYTRADE como fuente
+ * PRIMARIA — porte fiel del motor del proyecto standalone Agente 0DTE: lee
+ * los buckets que streamea el streamer de índice (streamer/tastytrade-stream.mjs
+ * para SPX, streamer/tastytrade-index-stream.mjs para SPY/QQQ, ambos escriben
+ * data/0dte/<TICKER>-<fecha>.json) — OI, griegos, volumen, agresor y quotes
+ * reales por strike, EN VIVO.
+ *
+ * Si el stream está caído/viejo, no trae spot, o la fecha no es hoy, devuelve
+ * null y el llamador cae a la cadena REST (tastytradeChain.ts) — así el
+ * dashboard nunca queda vacío.
+ */
+async function fetchIndexTastytrade(
+  ticker: string, now: Date, targetDate: string | undefined, calibShiftPct: number,
+): Promise<ZeroDteResult | null> {
+  const today = etDate(now);
+  const day = targetDate && /^\d{4}-\d{2}-\d{2}$/.test(targetDate) ? targetDate : today;
+  if (day !== today) return null; // el streamer solo tiene hoy → REST para otras fechas
+
+  const acc = (await loadFlow(ticker, day).catch(() => null)) as (FlowAccumulator & { spot?: number | null; exp?: string | null }) | null;
+  if (!acc) return null;
+  const ts = Date.parse(acc.updatedAt ?? "");
+  const streamerAlive = Number.isFinite(ts) && now.getTime() - ts < INDEX_STREAM_STALE_MS;
+  if (!streamerAlive) return null; // stream caído (proceso no corre) → REST
+
+  // El vencimiento REAL que está mirando el streamer (viene de la cadena que
+  // pidió tastytrade) — puede no ser la fecha de HOY: un fin de semana, la
+  // próxima expiración listada es la del próximo día hábil (ej. domingo →
+  // lunes), y ese caso NO es "0DTE de hoy" aunque el streamer siga vivo.
+  const expReal = acc.exp || day;
+  const isTodayReal = expReal === today;
+
+  const rows = bucketsToRows(acc.buckets, expReal, ticker);
+  if (rows.length === 0) return null; // sin cadena utilizable → REST
+
+  // Spot: del stream si lo trae (SPY/QQQ escriben el quote del ETF); si no
+  // (SPX, sin streamer-symbol propio en DXFeed), se DERIVA de la cadena por
+  // paridad put-call. Si ni así hay spot → REST.
+  const spot = (typeof acc.spot === "number" && acc.spot > 0 ? acc.spot : null) ?? spotFromChain(rows);
+  if (spot == null) return null;
+
+  let newestTs = 0;
+  for (const b of Object.values(acc.buckets)) if (b && b.ts > newestTs) newestTs = b.ts;
+  const realtimeAgeSec = newestTs > 0 ? Math.max(0, Math.round((now.getTime() - newestTs) / 1000)) : null;
+
+  const totals = netAggressorTotals(acc);
+  const netAggressorSign = totals.enough ? Math.sign(totals.net) : 0;
+
+  return buildResult(ticker, expReal, isTodayReal, rows, spot, false, rows.length, realtimeAgeSec, now, calibShiftPct, netAggressorSign);
+}
+
+/**
+ * Análisis 0DTE de un FUTURO NATIVO (/ES, /NQ). Lee la cadena que streamea
+ * Tastytrade (streamer/tastytrade-futures-stream.mjs, data/tastytrade-fut/…):
+ * OI, griegos, volumen, agresor y quotes reales por strike, con spot = precio
+ * del futuro. Reutiliza el mismo pipeline que la ruta índice.
+ *
+ * Si el streamer no tiene archivo (caído / fuera de horario), degrada suave:
+ * cadena vacía → GEX vacío, paneles sin dato (no rompe la página). Sin
+ * respaldo a otro motor a propósito — pedido explícito de Carlos.
+ */
+async function fetchNativeFuture(
+  ticker: string, now: Date, targetDate: string | undefined, calibShiftPct: number,
+): Promise<ZeroDteResult> {
+  const future = ticker.trim().toUpperCase();
+  const today = etDate(now);
+  const day = targetDate && /^\d{4}-\d{2}-\d{2}$/.test(targetDate) ? targetDate : today;
+  const isToday = day === today;
+
+  const nf = await loadNativeFuture(future, day);
+  const fresh = isToday && nativeFresh(nf, now.getTime());
+  if (!fresh || !nf) {
+    return buildResult(future, day, isToday, [], null, false, 0, null, now, calibShiftPct, 0);
+  }
+
+  const exp = nf.exp ?? day;
+  const rows = rowsFromBuckets(nf.acc.buckets, exp, future);
+  const spot = nf.spot ?? null;
+  const realtimeAgeSec = nf.newestTs > 0 ? Math.max(0, Math.round((now.getTime() - nf.newestTs) / 1000)) : null;
+
+  return buildResult(future, exp, isToday, rows, spot, false, rows.length, realtimeAgeSec, now, calibShiftPct, 0);
+}
+
 /**
  * Descarga la cadena de UN vencimiento (por defecto hoy) y devuelve la tabla
- * ya ordenada, con GEX, panorama y escenarios. Solo SPX.
+ * ya ordenada, con GEX, panorama y escenarios.
+ *
+ * FUENTE PRIMARIA = Tastytrade (streamers en vivo, ver fetchIndexTastytrade /
+ * fetchNativeFuture). FUENTE ALTERNA (solo índice/ETF) = REST vía
+ * tastytradeChain.ts, con la foto del acumulador (si existe) superpuesta.
  */
 export async function fetchZeroDte(
   ticker: string, now: Date = new Date(), targetDate?: string, calibShiftPct = 0,
 ): Promise<ZeroDteResult> {
+  if (isNativeFuture(ticker)) {
+    return fetchNativeFuture(ticker, now, targetDate, calibShiftPct);
+  }
+
+  const idx = await fetchIndexTastytrade(ticker, now, targetDate, calibShiftPct);
+  if (idx) return idx;
+
   const symbol = toSchwabSymbol(ticker);
   const today = etDate(now);
   const day = targetDate && /^\d{4}-\d{2}-\d{2}$/.test(targetDate) ? targetDate : today;
@@ -580,8 +825,9 @@ export async function fetchZeroDte(
 
   const parsed = await fetchZeroDteChain(symbol, day);
 
-  // Superpone la foto EN TIEMPO REAL de MarketSnack sobre la cadena de Schwab
-  // (que llega con retraso). Solo para el vencimiento de hoy.
+  // Superpone la foto del acumulador (el streamer, si sigue escribiendo pero
+  // quedó justo fuera de la ventana "fresca") sobre la cadena REST. Solo para
+  // el vencimiento de hoy.
   let rows = parsed.rows;
   let realtimeStrikes = 0;
   let realtimeAgeSec: number | null = null;
@@ -598,41 +844,8 @@ export async function fetchZeroDte(
     }
   }
 
-  const lines = buildChainTable(rows);
-
-  const spot = parsed.underlyingPrice;
-  const iv = spot != null ? (atmIV(rows, spot) ?? chainIV(rows, spot)) : null;
-  const gex = zeroDteGex(rows, spot ?? 0);
-  const flow = dealerFlow(rows, spot ?? 0, iv, hoursToClose(now));
-
-  const entry = isToday && spot != null
-    ? evaluateEntry(spot, gex.regime, gex.kingStrike, gex.flipStrike)
-    : null;
-
-  const suggestions = isToday && spot != null
-    ? buildSuggestions(rows, spot, iv, hoursToClose(now), entry, netAggressorSign)
-    : null;
-
-  return {
-    ticker: ticker.toUpperCase(),
-    expiration: day,
-    isToday,
-    spot: parsed.underlyingPrice,
-    delayed: parsed.delayed,
-    contractCount: rows.length,
-    realtimeStrikes,
-    realtimeAgeSec,
-    lines,
-    summary: summarize(rows),
-    forecast: isToday ? buildForecast(spot ?? 0, iv, lines, now, calibShiftPct) : null,
-    outlook: isToday ? shortTermOutlook(spot ?? 0, iv, gex, 5, flow) : null,
-    dealerFlow: isToday ? flow : null,
-    closing: isToday ? closingForecast(spot ?? 0, iv, gex, now) : null,
-    gex,
-    entry,
-    entryRR: entry ? riskReward(entry) : null,
-    noSetup: isToday && !entry && spot != null ? noSetupReason(spot, gex.regime, gex.kingStrike) : null,
-    suggestions,
-    asOf: now.toISOString(),
-  };
+  return buildResult(
+    ticker, day, isToday, rows, parsed.underlyingPrice, parsed.delayed,
+    realtimeStrikes, realtimeAgeSec, now, calibShiftPct, netAggressorSign,
+  );
 }

@@ -8,21 +8,64 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChainLine, ZeroDteResult } from "@/lib/zerodte";
-import type { AggressorRead, NetAggressorTotals, VolumeVelocity } from "@/lib/zerodteFlow";
+import type { AggressorRead, ClassifiedFlow, NetAggressorTotals, VolumeVelocity } from "@/lib/zerodteFlow";
 import type { ZeroDteSuggestions } from "@/lib/zerodteSuggestions";
-import { DEFAULT_PARAMS, evaluateEntry, noSetupReason, riskReward } from "@/lib/zerodteStrategy";
+import {
+  DEFAULT_PARAMS, dynamicParams, evaluateEntry, gateEntry, noSetupReason, riskReward,
+  type EntryDecision, type FlowCtx,
+} from "@/lib/zerodteStrategy";
+import {
+  altOutlook, altTradeState, despinEstimate, flowWeight, gammaWalls, momentumEntry,
+  type AltFlowCtx, type Lean as AltLean,
+} from "@/lib/zerodteAlt";
+import { pickTicket, TICKET_DEFAULTS, type Ticket, type TicketChainRow } from "@/lib/zerodteTicket";
+import type { TopTrade } from "@/lib/zerodteStream";
+import { unpinRead, type UnpinRead } from "@/lib/zerodteUnpin";
+import { isFuturesMarketOpen, isMarketOpen } from "@/lib/marketHours";
 import { ZERO_DTE_TICKERS, DEFAULT_ZERO_DTE_TICKER, type ZeroDteTickerId } from "@/lib/zerodteTickers";
 import ZeroDteChart from "@/app/components/ZeroDteChart";
+
+interface AltEvalState {
+  n: number; origRate: number | null; altRate: number | null;
+  bothActive: number; altBetterWhenActive: number;
+}
+interface TradeEvalState {
+  origResolved: number; origWins: number; origRate: number | null;
+  altResolved: number; altWins: number; altRate: number | null;
+  differed: number; differedWon: number;
+}
 
 const KEY_TICKER = "visionary.zeroDte.ticker";
 
 interface FlowState {
   cycles: number;
   contracts: number;
+  updatedAt?: string;
   reads: Record<string, AggressorRead>;
   netAggressor?: NetAggressorTotals;
   velocity?: VolumeVelocity;
+  classified?: ClassifiedFlow;
+  topTrades?: TopTrade[];
   error?: string;
+}
+
+/** Streamer vivo = escribió el acumulador hace poco — SIN importar si hubo
+ *  trades nuevos (puede estar conectado y al día sin que nadie haya operado
+ *  todavía, ej. fin de semana). Umbral generoso vs. el ciclo de 10s del
+ *  streamer para tolerar reconexiones. */
+const STREAM_ALIVE_MS = 3 * 60 * 1000;
+function streamAliveNow(flow: FlowState | null): boolean {
+  if (!flow?.updatedAt) return false;
+  const ts = Date.parse(flow.updatedAt);
+  return Number.isFinite(ts) && Date.now() - ts < STREAM_ALIVE_MS;
+}
+
+const KEY_MOC = "visionary.zeroDte.moc";
+
+function etTodayForMoc(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date());
 }
 
 interface EvalState {
@@ -84,17 +127,27 @@ function dayLabel(date: string, i: number): string {
   return `${WEEKDAYS[wd]} ${Number(date.slice(8, 10))}`;
 }
 
-function marketOpenNow(): boolean {
+/** Sesión abierta AHORA para el ticker dado: CME (~23h) para /ES y /NQ,
+ *  RTH 9:30-16:00 ET para el resto. */
+function marketOpenNow(ticker: ZeroDteTickerId = "SPX"): boolean {
+  const nativeFuture = ZERO_DTE_TICKERS.find((t) => t.id === ticker)?.nativeFuture;
+  return nativeFuture ? isFuturesMarketOpen() : isMarketOpen();
+}
+
+function sessionWindowLabel(ticker: ZeroDteTickerId): string {
+  const nativeFuture = ZERO_DTE_TICKERS.find((t) => t.id === ticker)?.nativeFuture;
+  return nativeFuture ? "domingo 6pm a viernes 5pm ET, CME" : "9:30-16:00 ET";
+}
+
+function etNowParts(): { min: number; isWeekday: boolean } {
   const now = new Date();
   const wd = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short" }).format(now);
-  if (wd === "Sat" || wd === "Sun") return false;
   const p = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hour12: false,
   }).formatToParts(now);
   const h = Number(p.find((x) => x.type === "hour")?.value ?? 0) % 24;
   const m = Number(p.find((x) => x.type === "minute")?.value ?? 0);
-  const min = h * 60 + m;
-  return min >= 570 && min < 960;
+  return { min: h * 60 + m, isWeekday: wd !== "Sat" && wd !== "Sun" };
 }
 function etClock(): string {
   return new Date().toLocaleTimeString("en-US", { timeZone: "America/New_York", hour12: false });
@@ -111,11 +164,29 @@ export default function AgenteOdteTab() {
   const [days] = useState<string[]>(() => expirationDays(5));
   const [selDate, setSelDate] = useState<string>(() => etTodayStr());
   const [selTicker, setSelTicker] = useState<ZeroDteTickerId>(DEFAULT_ZERO_DTE_TICKER);
+  // MOC manual (el usuario pega el imbalance del tweet ~3:50pm). Solo cliente,
+  // se resetea solo (por fecha ET) para no arrastrar el dato de ayer.
+  const [mocVal, setMocVal] = useState<string>("");
+  const [mocSide, setMocSide] = useState<"buy" | "sell" | null>(null);
 
   useEffect(() => {
     const saved = window.localStorage.getItem(KEY_TICKER);
     if (saved && ZERO_DTE_TICKERS.some((t) => t.id === saved)) setSelTicker(saved as ZeroDteTickerId);
+    try {
+      const raw = window.localStorage.getItem(KEY_MOC);
+      if (raw) {
+        const m = JSON.parse(raw) as { val?: string; side?: "buy" | "sell" | null; date?: string };
+        if (m.date === etTodayForMoc()) { setMocVal(m.val ?? ""); setMocSide(m.side ?? null); }
+      }
+    } catch { /* noop */ }
   }, []);
+
+  const saveMoc = (val: string, side: "buy" | "sell" | null) => {
+    setMocVal(val); setMocSide(side);
+    try {
+      window.localStorage.setItem(KEY_MOC, JSON.stringify({ val, side, date: etTodayForMoc() }));
+    } catch { /* noop */ }
+  };
 
   const pickTicker = useCallback((id: ZeroDteTickerId) => {
     setSelTicker(id);
@@ -165,10 +236,243 @@ export default function AgenteOdteTab() {
     return () => clearInterval(id);
   }, [selDate, selTicker, load]);
 
+  // σ para los parámetros dinámicos: el de "hasta el cierre" (forecast) si está
+  // disponible; si no, el de la ventana de GEX Pinning (closing, solo 3-4pm).
+  const sigmaForParams = data?.forecast?.sigma ?? data?.closing?.sigma ?? null;
+  const strategyParams = useMemo(
+    () => (data?.spot != null ? dynamicParams(data.spot, sigmaForParams, selTicker) : DEFAULT_PARAMS),
+    [data?.spot, sigmaForParams, selTicker],
+  );
+
   const live = useMemo(() => {
     if (!data || !data.isToday || data.spot == null) return null;
-    return evaluateEntry(data.spot, data.gex.regime, data.gex.kingStrike, data.gex.flipStrike, DEFAULT_PARAMS);
-  }, [data]);
+    return evaluateEntry(data.spot, data.gex.regime, data.gex.kingStrike, data.gex.flipStrike, strategyParams);
+  }, [data, strategyParams]);
+
+  // --- 0DTE Live: contratos entrantes (solo si el streamer de Tastytrade está
+  // vivo — ver streamer/tastytrade-stream.mjs + lib/zerodteStream.ts). Igual
+  // que en el proyecto standalone: solo TAKERS (compra al ask / vende al bid);
+  // el mid es pasivo y se descarta de la señal.
+  const usd = (n: number) => (Math.abs(n) >= 1e6 ? `$${(n / 1e6).toFixed(1)}M` : Math.abs(n) >= 1e3 ? `$${Math.round(n / 1e3)}K` : `$${Math.round(n)}`);
+  const gexUsd = (n: number) => {
+    const s = n >= 0 ? "+" : "−"; const a = Math.abs(n);
+    return a >= 1e9 ? `${s}$${(a / 1e9).toFixed(1)}B` : a >= 1e6 ? `${s}$${(a / 1e6).toFixed(0)}M` : `${s}$${Math.round(a)}`;
+  };
+  const allTop = flow?.topTrades ?? [];
+  const takers = allTop.filter((t) => t.side === "buy" || t.side === "sell");
+  const discMid = allTop.length - takers.length;
+  const discClose = takers.filter((t) => !t.open).length;
+  const hasGamma = takers.some((t) => typeof t.gamma === "number" && Number.isFinite(t.gamma));
+  const impact = (t: TopTrade) => t.premium * (hasGamma ? Math.abs(Number(t.gamma) || 0) : 1);
+  const opensAgg = takers.filter((t) => t.open);
+  const sig = opensAgg.length ? opensAgg : takers;
+  let ttBull = 0, ttBear = 0, callPrem = 0, putPrem = 0;
+  for (const t of sig) {
+    const isBull = (t.type === "call" && t.side === "buy") || (t.type === "put" && t.side === "sell");
+    const isBear = (t.type === "put" && t.side === "buy") || (t.type === "call" && t.side === "sell");
+    if (isBull) ttBull += t.premium; else if (isBear) ttBear += t.premium;
+    if (t.type === "call") callPrem += t.premium; else putPrem += t.premium;
+  }
+  const ttTot = ttBull + ttBear;
+  const ttBiasPct = ttTot > 0 ? Math.round((ttBull / ttTot) * 100) : null;
+  const ttDir: "bull" | "bear" | "mixed" | "none" = ttBiasPct == null ? "none" : ttBiasPct >= 58 ? "bull" : ttBiasPct <= 42 ? "bear" : "mixed";
+  const ttDom: "call" | "put" = callPrem >= putPrem ? "call" : "put";
+  const ttSweeps = sig.filter((t) => t.sweep).length;
+  const rollMap = new Map<string, { strike: number; type: "call" | "put"; imp: number; prem: number; n: number }>();
+  for (const t of sig) {
+    const key = `${t.strike}:${t.type}`;
+    const r = rollMap.get(key) ?? { strike: t.strike, type: t.type, imp: 0, prem: 0, n: 0 };
+    r.imp += impact(t); r.prem += t.premium; r.n += 1;
+    rollMap.set(key, r);
+  }
+  const ttRollup = [...rollMap.values()].sort((a, b) => b.imp - a.imp).slice(0, 4);
+  const ttRollMax = ttRollup[0]?.imp ?? 1;
+  const impMaxRow = Math.max(1, ...takers.map(impact));
+  const scoreOf = (t: TopTrade) => Math.round((impact(t) / impMaxRow) * 100);
+  const ttFeed = [...takers].sort((a, b) => (b.sweep ? 1 : 0) - (a.sweep ? 1 : 0) || b.ts - a.ts).slice(0, 12);
+  const ttSlActive = allTop.some((t) => t.slKnown);
+  const ttMagnet = data?.gex?.kingStrike ?? null;
+  const ttNetGex = data?.gex?.totalNetGex ?? null;
+  const ttNetPos = (data?.gex?.regime ?? "positive") === "positive";
+  const domStrikes = ttRollup.filter((r) => r.type === ttDom).map((r) => r.strike).sort((a, b) => a - b);
+  const ttPile = domStrikes.length ? (domStrikes[0] === domStrikes[domStrikes.length - 1] ? `${domStrikes[0]}` : `${domStrikes[0]}–${domStrikes[domStrikes.length - 1]}`) : null;
+
+  // Marca "nuevo" en el tape: compara contra el ts más nuevo visto en el ciclo anterior.
+  const prevTopRef = useRef<{ ticker: string; newest: number } | null>(null);
+  const [newTopTs, setNewTopTs] = useState<Set<number>>(new Set());
+  useEffect(() => {
+    const newest = allTop.length ? Math.max(...allTop.map((t) => t.ts)) : 0;
+    const prev = prevTopRef.current;
+    setNewTopTs(!prev || prev.ticker !== selTicker ? new Set() : new Set(ttFeed.filter((t) => t.ts > prev!.newest).map((t) => t.ts)));
+    prevTopRef.current = { ticker: selTicker, newest };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flow, selTicker]);
+
+  // Contexto de flujo para el gate en vivo y la capa alterna. burstBull/burstBear
+  // usan el flujo REAL del streamer (premium $ de contratos entrantes) cuando está
+  // vivo; si no, caen al flujo clasificado acumulado de MarketSnack (ver nota de
+  // adaptación en lib/zerodteAlt.ts).
+  const altCtx: AltFlowCtx | null = useMemo(() => {
+    if (!data?.isToday || data.spot == null) return null;
+    const streamLive = allTop.length > 0;
+    return {
+      regime: data.gex.regime,
+      cvd: flow?.netAggressor?.net ?? null,
+      cvdDom: flow?.classified?.cvdDom ?? null,
+      velocity: flow?.velocity?.ratio ?? null,
+      burstBull: streamLive ? ttBull : (flow?.classified?.bull ?? 0),
+      burstBear: streamLive ? ttBear : (flow?.classified?.bear ?? 0),
+      netGex: data.gex.totalNetGex,
+      spot: data.spot,
+      magnet: data.gex.kingStrike,
+      sigma: sigmaForParams,
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, flow, sigmaForParams, ttBull, ttBear]);
+
+  const flowCtx: FlowCtx | null = altCtx && {
+    cvd: altCtx.cvd, velocity: altCtx.velocity, burstBull: altCtx.burstBull, burstBear: altCtx.burstBear, netGex: altCtx.netGex,
+  };
+
+  const gate = useMemo(
+    () => (live && flowCtx ? gateEntry(live, flowCtx, data?.gex.flipStrike ?? null, strategyParams) : null),
+    [live, flowCtx, data?.gex.flipStrike, strategyParams],
+  );
+
+  const walls = useMemo(
+    () => (data?.spot != null ? gammaWalls(data.gex.nodes, data.spot) : { callWall: null, putWall: null }),
+    [data?.gex.nodes, data?.spot],
+  );
+
+  const gexLean: AltLean = !data?.isToday ? "lateral"
+    : data.gex.regime === "negative" ? "lateral"
+    : live ? (live.direction === "long" ? "alcista" : "bajista") : "lateral";
+  const gexConf: "baja" | "media" = live && gate?.status === "ready" ? "media" : "baja";
+
+  const altOut = altCtx ? altOutlook(gexLean, gexConf, altCtx) : null;
+
+  const momentumTrade: EntryDecision | null = altCtx
+    ? momentumEntry(altCtx, walls.callWall, walls.putWall, data?.gex.flipStrike ?? null)
+    : null;
+
+  const altState = altCtx
+    ? altTradeState(altCtx, live, momentumTrade)
+    : null;
+
+  // Despin: si rompe el pin en la dirección del flujo, objetivo estimado
+  // (muro de gamma o spot ± 1σ). Mostrado en la tarjeta alterna de GEX Pinning
+  // cuando el flujo tiene lectura.
+  const despin = data?.closing && data.spot != null
+    ? despinEstimate(
+        data.spot, data.forecast?.sigma ?? data.closing.sigma, altOut?.flowLean ?? "lateral",
+        data.gex.regime, walls.callWall, walls.putWall,
+      )
+    : null;
+
+  // GEX Unpin — solo /ES y /NQ (siguen cotizando 4-5pm ET, cuando SPX/NDX ya
+  // cerraron). Se muestra SIEMPRE (como GEX Pinning): fuera de 3-5pm entra en
+  // "waiting" con preview del sesgo; se arma 3-4pm y se juega 4-5pm.
+  const isNativeFutureTicker = !!ZERO_DTE_TICKERS.find((t) => t.id === selTicker)?.nativeFuture;
+  const unpin: UnpinRead | null = isNativeFutureTicker && data?.spot != null
+    ? unpinRead({
+        spot: data.spot,
+        magnet: data.closing?.strike ?? data.gex.kingStrike ?? null,
+        burstBull: ttBull, burstBear: ttBear,
+        etMin: etNowParts().min, isWeekday: etNowParts().isWeekday,
+        sessionOpen: marketOpenNow(selTicker),
+        regime: data.gex.regime,
+      })
+    : null;
+
+  // --- GEX Ticket: traduce el trade activo a un CONTRATO concreto (stop/target
+  // en $, con delta+gamma). Fuente: γ+ → "Mejor trade ahora" LISTO; γ− → "Trade
+  // alterno" de momentum ya confirmado.
+  const ticketChain: TicketChainRow[] = useMemo(() => {
+    if (!data?.lines) return [];
+    return data.lines.flatMap((l) => {
+      const out: TicketChainRow[] = [];
+      const push = (r: typeof l.call, type: "call" | "put") => {
+        if (r) out.push({
+          strike: l.strike, type, bid: r.bid ?? null, ask: r.ask ?? null,
+          delta: r.greeks?.delta ?? null, gamma: r.greeks?.gamma ?? null, iv: r.greeks?.iv ?? null,
+          volume: r.volume, oi: r.openInterest,
+        });
+      };
+      push(l.call, "call"); push(l.put, "put");
+      return out;
+    });
+  }, [data?.lines]);
+  const ticketReg = gate?.status === "ready" && live ? live : null;
+  const ticketMom = !ticketReg && altState?.isMomentum && altState.trade ? altState.trade : null;
+  const ticketTrade = ticketReg ?? ticketMom;
+  const ticketIsMom = !!ticketMom;
+  const ticketIdxRR = ticketTrade ? riskReward(ticketTrade) : 0;
+  const ticket: Ticket | null = useMemo(
+    () => (ticketTrade && data?.spot != null ? pickTicket(ticketTrade, data.spot, ticketChain, TICKET_DEFAULTS) : null),
+    [ticketTrade, data?.spot, ticketChain],
+  );
+
+  // Registro comparativo (original vs alterna del "próximo tramo"). Se postea
+  // el snapshot actual una vez por minuto; el panel muestra la evaluación
+  // acumulada del día.
+  const altSnapRef = useRef<{ ticker: string; spot: number; ol: AltLean; al: AltLean; w: number } | null>(null);
+  const [altEval, setAltEval] = useState<AltEvalState | null>(null);
+  useEffect(() => {
+    const post = () => {
+      const s = altSnapRef.current;
+      if (!s) return;
+      fetch("/api/0dte/alt-log", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...s, sec: Math.floor(Date.now() / 1000) }),
+      }).catch(() => {});
+    };
+    post();
+    const id = setInterval(post, 60_000);
+    return () => clearInterval(id);
+  }, []);
+  useEffect(() => {
+    if (!data?.isToday) { setAltEval(null); return; }
+    fetch(`/api/0dte/alt-log?ticker=${encodeURIComponent(selTicker)}`).then((r) => r.json()).then(setAltEval).catch(() => {});
+  }, [data, selTicker]);
+
+  // Registro comparativo de TRADES (Mejor trade ahora vs Trade alterno). Mismo
+  // patrón: cada minuto se postea la señal activa de cada uno; el panel
+  // muestra el win-rate.
+  const tradeSnapRef = useRef<{
+    ticker: string; spot: number;
+    o: { d: "long" | "short"; tgt: number; stop: number } | null;
+    a: { d: "long" | "short"; tgt: number; stop: number; m: boolean } | null;
+  } | null>(null);
+  const [tradeEvalState, setTradeEvalState] = useState<TradeEvalState | null>(null);
+  useEffect(() => {
+    const post = () => {
+      const s = tradeSnapRef.current;
+      if (!s) return;
+      fetch("/api/0dte/trade-log", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...s, sec: Math.floor(Date.now() / 1000) }),
+      }).catch(() => {});
+    };
+    post();
+    const id = setInterval(post, 60_000);
+    return () => clearInterval(id);
+  }, []);
+  useEffect(() => {
+    if (!data?.isToday) { setTradeEvalState(null); return; }
+    fetch(`/api/0dte/trade-log?ticker=${encodeURIComponent(selTicker)}`).then((r) => r.json()).then(setTradeEvalState).catch(() => {});
+  }, [data, selTicker]);
+
+  const sessionOpenForLog = data?.isToday && marketOpenNow(selTicker);
+  altSnapRef.current = sessionOpenForLog && altOut && data?.spot != null
+    ? { ticker: selTicker, spot: data.spot, ol: gexLean, al: altOut.lean, w: altOut.w }
+    : null;
+  tradeSnapRef.current = sessionOpenForLog && data?.spot != null
+    ? {
+        ticker: selTicker, spot: data.spot,
+        o: ticketReg ? { d: ticketReg.direction, tgt: ticketReg.target, stop: ticketReg.stop } : null,
+        a: altState?.trade ? { d: altState.trade.direction, tgt: altState.trade.target, stop: altState.trade.stop, m: altState.isMomentum } : null,
+      }
+    : null;
 
   const prevDir = useRef<string | null>(null);
   const [justChanged, setJustChanged] = useState(false);
@@ -189,6 +493,8 @@ export default function AgenteOdteTab() {
   return (
     <div className="z-wrap">
       <style>{CSS}</style>
+
+      <div className="z-disclaimer">⚠️ Recordatorio: esto es solo informativo, NO es consejo de inversión.</div>
 
       <header className="z-head">
         <div>
@@ -264,15 +570,84 @@ export default function AgenteOdteTab() {
       )}
 
       {data?.isToday && (
+        <section className={`z-ticket ${ticket ? `z-ticket-${ticketTrade!.direction}` : "z-ticket-idle"}`}>
+          <header>
+            <h2>GEX Ticket</h2>
+            <span className="z-ticket-sub">contrato sugerido</span>
+            {ticket && (
+              <span className={`z-ticket-badge z-dir-${ticketTrade!.direction}`}>
+                {ticketTrade!.direction === "long" ? "COMPRAR CALL" : "COMPRAR PUT"}
+              </span>
+            )}
+          </header>
+          {!marketOpenNow(selTicker) ? (
+            <p className="z-live-msg">Mercado cerrado — sin contrato en vivo que sugerir.</p>
+          ) : ticketTrade && ticket ? (
+            <>
+              <p className="z-ticket-thesis">
+                {ticketIsMom ? "Momentum γ−: " : "Fade al imán γ+: "}
+                {ticketTrade.direction === "long" ? "▲ LONG" : "▼ SHORT"} hacia {ticketTrade.target.toFixed(0)}, stop {dec(ticketTrade.stop)}.
+              </p>
+              <div className="z-ticket-buy">
+                <span className="z-ticket-act">COMPRAR</span>
+                <span className="z-ticket-ctr">{selTicker} {ticket.strike} {ticket.type === "call" ? "C" : "P"}</span>
+                <span className="z-ticket-at">@ mid</span>
+                <span className="z-ticket-price">${ticket.mid.toFixed(2)}</span>
+                <span className="z-ticket-quote">bid {ticket.bid.toFixed(2)} / ask {ticket.ask.toFixed(2)}</span>
+              </div>
+              <div className="z-ticket-st">
+                <div className="z-ticket-box">
+                  <span className="z-ticket-k">Target</span>
+                  <span className="z-ticket-v z-ticket-tgt">${ticket.targetPx.toFixed(2)}</span>
+                  <span className="z-ticket-idx">índice en {ticketTrade.target.toFixed(0)} · <b className="z-ticket-up">+{(ticket.gainPct * 100).toFixed(0)}%</b></span>
+                </div>
+                <div className="z-ticket-box">
+                  <span className="z-ticket-k">Stop</span>
+                  <span className="z-ticket-v z-ticket-stp">${ticket.stopPx.toFixed(2)}</span>
+                  <span className="z-ticket-idx">índice en {dec(ticketTrade.stop)} · <b className="z-ticket-dn">−{(ticket.lossPct * 100).toFixed(0)}%</b></span>
+                </div>
+                <div className="z-ticket-box">
+                  <span className="z-ticket-k">R:B</span>
+                  <span className="z-ticket-v">{ticket.rbOption.toFixed(1)}</span>
+                  <span className="z-ticket-idx">vs {ticketIdxRR.toFixed(1)} del índice</span>
+                </div>
+              </div>
+              <div className="z-ticket-meta">
+                <span className="z-ticket-chip">Δ <b>{ticket.delta.toFixed(2)}</b></span>
+                <span className="z-ticket-chip">Γ <b>{ticket.gamma.toFixed(3)}</b></span>
+                {ticket.iv != null && <span className="z-ticket-chip">IV <b>{(ticket.iv * 100).toFixed(0)}%</b></span>}
+                <span className="z-ticket-chip">vol <b>{ticket.volume.toLocaleString()}</b></span>
+                <span className="z-ticket-chip">OI <b>{ticket.oi.toLocaleString()}</b></span>
+                <span className="z-ticket-chip">spread <b>{(ticket.spreadPct * 100).toFixed(1)}%</b></span>
+                <span className="z-ticket-chip">costo <b>${ticket.cost.toFixed(0)}</b></span>
+                <span className="z-ticket-chip">riesgo <b>${ticket.risk.toFixed(0)}</b>/ct</span>
+              </div>
+              <p className="z-ticket-foot">
+                Proyección lineal por delta+gamma, sin theta — la opción pierde valor con el
+                tiempo aunque el índice no se mueva. Verifica bid/ask reales antes de operar.
+              </p>
+            </>
+          ) : ticketTrade ? (
+            <p className="z-ticket-none">
+              Hay trade activo pero ningún contrato del top-20 por volumen pasa los filtros de
+              delta (0.40-0.60), liquidez o riesgo máximo.
+            </p>
+          ) : (
+            <p className="z-ticket-none">Sin trade listo ahora — sin contrato que sugerir.</p>
+          )}
+        </section>
+      )}
+
+      {data?.isToday && (
         <section className={`z-live ${live ? `z-live-${live.direction}` : "z-live-none"} ${justChanged ? "z-live-changed" : ""}`}>
           <header>
-            <h2>Mejor trade ahora</h2>
+            <h2>GEX Trade <span className="z-live-sub">— de vuelta al imán</span></h2>
             {justChanged && <span className="z-live-alert">⚡ el setup cambió</span>}
-            <span className="z-live-clock">{marketOpenNow() ? `en vivo · ${etClock()} ET` : "mercado cerrado"}</span>
+            <span className="z-live-clock">{marketOpenNow(selTicker) ? `en vivo · ${etClock()} ET` : "mercado cerrado"}</span>
           </header>
-          {!marketOpenNow() ? (
+          {!marketOpenNow(selTicker) ? (
             <p className="z-live-msg">
-              Fuera de sesión (9:30-16:00 ET). Durante el mercado abierto, el agente busca el mejor
+              Fuera de sesión ({sessionWindowLabel(selTicker)}). Durante el mercado abierto, el agente busca el mejor
               trade en vivo y lo actualiza cada minuto.
             </p>
           ) : live ? (
@@ -281,16 +656,21 @@ export default function AgenteOdteTab() {
                 <span className={`z-live-dir z-dir-${live.direction}`}>
                   {live.direction === "long" ? "▲ LONG" : "▼ SHORT"}
                 </span>
+                {gate && (
+                  <span className={`z-gate-pill z-gate-${gate.status}`}>
+                    {gate.status === "ready" ? "✓ LISTO" : "⏳ ESPERAR"}
+                  </span>
+                )}
                 <div><span className="z-sum-lbl">Entrada (ahora)</span><b>{dec(live.entry)}</b></div>
                 <div><span className="z-sum-lbl">Objetivo (imán)</span><b>{live.target}</b></div>
                 <div><span className="z-sum-lbl">Stop</span><b>{dec(live.stop)}</b></div>
                 <div><span className="z-sum-lbl">Riesgo / Beneficio</span><b>{riskReward(live).toFixed(1)} : 1</b></div>
               </div>
-              <p className="z-live-reason">{live.reason}</p>
+              <p className="z-live-reason">{gate && gate.status === "wait" ? gate.reason : live.reason}</p>
             </>
           ) : (
             <p className="z-live-msg">
-              Sin setup ahora — {noSetupReason(data.spot, data.gex.regime, data.gex.kingStrike, DEFAULT_PARAMS)}
+              Sin setup ahora — {noSetupReason(data.spot, data.gex.regime, data.gex.kingStrike, strategyParams)}
             </p>
           )}
           <p className="z-outlook-caveat">
@@ -300,6 +680,89 @@ export default function AgenteOdteTab() {
         </section>
       )}
 
+      {data?.isToday && (
+        <section className={`z-alt ${altState ? `z-alt-${altState.tier}` : ""}`}>
+          <header>
+            <h2>GEX Trade <span className="z-alt-suffix">· alterna</span></h2>
+            {marketOpenNow(selTicker) && altState && (
+              <span className={`z-alt-tier z-alt-tier-${altState.tier}`}>
+                {altState.tier === "strong" ? "✓ flujo confirma" : altState.tier === "soft" ? "◐ sin confirmar" : "⏳ esperando"}
+              </span>
+            )}
+            <span className="z-live-clock">{marketOpenNow(selTicker) ? `en vivo · ${etClock()} ET` : "mercado cerrado"}</span>
+          </header>
+          {!marketOpenNow(selTicker) || !altState || !altCtx ? (
+            <p className="z-live-msg">
+              Fuera de sesión ({sessionWindowLabel(selTicker)}). Durante el mercado abierto, el agente busca el mejor trade
+              alterno en vivo y lo actualiza cada minuto.
+            </p>
+          ) : altState.trade ? (
+            <>
+              <div className="z-live-row">
+                <span className={`z-live-dir z-dir-${altState.trade.direction}`}>
+                  {altState.trade.direction === "long" ? "▲ LONG" : "▼ SHORT"}
+                </span>
+                <span className="z-alt-kind">{altState.isMomentum ? "momentum γ−" : "fade al imán γ+"}</span>
+                <div><span className="z-sum-lbl">Entrada</span><b>{dec(altState.trade.entry)}</b></div>
+                <div><span className="z-sum-lbl">Objetivo</span><b>{dec(altState.trade.target)}</b></div>
+                <div><span className="z-sum-lbl">Stop</span><b>{dec(altState.trade.stop)}</b></div>
+              </div>
+              {altState.reversal && (
+                <p className="z-alt-reversal">⚠️ El flujo está girando en contra de este trade — vigila la salida.</p>
+              )}
+              <p className="z-live-reason">{altState.trade.reason}</p>
+            </>
+          ) : (
+            <p className="z-live-msg">
+              {altCtx.regime === "negative"
+                ? "γ− sin ruptura confirmada por el flujo todavía — el momentum necesita que el precio ya se haya movido a favor."
+                : "Sin trade alterno ahora — el imán no tiene setup base o el flujo no aporta nada nuevo."}
+            </p>
+          )}
+          <p className="z-outlook-caveat">
+            Mezcla el imán del GEX con el flujo agresivo acumulado hoy (peso {altOut ? altOut.w.toFixed(2) : "—"}).{" "}
+            {altOut?.flowNote}
+          </p>
+        </section>
+      )}
+
+      {data?.isToday && (
+        <div className="z-cmp-row">
+          <div className="z-cmp">
+            <span className="z-cmp-tag">Alterna vs. original · próximos 5 min (hoy)</span>
+            {altEval && altEval.n > 0 ? (
+              <p className="z-cmp-line">
+                Original acertó {altEval.origRate?.toFixed(0) ?? "—"}% · Alterna acertó{" "}
+                {altEval.altRate?.toFixed(0) ?? "—"}% (de {altEval.n} lecturas maduradas).{" "}
+                {altEval.bothActive > 0 && (
+                  <>La alterna se apartó de la original {altEval.bothActive} veces; de esas, acertó ella sola {altEval.altBetterWhenActive}.</>
+                )}
+              </p>
+            ) : (
+              <p className="z-cmp-line z-cmp-wait">
+                Recopilando… cada lectura se evalúa 5 min después. Mantén la página abierta durante la sesión.
+              </p>
+            )}
+          </div>
+          <div className="z-cmp">
+            <span className="z-cmp-tag">Trade alterno vs. original · hoy</span>
+            {tradeEvalState && (tradeEvalState.origResolved > 0 || tradeEvalState.altResolved > 0) ? (
+              <p className="z-cmp-line">
+                Original: {tradeEvalState.origWins}/{tradeEvalState.origResolved} ({tradeEvalState.origRate?.toFixed(0) ?? "—"}%) ·
+                {" "}Alterna: {tradeEvalState.altWins}/{tradeEvalState.altResolved} ({tradeEvalState.altRate?.toFixed(0) ?? "—"}%).{" "}
+                {tradeEvalState.differed > 0 && (
+                  <>De {tradeEvalState.differed} trades de momentum γ− (que la original no tomó), ganó {tradeEvalState.differedWon}.</>
+                )}
+              </p>
+            ) : (
+              <p className="z-cmp-line z-cmp-wait">
+                Midiendo en vivo — se llena cuando los trades tocan su target o stop.
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
       {data?.isToday && flow && !flow.error && (
         <LiveVolumeCvd flow={flow} direction={live?.direction ?? null} />
       )}
@@ -307,7 +770,7 @@ export default function AgenteOdteTab() {
       {data?.outlook && (
         <section className={`z-outlook z-lean-${data.outlook.lean}`}>
           <div className="z-outlook-top">
-            <span className="z-outlook-tag">Próximos ~{data.outlook.horizonMinutes} min</span>
+            <span className="z-outlook-tag">Sesgo GEX <span className="z-live-sub">próximos ~{data.outlook.horizonMinutes} min</span></span>
             <span className={`z-lean-chip z-lean-chip-${data.outlook.lean}`}>
               {data.outlook.lean === "alcista" ? "▲ sesgo alcista"
                 : data.outlook.lean === "bajista" ? "▼ sesgo bajista"
@@ -352,6 +815,154 @@ export default function AgenteOdteTab() {
             Estimación probabilística a partir del posicionamiento de opciones — el rango es ~68%
             (±1σ). No es una certeza ni un consejo de inversión.
           </p>
+        </section>
+      )}
+
+      {data?.outlook && altOut && (
+        <section className={`z-outlook z-lean-${altOut.lean}`}>
+          <div className="z-outlook-top">
+            <span className="z-outlook-tag">
+              Sesgo GEX <span className="z-live-sub">próximos ~{data.outlook.horizonMinutes} min</span>{" "}
+              <span className="z-alt-suffix">· alterna</span>
+            </span>
+            <span className={`z-lean-chip z-lean-chip-${altOut.lean}`}>
+              {altOut.lean === "alcista" ? "▲ sesgo alcista" : altOut.lean === "bajista" ? "▼ sesgo bajista" : "▬ lateral"}
+            </span>
+            <span className="z-conf">confianza {CONFIDENCE[altOut.confidence] ?? altOut.confidence}</span>
+          </div>
+          <p className="z-outlook-head">{data.outlook.headline}</p>
+          <div className="z-outlook-range">
+            <span>{dec(data.outlook.rangeLow)}</span>
+            <div className="z-range-bar">
+              <i className="z-range-fill" />
+              <b className="z-range-now" style={{ left: `${rangePos(data.outlook)}%` }}>{dec(data.outlook.spot)}</b>
+              {data.outlook.magnet != null && inRange(data.outlook) && (
+                <span className="z-range-magnet" style={{ left: `${magnetPos(data.outlook)}%` }} title="Imán (mayor gamma)">
+                  {data.outlook.magnet}
+                </span>
+              )}
+            </div>
+            <span>{dec(data.outlook.rangeHigh)}</span>
+          </div>
+          <p className="z-outlook-detail">{data.outlook.detail}</p>
+          <div className="z-flow">
+            <p className="z-flow-line"><span className="z-flow-tag z-flow-tag-flow">FLUJO</span> {altOut.flowNote}</p>
+            {data.outlook.charmNote && (
+              <p className="z-flow-line"><span className="z-flow-tag">CHARM</span> {data.outlook.charmNote.replace(/^Charm \d+%: /, "")}</p>
+            )}
+            {data.outlook.vannaNote && (
+              <p className="z-flow-line"><span className="z-flow-tag">VANNA</span> {data.outlook.vannaNote.replace(/^Vanna: /, "")}</p>
+            )}
+          </div>
+          <p className="z-outlook-caveat">
+            Mezcla el sesgo del GEX con el flujo agresivo acumulado hoy — puede diferir del panel
+            original cuando la cinta corre fuerte. No es una certeza ni un consejo de inversión.
+          </p>
+        </section>
+      )}
+
+      {data?.isToday && flow && !flow.error && (
+        <section className="z-tt">
+          <div className="z-tt-head">
+            <span className="z-tt-tag">0DTE Live <span className="z-live-sub">top 10 entrantes</span></span>
+            <span className="z-tt-inst">{data.ticker}{ttMagnet != null ? ` · imán ${ttMagnet}` : ""}</span>
+            <span className="z-tt-takers"><b>⚡</b> solo takers</span>
+            {!ttSlActive && allTop.length > 0 && <span className="z-tt-warn" title="Aún no se pudo confirmar single-leg de estos bloques">⚠ sin confirmar single-leg</span>}
+          </div>
+
+          {allTop.length === 0 ? (
+            <div className="z-tt-empty">
+              {streamAliveNow(flow)
+                ? "Streamer conectado — sin contratos entrantes que califiquen todavía (normal fuera de sesión o recién arrancado)."
+                : (
+                  <>Sin streamer en vivo todavía — esta tarjeta necesita <code className="z-mono">streamer/tastytrade-stream.mjs</code> corriendo (websocket de tastytrade en tiempo real).</>
+                )}
+            </div>
+          ) : (
+            <>
+              {ttNetGex != null && (
+                <div className="z-tt-net">
+                  <div className={`z-tt-net-val ${ttNetPos ? "pos" : "neg"}`}>
+                    <span className="z-tt-net-lbl">Net GEX</span>
+                    <span className="z-tt-net-num"><b>{gexUsd(ttNetGex)}</b> <span>{ttNetPos ? "γ+ ancla" : "γ− amplifica"}</span></span>
+                  </div>
+                  <div className="z-tt-net-read">
+                    {ttNetPos ? `Los dealers tienden a anclar cerca del imán${ttMagnet != null ? ` ${ttMagnet}` : ""}.` : "Sin efecto de anclaje fiable — los movimientos se amplifican."}
+                  </div>
+                </div>
+              )}
+
+              <div className={`z-tt-summary z-tt-sum-${ttDir}`}>
+                <div className="z-tt-sum-top">
+                  <span className="z-tt-sum-word">
+                    {ttDir === "bull" ? "▲ alcista" : ttDir === "bear" ? "▼ bajista" : ttDir === "mixed" ? "= mixto" : "sin sesgo"}
+                  </span>
+                  {ttBiasPct != null && <span className="z-tt-sum-chip">{ttDom === "call" ? "calls dominan" : "puts dominan"} · {ttBiasPct}%</span>}
+                </div>
+                <p className="z-tt-sum-line">
+                  {usd(ttBull)} alcista vs {usd(ttBear)} bajista{ttPile ? `, concentrado en ${ttPile}` : ""}
+                  {ttSweeps > 0 ? ` · ${ttSweeps} sweep${ttSweeps === 1 ? "" : "s"}` : ""}.
+                </p>
+              </div>
+
+              {ttRollup.length > 0 && (
+                <>
+                  <div className="z-tt-sech">Strikes con más impacto</div>
+                  <div className="z-tt-roll">
+                    {ttRollup.map((r) => {
+                      const isC = r.type === "call";
+                      const score = Math.round((r.imp / ttRollMax) * 100);
+                      return (
+                        <div key={`${r.strike}:${r.type}`} className="z-tt-rollrow">
+                          <span className="z-tt-roll-k" style={{ color: isC ? "var(--green)" : "var(--red)" }}>{r.strike} {isC ? "C" : "P"}</span>
+                          <span className="z-tt-roll-bar"><i style={{ width: `${Math.max(6, (r.imp / ttRollMax) * 100)}%`, background: isC ? "var(--green)" : "var(--red)" }} /></span>
+                          <span className="z-tt-roll-v"><b>{score}</b> <span>impacto</span></span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+
+              <div className="z-tt-sech z-tt-sech-top">
+                Feed{newTopTs.size > 0 ? <span className="z-tt-newcnt"> · {newTopTs.size} nuevo{newTopTs.size === 1 ? "" : "s"}</span> : null}
+              </div>
+              <div className="z-tt-table">
+                {ttFeed.map((t, i) => {
+                  const isNew = newTopTs.has(t.ts);
+                  const isCall = t.type === "call";
+                  const buy = t.side === "buy";
+                  const bull = (isCall && buy) || (!isCall && !buy);
+                  const hhmmss = new Date(t.ts).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour12: false });
+                  return (
+                    <div
+                      key={`${t.ts}-${i}`}
+                      className={`z-tt-row ${bull ? "z-tt-bull" : "z-tt-bear"} ${t.sweep ? "z-tt-sweep" : ""} ${isNew ? "z-tt-new" : ""} ${t.open ? "" : "z-tt-closed"}`}
+                      title={t.open ? "apertura" : "cierre"}
+                    >
+                      <span className="z-tt-time">{hhmmss}</span>
+                      <span><b>{t.strike} {isCall ? "C" : "P"}</b></span>
+                      <span>{buy ? "▲ compra al ask" : "▼ vende al bid"}</span>
+                      <span className="z-tt-r">{t.delta != null ? Math.abs(t.delta).toFixed(2) : "—"}</span>
+                      <span className="z-tt-r z-tt-prem">{usd(t.premium)}</span>
+                      <span className="z-tt-r z-tt-score">{t.sweep && <b className="z-tt-swi" title="sweep">⚡</b>}{scoreOf(t)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {(discMid > 0 || discClose > 0) && (
+                <div className="z-tt-disc">
+                  <span className="z-tt-disc-ic">⊘</span> {discMid} bloques pasivos y {discClose} de cierre descartados de la señal.
+                </div>
+              )}
+
+              <div className="z-tt-foot">
+                Solo bloques agresivos (compra al ask / venta al bid) que pasan los filtros de delta,
+                volumen y liquidez. El score es relativo al mayor impacto (premium × |gamma|) del ciclo.
+              </div>
+            </>
+          )}
         </section>
       )}
 
@@ -410,7 +1021,7 @@ export default function AgenteOdteTab() {
       {data?.closing && (
         <section className={`z-close z-close-${data.closing.phase === "live" ? data.closing.confidence : data.closing.phase}`}>
           <div className="z-close-top">
-            <span className="z-close-tag">⏱ Cierre 4:00pm ET</span>
+            <span className="z-close-tag">GEX Pinning <span className="z-live-sub">cierre 4:00pm ET</span></span>
             {data.closing.phase === "live" && (
               <>
                 <span className="z-close-min">faltan {data.closing.minutesLeft.toFixed(0)} min</span>
@@ -420,11 +1031,37 @@ export default function AgenteOdteTab() {
             {data.closing.phase === "pending" && <span className="z-close-min">se calcula a las 3:00pm ET</span>}
             {data.closing.phase === "final" && <span className="z-close-min">fijado · sesión {data.closing.fromDate ?? ""}</span>}
           </div>
+          {data.closing.phase === "live" && (
+            <div className="z-moc">
+              <div className="z-moc-head">
+                <span className="z-sum-lbl">Imbalance MOC (manual)</span>
+                <span className="z-moc-hint">pégalo del tweet de Nasdaq/NYSE ~3:50pm ET</span>
+              </div>
+              <div className="z-moc-row">
+                <input
+                  className="z-moc-in" value={mocVal} placeholder="0"
+                  inputMode="decimal" onChange={(e) => saveMoc(e.target.value, mocSide)}
+                />
+                <span className="z-moc-unit">MLN</span>
+                <span className="z-moc-toggle">
+                  <button type="button" className={mocSide === "buy" ? "z-moc-buy" : ""} onClick={() => saveMoc(mocVal, "buy")}>Compra</button>
+                  <button type="button" className={mocSide === "sell" ? "z-moc-sell" : ""} onClick={() => saveMoc(mocVal, "sell")}>Venta</button>
+                </span>
+                {mocVal !== "" && <button type="button" className="z-moc-clear" onClick={() => saveMoc("", null)} aria-label="limpiar">×</button>}
+              </div>
+            </div>
+          )}
           <div className="z-close-main">
             <div>
               <span className="z-sum-lbl">Strike de cierre más probable</span>
               <b className="z-close-strike">{data.closing.strike ?? "—"}</b>
             </div>
+            {data.closing.maxPain != null && (
+              <div>
+                <span className="z-sum-lbl">Max Pain (OI)</span>
+                <b className="z-close-maxpain">{data.closing.maxPain}</b>
+              </div>
+            )}
             {data.closing.phase === "live" && (
               <div className="z-close-range">
                 <span className="z-sum-lbl">Rango probable</span>
@@ -440,12 +1077,94 @@ export default function AgenteOdteTab() {
               {evalu.closingHitRate != null && ` · acierto (±5 pts) ${evalu.closingHitRate.toFixed(0)}%`}
             </p>
           )}
+
+          {data.closing.phase === "live" && data.closing.regime === "negative" && (
+            despin ? (
+              <div className={`z-pinalt-dir z-pinalt-dir-${despin.dir}`}>
+                <div className="z-pinalt-top">
+                  <span className="z-pinalt-tag">GEX Pinning · Charm</span>
+                  <span className="z-pinalt-dir-w" style={{ color: despin.dir === "down" ? "var(--red-text, #c0392b)" : "var(--green-dark, #1a7f4b)" }}>
+                    {despin.dir === "down" ? "▼ tiende a bajar" : "▲ tiende a subir"}
+                  </span>
+                </div>
+                <div className="z-close-main">
+                  <div><span className="z-sum-lbl">Objetivo si rompe el pin</span><b>{despin.target.toFixed(0)}</b></div>
+                  <div><span className="z-sum-lbl">Distancia</span><b>{despin.pts.toFixed(0)} pts</b></div>
+                </div>
+                <p className="z-pinalt-note">
+                  {despin.anchored ? `Anclado al muro de gamma en ${despin.wall}.` : "Sin muro alcanzable — objetivo estimado por movimiento esperado (1σ)."}
+                  {" "}γ negativa: sin efecto de anclaje fiable, el flujo agresivo decide.
+                  {mocVal !== "" && mocSide != null && (
+                    (mocSide === "buy") === (despin.dir === "up")
+                      ? ` MOC (${mocVal}M ${mocSide === "buy" ? "compra" : "venta"}) confirma.`
+                      : ` MOC (${mocVal}M ${mocSide === "buy" ? "compra" : "venta"}) contradice — ojo.`
+                  )}
+                </p>
+              </div>
+            ) : (
+              <p className="z-pinalt-none">γ negativa y sin flujo direccional claro todavía — sin pin ni despin, mejor esperar.</p>
+            )
+          )}
+
           <p className="z-outlook-caveat">
             Estimación del efecto de anclaje de los dealers, no certeza. Una noticia o un cambio de
             régimen puede romperlo. Tú decides.
           </p>
         </section>
       )}
+
+      {isNativeFutureTicker && unpin && unpin.state !== "idle" && data && (() => {
+        const up = unpin.dir === "up";
+        const dirCol = up ? "var(--green-dark)" : "var(--red-text)";
+        const sgn = up ? "+" : "−";
+        const magnet = data.closing?.strike ?? data.gex.kingStrike ?? null;
+        const flowBullish = ttBull >= ttBear;
+        const armed = unpin.state === "armed", post = unpin.state === "post", waiting = unpin.state === "waiting";
+        const dirLbl = up ? "▲ pop (rebote)" : "▼ drop (caída)";
+        return (
+          <section className={`z-unpin ${waiting ? "z-unpin-wait" : ""}`}>
+            <header className="z-unpin-top">
+              <h2 className="z-unpin-tag">GEX Unpin <span className="z-live-sub">{selTicker} · resorte post-cierre</span></h2>
+              {unpin.dir && (armed || post
+                ? <span className="z-live-hdir" style={{ color: dirCol }}>{dirLbl}</span>
+                : <span className="z-live-hdir z-live-hdir-would" style={{ color: dirCol }}>sería {dirLbl}</span>)}
+            </header>
+            <div className="z-unpin-badges">
+              {armed && <span className="z-live-waitbadge">● armado (3-4pm)</span>}
+              {post && <span className="z-lean-chip" style={{ color: dirCol, background: up ? "var(--green-bg)" : "var(--red-bg)" }}>{up ? "▲ " : "▼ "}jugando (4-5pm)</span>}
+              {waiting && <span className="z-live-waitbadge">● esperando</span>}
+              {(armed || (waiting && unpin.hasPin)) && unpin.defendedFrom && (
+                <span className="z-unpin-tell">
+                  {unpin.defendedFrom === "above" ? "precio defendido desde arriba (dealer vendía) → compra reprimida" : "precio defendido desde abajo (dealer compraba) → venta reprimida"}
+                </span>
+              )}
+            </div>
+            {armed && (
+              <div className="z-close-main z-unpin-row">
+                <div><span className="z-sum-lbl">Snapback esperado {selTicker}</span><b className="z-close-netgex" style={{ color: dirCol }}>{sgn}{unpin.lo} a {sgn}{unpin.hi} pts</b></div>
+                <div><span className="z-sum-lbl">Spot / imán</span><b>{dec(data.spot)} / {magnet ?? "—"}</b></div>
+                <div><span className="z-sum-lbl">Flujo agresivo</span><b style={{ color: flowBullish ? "var(--green-dark)" : "var(--red-text)" }}>{flowBullish ? "alcista" : "bajista"}</b></div>
+                <div><span className="z-sum-lbl">Al cierre</span><b style={{ color: "var(--amber-text)" }}>{unpin.minToClose} min</b></div>
+              </div>
+            )}
+            {post && (
+              <div className="z-close-main z-unpin-row">
+                <div><span className="z-sum-lbl">{selTicker} · desde el pin</span><b className="z-close-netgex" style={{ color: dirCol }}>{unpin.move != null && unpin.move >= 0 ? "+" : ""}{unpin.move?.toFixed(0)} pts</b></div>
+                <div><span className="z-sum-lbl">Snapback esperado</span><b>{sgn}{unpin.lo} a {sgn}{unpin.hi} pts</b></div>
+              </div>
+            )}
+            {waiting && unpin.hasPin && (
+              <div className="z-close-main z-unpin-row">
+                <div><span className="z-sum-lbl">Snapback esperado {selTicker}</span><b className="z-close-netgex" style={{ color: dirCol }}>{sgn}{unpin.lo} a {sgn}{unpin.hi} pts</b></div>
+                <div><span className="z-sum-lbl">Spot / imán</span><b>{dec(data.spot)} / {magnet ?? "—"}</b></div>
+              </div>
+            )}
+            <p className="z-close-note">
+              {waiting ? (unpin.hasPin ? "Fuera de la ventana 3-5pm ET — vista previa del sesgo si el pin se sostiene hasta el cierre." : "γ negativa — sin pin que soltar, el unpin no aplica hoy.") : `Solo aplica a ${selTicker} — sigue cotizando 4-5pm ET cuando el índice cash ya cerró.`}
+            </p>
+          </section>
+        );
+      })()}
 
       {data?.forecast && (
         <section className="z-fc">
@@ -877,6 +1596,8 @@ function SpreadSuggestions({ s }: { s: ZeroDteSuggestions }) {
 
 const CSS = `
 .z-wrap { max-width: 1440px; margin: 0 auto; padding: 0 0 40px; font-size: 15px; }
+.z-disclaimer { background: var(--amber-bg); border: 1px solid var(--amber-border); color: var(--amber-text);
+  font-size: 13px; font-weight: 600; text-align: center; padding: 9px 16px; border-radius: 8px; margin: 0 0 16px; }
 .z-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
 .z-head h1 { margin: 0 0 4px; font-size: 26px; letter-spacing: -0.2px; }
 .z-head p { margin: 0; color: var(--muted); font-size: 14px; }
@@ -973,6 +1694,37 @@ const CSS = `
 .z-close-acc { margin: 0 0 8px; font-size: 12px; color: var(--muted);
   padding: 6px 10px; background: var(--panel); border-radius: 6px; display: inline-block; }
 .z-close-acc b { color: var(--text); }
+.z-close-maxpain { font-size: 22px; color: var(--text); font-variant-numeric: tabular-nums; }
+
+.z-moc { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; margin: 0 0 12px; }
+.z-moc-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.z-moc-hint { font-size: 11px; color: var(--faint); }
+.z-moc-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.z-moc-in { width: 96px; font-size: 15px; font-weight: 600; color: var(--text);
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  padding: 7px 10px; font-variant-numeric: tabular-nums; }
+.z-moc-in:focus { outline: none; border-color: var(--accent); }
+.z-moc-unit { font-size: 13px; color: var(--muted); }
+.z-moc-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.z-moc-toggle button { font-size: 13px; font-weight: 600; color: var(--muted);
+  background: var(--panel); border: none; padding: 7px 13px; cursor: pointer; }
+.z-moc-toggle button.z-moc-buy { color: #fff; background: var(--green-dark); }
+.z-moc-toggle button.z-moc-sell { color: #fff; background: #c23b46; }
+.z-moc-clear { font-size: 15px; line-height: 1; color: var(--faint); background: none;
+  border: none; cursor: pointer; padding: 4px 6px; }
+.z-moc-clear:hover { color: var(--text); }
+
+.z-pinalt-dir { border-left: 3px solid var(--faint); background: var(--panel-2);
+  border-radius: 0 8px 8px 0; padding: 10px 14px; margin-top: 12px; }
+.z-pinalt-dir-up { border-left-color: var(--green); background: var(--green-bg); }
+.z-pinalt-dir-down { border-left-color: var(--red-soft); background: var(--red-bg); }
+.z-pinalt-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.z-pinalt-tag { font-size: 11px; font-weight: 800; letter-spacing: .03em; color: var(--muted);
+  text-transform: uppercase; }
+.z-pinalt-dir-w { font-size: 13px; font-weight: 700; }
+.z-pinalt-note { margin: 6px 0 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
+.z-pinalt-none { margin: 12px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
 
 .z-calib-chip { font-size: 11px; font-weight: 700; background: var(--accent-dim);
   color: var(--accent); padding: 2px 9px; border-radius: 999px; }
@@ -996,6 +1748,133 @@ const CSS = `
 .z-dir-short { color: #b42318; }
 .z-live-reason { margin: 0 0 6px; font-size: 12.5px; color: var(--text); line-height: 1.45; }
 .z-live-msg { margin: 0 0 6px; font-size: 13px; color: var(--muted); line-height: 1.5; }
+
+.z-gate-pill { font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 999px; }
+.z-gate-ready { background: var(--green-bg); color: var(--green-dark); }
+.z-gate-wait { background: var(--amber-bg); color: var(--amber-text); border: 1px solid var(--amber-border); }
+
+.z-alt { border: 2px solid var(--border); border-radius: 12px; padding: 16px 18px;
+  margin: 0 0 16px; background: var(--panel); }
+.z-alt-strong { border-color: var(--accent); background: var(--accent-dim); }
+.z-alt-soft { border-color: var(--border); background: var(--panel-2); }
+.z-alt-waiting { border-color: var(--border); background: var(--panel-2); opacity: .85; }
+.z-alt header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.z-alt h2 { margin: 0; font-size: 16px; }
+.z-alt-suffix { font-size: 13px; font-weight: 400; color: var(--muted); }
+.z-live-sub { font-size: 13px; font-weight: 400; color: var(--muted); text-transform: none; letter-spacing: 0; }
+.z-alt-tier { margin-left: auto; font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 999px; }
+.z-alt-tier-strong { background: var(--green-bg); color: var(--green-dark); }
+.z-alt-tier-soft { background: var(--amber-bg); color: var(--amber-text); }
+.z-alt-tier-waiting { background: var(--panel-2); color: var(--faint); }
+.z-alt-kind { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+.z-alt-reversal { margin: 0 0 6px; font-size: 12.5px; font-weight: 600; color: var(--amber-text);
+  background: var(--amber-bg); border: 1px solid var(--amber-border); padding: 6px 10px; border-radius: 6px; }
+
+.z-ticket { border: 2px solid var(--border); border-radius: 12px; padding: 16px 18px; margin: 0 0 16px; background: var(--panel); }
+.z-ticket-long { border-color: var(--green); background: var(--green-bg); }
+.z-ticket-short { border-color: var(--red-soft); background: var(--red-bg); }
+.z-ticket-idle { border-color: var(--border); background: var(--panel-2); }
+.z-ticket header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.z-ticket h2 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -.3px; }
+.z-ticket-sub { font-size: 12px; font-weight: 400; color: var(--muted); }
+.z-ticket-badge { margin-left: auto; font-size: 12px; font-weight: 800; letter-spacing: .05em;
+  padding: 4px 12px; border-radius: 8px; color: var(--green-dark); background: var(--green-bg); border: 1px solid var(--green); }
+.z-ticket-short .z-ticket-badge { color: var(--red-text); background: var(--red-bg); border-color: var(--red-soft); }
+.z-ticket-thesis { margin: 0 0 12px; font-size: 12.5px; color: var(--muted); line-height: 1.4; }
+.z-ticket-buy { display: flex; align-items: baseline; gap: 11px; flex-wrap: wrap; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.z-ticket-act { font-size: 12px; font-weight: 800; letter-spacing: .06em; padding: 3px 9px; border-radius: 6px;
+  color: var(--green-dark); background: var(--green-bg); border: 1px solid var(--green); }
+.z-ticket-short .z-ticket-act { color: var(--red-text); background: var(--red-bg); border-color: var(--red-soft); }
+.z-ticket-ctr { font-size: 22px; font-weight: 800; letter-spacing: -.3px; font-variant-numeric: tabular-nums; }
+.z-ticket-at { font-size: 13px; color: var(--muted); }
+.z-ticket-price { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.z-ticket-quote { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.z-ticket-st { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 14px 0 4px; }
+.z-ticket-box { display: flex; flex-direction: column; gap: 3px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+.z-ticket-k { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+.z-ticket-v { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.z-ticket-tgt { color: var(--green-dark); }
+.z-ticket-stp { color: var(--red-text); }
+.z-ticket-idx { font-size: 11px; color: var(--faint); }
+.z-ticket-up { color: var(--green-dark); }
+.z-ticket-dn { color: var(--red-text); }
+.z-ticket-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.z-ticket-chip { font-size: 11px; color: var(--muted); background: var(--panel-2); border: 1px solid var(--border); padding: 4px 9px; border-radius: 6px; font-variant-numeric: tabular-nums; }
+.z-ticket-chip b { color: var(--text); }
+.z-ticket-foot { margin: 14px 0 0; font-size: 11px; color: var(--faint); line-height: 1.5; border-top: 1px solid var(--border); padding-top: 10px; }
+.z-ticket-none { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.5; }
+@media (max-width: 640px) { .z-ticket-st { grid-template-columns: 1fr; } }
+
+.z-tt { border: 1px solid var(--border); border-left-width: 4px; border-left-color: var(--accent); background: var(--panel); border-radius: 12px; padding: 16px 18px; margin: 0 0 16px; }
+.z-tt-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.z-tt-tag { font-size: 18px; font-weight: 700; color: var(--text); letter-spacing: -.3px; }
+.z-tt-inst { font-size: 12px; font-weight: 700; background: var(--accent); color: #fff; padding: 3px 11px; border-radius: 999px; }
+.z-tt-warn { font-size: 11px; color: var(--amber-text); background: var(--amber-bg); border: 1px solid var(--amber-border); padding: 3px 10px; border-radius: 999px; }
+.z-tt-takers { margin-left: auto; font-size: 12px; color: var(--amber-text); background: var(--amber-bg); border: 1px solid var(--amber-border); padding: 3px 11px; border-radius: 999px; }
+.z-tt-net { display: flex; align-items: stretch; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.z-tt-net-val { flex: 1; min-width: 150px; border-radius: 8px; padding: 8px 13px; border: 1px solid var(--border); }
+.z-tt-net-val.pos { background: var(--green-bg); }
+.z-tt-net-val.neg { background: var(--red-bg); }
+.z-tt-net-lbl { display: block; font-size: 10px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); margin-bottom: 1px; }
+.z-tt-net-num { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.z-tt-net-num b { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.z-tt-net-val.pos .z-tt-net-num b { color: var(--green-dark); }
+.z-tt-net-val.neg .z-tt-net-num b { color: var(--red-text); }
+.z-tt-net-num span { font-size: 11px; color: var(--muted); }
+.z-tt-net-read { flex: 1.3; min-width: 180px; display: flex; align-items: center; font-size: 11.5px; color: var(--text); line-height: 1.45; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 13px; }
+.z-tt-disc { margin-top: 10px; display: flex; gap: 7px; align-items: flex-start; font-size: 11.5px; color: var(--faint); line-height: 1.5; border-top: 1px dashed var(--amber-border); padding-top: 9px; }
+.z-tt-disc-ic { color: var(--faint); }
+.z-tt-summary { border-left: 3px solid var(--faint); background: var(--panel-2); border-radius: 0 8px 8px 0; padding: 10px 14px; margin-bottom: 12px; }
+.z-tt-sum-bull { border-left-color: var(--green); background: var(--green-bg); }
+.z-tt-sum-bear { border-left-color: var(--red-soft); background: var(--red-bg); }
+.z-tt-sum-mixed { border-left-color: var(--amber-border); background: var(--amber-bg); }
+.z-tt-sum-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.z-tt-sum-word { font-size: 13px; font-weight: 700; color: var(--text); }
+.z-tt-sum-bull .z-tt-sum-word { color: var(--green-dark); }
+.z-tt-sum-bear .z-tt-sum-word { color: var(--red-text); }
+.z-tt-sum-mixed .z-tt-sum-word { color: var(--amber-text); }
+.z-tt-sum-chip { font-size: 11px; font-weight: 600; background: var(--panel); border: 1px solid var(--border); padding: 1px 8px; border-radius: 999px; color: var(--muted); }
+.z-tt-sum-line { margin: 6px 0 0; font-size: 12.5px; color: var(--text); line-height: 1.5; }
+.z-tt-sech { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 8px; }
+.z-tt-sech-top { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
+.z-tt-newcnt { color: var(--amber-text); text-transform: none; letter-spacing: 0; font-weight: 600; }
+.z-tt-roll { display: flex; flex-direction: column; gap: 5px; }
+.z-tt-rollrow { display: grid; grid-template-columns: 80px 1fr 120px; align-items: center; gap: 10px; }
+.z-tt-roll-k { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.z-tt-roll-bar { height: 15px; background: var(--panel-2); border-radius: 4px; overflow: hidden; }
+.z-tt-roll-bar i { display: block; height: 100%; border-radius: 4px; }
+.z-tt-roll-v { text-align: right; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.z-tt-roll-v span { color: var(--muted); font-size: 11px; }
+.z-tt-table { font-size: 12.5px; overflow-x: auto; }
+.z-tt-row { display: grid; grid-template-columns: 68px minmax(56px,1fr) 110px 42px 70px 80px; align-items: center; gap: 4px; padding: 7px 8px; border-bottom: 1px solid var(--border); border-radius: 6px; }
+.z-tt-bull { color: var(--green-dark); }
+.z-tt-bear { color: var(--red-text); }
+.z-tt-r { text-align: right; font-variant-numeric: tabular-nums; }
+.z-tt-prem { font-weight: 700; }
+.z-tt-time { color: inherit; opacity: .78; font-variant-numeric: tabular-nums; }
+.z-tt-score { font-variant-numeric: tabular-nums; font-weight: 600; opacity: .85; display: flex; gap: 4px; justify-content: flex-end; align-items: center; }
+.z-tt-swi { color: var(--amber-text); }
+.z-tt-closed { opacity: .5; }
+.z-tt-empty { padding: 16px 8px; color: var(--faint); font-size: 13px; text-align: center; }
+.z-tt-foot { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 11.5px; color: var(--faint); line-height: 1.5; }
+.z-mono { font-family: ui-monospace, monospace; font-size: 11px; background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+
+.z-unpin { border: 2px solid var(--border); background: var(--panel); border-radius: 12px; padding: 16px 18px; margin: 0 0 16px; }
+.z-unpin-wait { background: var(--panel-2); opacity: .92; }
+.z-unpin-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.z-unpin-tag { margin: 0; font-size: 18px; font-weight: 700; }
+.z-live-hdir { font-size: 13px; font-weight: 700; margin-left: auto; }
+.z-live-hdir-would { opacity: .75; }
+.z-unpin-badges { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.z-live-waitbadge { font-size: 11px; font-weight: 700; color: var(--muted); background: var(--panel-2); border: 1px solid var(--border); padding: 3px 10px; border-radius: 999px; }
+.z-unpin-tell { font-size: 11.5px; color: var(--muted); }
+.z-unpin-row { margin-bottom: 8px; }
+
+.z-cmp-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin: 0 0 16px; }
+.z-cmp { border: 1px solid var(--border); background: var(--panel-2); border-radius: 10px; padding: 12px 14px; }
+.z-cmp-tag { display: block; font-size: 10.5px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; color: var(--faint); margin-bottom: 6px; }
+.z-cmp-line { margin: 0; font-size: 12.5px; color: var(--text); line-height: 1.5; }
+.z-cmp-wait { color: var(--muted); }
 
 .z-eval { border: 1px solid var(--border); background: var(--panel);
   border-radius: 10px; padding: 16px; margin: 0 0 16px; }
@@ -1072,6 +1951,7 @@ const CSS = `
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .z-flow-tag { font-size: 9.5px; font-weight: 700; letter-spacing: .06em; padding: 2px 6px;
   border-radius: 4px; background: var(--accent-dim); color: var(--accent); }
+.z-flow-tag-flow { background: var(--green-bg); color: var(--green-dark); }
 .z-flow-bar { display: inline-block; width: 70px; height: 5px; border-radius: 3px;
   background: var(--border); position: relative; overflow: hidden; }
 .z-flow-bar i { position: absolute; inset: 0 auto 0 0; background: var(--accent); }

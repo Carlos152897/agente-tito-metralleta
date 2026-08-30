@@ -65,6 +65,10 @@ export interface FlowAccumulator {
   seenIds: number[];
   /** Últimos ciclos, para "volumen del último minuto vs promedio de la ventana". */
   recentCycles: CycleSample[];
+  /** "Contratos entrantes" (bursts agresivos que calificaron) — solo lo trae
+   *  el acumulador cuando lo escribe un streamer de Tastytrade (ver
+   *  streamer/lib/top-trades.mjs); el resto de escritores lo dejan vacío. */
+  topTrades?: import("./zerodteStream").TopTrade[];
 }
 
 /** Cuántos ciclos recientes se guardan para la velocidad de volumen y el sparkline de CVD. */
@@ -217,6 +221,34 @@ export function netAggressorTotals(acc: FlowAccumulator): NetAggressorTotals {
   return { ask, bid, mid, net: ask - bid, total, enough: total >= MIN_SAMPLE_TOTAL };
 }
 
+export interface ClassifiedFlow {
+  /** Contratos clasificados alcistas: calls comprados (ask) + puts vendidos (bid). */
+  bull: number;
+  /** Contratos clasificados bajistas: puts comprados (ask) + calls vendidos (bid). */
+  bear: number;
+  /** Dominancia del CVD 0-1 = |ask−bid|/total del libro completo. */
+  cvdDom: number | null;
+}
+
+/**
+ * Flujo clasificado por dirección real (no solo compra/venta ciega a
+ * call/put) — insumo de `lib/zerodteAlt.ts` (flowLean/flowWeight). A
+ * diferencia del proyecto standalone (que usa PREMIUM $ de "bursts"
+ * recientes), acá se suman CONTRATOS acumulados de toda la sesión desde este
+ * mismo acumulador — mismos datos reales de MarketSnack que ya usa el resto
+ * del panel, sin un feed nuevo. PURA.
+ */
+export function classifiedFlow(acc: FlowAccumulator): ClassifiedFlow {
+  let bull = 0, bear = 0, ask = 0, bid = 0;
+  for (const b of Object.values(acc.buckets)) {
+    if (b.type === "call") { bull += b.ask; bear += b.bid; }
+    else { bull += b.bid; bear += b.ask; }
+    ask += b.ask; bid += b.bid;
+  }
+  const total = ask + bid;
+  return { bull, bear, cvdDom: total > 0 ? Math.abs(ask - bid) / total : null };
+}
+
 export interface VolumeVelocity {
   /** Contratos nuevos en el ciclo más reciente (~último minuto). */
   lastAdded: number;
@@ -254,6 +286,30 @@ export function volumeVelocity(acc: FlowAccumulator): VolumeVelocity {
   const windowAvg = rest.reduce((s, c) => s + c.added, 0) / rest.length;
   const ratio = windowAvg > 0 ? last.added / windowAvg : null;
   return { lastAdded: last.added, windowAvg, ratio, series, cvdSeries };
+}
+
+/**
+ * Construye la cadena (ZRow[]) desde los buckets de un streamer de Tastytrade
+ * (índice/ETF o futuro nativo) — mismo formato para ambos. Cada strike aporta
+ * su OI, griegos (gamma/delta/iv), volumen y quotes reales. PURA.
+ */
+export function bucketsToRows(buckets: Record<string, AggBucket>, expiration: string, ticker: string): ZRow[] {
+  const rows: ZRow[] = [];
+  for (const b of Object.values(buckets)) {
+    if (!b || !(b.strike > 0)) continue;
+    rows.push({
+      optionTicker: `${ticker}-${expiration}-${b.strike}-${b.type[0].toUpperCase()}`,
+      contractType: b.type,
+      expiration,
+      strike: b.strike,
+      openInterest: b.oi ?? 0,
+      volume: b.volume ?? 0,
+      bid: b.bidPrice ?? null,
+      ask: b.askPrice ?? null,
+      greeks: { delta: b.delta ?? null, gamma: b.gamma ?? null, theta: null, vega: null, iv: b.iv ?? null },
+    });
+  }
+  return rows;
 }
 
 // ----------------------------------------------- superposición en tiempo real

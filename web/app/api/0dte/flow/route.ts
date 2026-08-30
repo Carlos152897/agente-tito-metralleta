@@ -1,20 +1,21 @@
-// GET /api/0dte/flow — acumula el agresor (compra vs venta) del vencimiento de
-// hoy de SPX. Cada llamada suma su tramo de cinta al acumulado del día. Ver
-// Agente Principal/Proceso 0DTE.md §6.3.
+// GET /api/0dte/flow — agresor (compra vs venta), CVD, velocidad y "0DTE Live"
+// (contratos entrantes) del vencimiento de hoy. Porte fiel del proyecto
+// standalone Agente 0DTE: SOLO LEE lo que ya escriben los streamers de
+// Tastytrade — streamer/tastytrade-stream.mjs (SPX), tastytrade-index-
+// stream.mjs (SPY/QQQ) y tastytrade-futures-stream.mjs (ES/NQ). Ya NO pollea
+// MarketSnack para esta pestaña (pedido explícito de Carlos, ago 2026) —
+// MarketSnack sigue viva sin cambios en el resto de Visionary Trades.
 
-import { fetchFlow, MarketSnackError } from "@/lib/marketsnack";
 import { marketDateStr } from "@/lib/occ";
+import { isNativeFuture, loadNativeFuture, nativeFresh } from "@/lib/futuresNative";
 import { zeroDteTickerConfig } from "@/lib/zerodteTickers";
 import {
-  accumulate, loadFlow, netAggressorTotals, readAggressor, saveFlow, volumeVelocity,
-  type AggressorRead,
+  classifiedFlow, loadFlow, netAggressorTotals, readAggressor, volumeVelocity,
+  type AggressorRead, type FlowAccumulator,
 } from "@/lib/zerodteFlow";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-/** Páginas por ciclo. Cada una son 50 trades (~1 segundo de cinta en SPX). */
-const PAGES = 40;
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -23,10 +24,17 @@ export async function GET(request: Request) {
   const date = marketDateStr(now);
 
   try {
-    const before = await loadFlow(TICKER, date);
-    const { trades } = await fetchFlow(TICKER, { period: "1d", maxPages: PAGES });
-    const acc = accumulate(before, trades, date, now);
-    await saveFlow(acc);
+    let acc: FlowAccumulator;
+
+    if (isNativeFuture(TICKER)) {
+      const nf = await loadNativeFuture(TICKER, date);
+      if (!nf || !nativeFresh(nf, now.getTime())) {
+        return Response.json({ ticker: TICKER, date, reads: {}, topTrades: [] });
+      }
+      acc = nf.acc;
+    } else {
+      acc = await loadFlow(TICKER, date);
+    }
 
     const reads: Record<string, AggressorRead> = {};
     for (const b of Object.values(acc.buckets)) {
@@ -34,14 +42,16 @@ export async function GET(request: Request) {
       if (r) reads[`${b.type}:${b.strike}`] = r;
     }
 
+    const topTrades = acc.topTrades ?? [];
+
     return Response.json({
       ticker: TICKER, date, cycles: acc.cycles, updatedAt: acc.updatedAt,
-      contracts: Object.keys(acc.buckets).length, tradesThisCycle: trades.length, reads,
-      netAggressor: netAggressorTotals(acc), velocity: volumeVelocity(acc),
+      contracts: Object.keys(acc.buckets).length, reads,
+      netAggressor: netAggressorTotals(acc), velocity: volumeVelocity(acc), classified: classifiedFlow(acc),
+      topTrades,
     });
-  } catch (err) {
-    const message = err instanceof MarketSnackError ? err.message : "Error al acumular el flujo 0DTE.";
+  } catch {
     // 200 con `error`: la página funciona sin agresor, solo pierde esa columna.
-    return Response.json({ error: message, reads: {} }, { status: 200 });
+    return Response.json({ error: "Error al leer el flujo 0DTE.", reads: {} }, { status: 200 });
   }
 }
