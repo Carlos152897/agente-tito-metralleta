@@ -145,10 +145,6 @@ export interface DoneEvent {
   type: "done";
   rows: Row[];
   meta: ChainMeta;
-  /** Análisis de Acumulación y Rapidez (categoría Estructura). */
-  structure?: import("./structure").StructureScore;
-  /** Historial diario de la cadena (hasta 45 días, acumulado hacia adelante). */
-  history?: import("./chainStore").ChainSnapshot[];
 }
 export interface ErrorEvent {
   type: "error";

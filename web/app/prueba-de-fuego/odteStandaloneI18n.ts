@@ -2,7 +2,7 @@
 // Los textos de PROSA del agente (panorama, escenarios, mejor trade, cierre)
 // vienen ya traducidos del API según ?lang=; aquí van las ETIQUETAS de la UI.
 
-import type { Lang } from "@/lib/i18n";
+import type { Lang } from "@/lib/odteStandalone/i18n";
 
 // Días de la semana para la barra de vencimientos (índice 0 = domingo).
 export const WEEKDAYS: Record<Lang, string[]> = {
@@ -324,6 +324,22 @@ export interface Dict {
   bearTouched: string;
   // aggressor caveat
   aggrCaveat: string;
+  // strategy suggestions
+  strategyHead: string;
+  strategySub: string;
+  strategyDisclaimer: string;
+  strategyNone: string;
+  strategyVertical: string;
+  strategyVerticalBullCall: string;
+  strategyVerticalBearPut: string;
+  strategyDebit: string;
+  strategyCreditCall: string;
+  strategyIronCondor: string;
+  strategyCredit: string;
+  strategyBreakeven: string;
+  strategyNoQuote: string;
+  strategyBuy: string;
+  strategySell: string;
   // errors
   unknownError: string;
 }
@@ -631,6 +647,21 @@ export const DICT: Record<Lang, Dict> = {
     bullTouched: "Bull touched",
     bearTouched: "Bear touched",
     aggrCaveat: "Volume says WHERE the activity is; the aggressor says which side. SELLING calls is resistance and SELLING puts is support; BUYING is directional. The small number is how many trades back the percentage — distrust the ones with few. The aggressor accumulates since the agent started, so it gains reliability as the session goes on.",
+    strategyHead: "Strategy suggestions",
+    strategySub: "Defined-risk alternatives built on the same GEX/walls the agent already computes above.",
+    strategyDisclaimer: "The agent computes and shows; you decide and execute. Not an order or advice.",
+    strategyNone: "No strategy setup right now — no directional entry and/or no clean wall to sell against.",
+    strategyVertical: "Vertical (debit)",
+    strategyVerticalBullCall: "Bull Call",
+    strategyVerticalBearPut: "Bear Put",
+    strategyDebit: "Debit",
+    strategyCreditCall: "Credit Call",
+    strategyIronCondor: "Iron Condor",
+    strategyCredit: "Credit",
+    strategyBreakeven: "Breakeven range",
+    strategyNoQuote: "no real quote for this leg right now",
+    strategyBuy: "Buy",
+    strategySell: "Sell",
     unknownError: "Unknown error",
   },
   es: {
@@ -930,6 +961,21 @@ export const DICT: Record<Lang, Dict> = {
     bullTouched: "Alcista tocado",
     bearTouched: "Bajista tocado",
     aggrCaveat: "El volumen dice dónde hay actividad; el agresor dice de qué lado. VENTA de calls es resistencia y VENTA de puts es soporte; COMPRA es direccional. El número pequeño es cuántos trades sustentan el porcentaje — desconfía de los que tengan pocos. El agresor se acumula desde que arrancó el agente, así que gana fiabilidad conforme avanza la sesión.",
+    strategyHead: "Opciones de recomendación",
+    strategySub: "Alternativas de riesgo definido, armadas sobre el mismo GEX/muros que el agente ya calcula arriba.",
+    strategyDisclaimer: "El agente calcula y muestra; vos decidís y ejecutás. No es una orden ni un consejo.",
+    strategyNone: "No hay setup de estrategia ahora mismo — sin entrada direccional y/o sin un muro limpio para vender.",
+    strategyVertical: "Vertical (débito)",
+    strategyVerticalBullCall: "Bull Call",
+    strategyVerticalBearPut: "Bear Put",
+    strategyDebit: "Débito",
+    strategyCreditCall: "Credit Call",
+    strategyIronCondor: "Iron Condor",
+    strategyCredit: "Crédito",
+    strategyBreakeven: "Rango de breakeven",
+    strategyNoQuote: "sin quote real de esta pata ahora mismo",
+    strategyBuy: "Comprá",
+    strategySell: "Vendé",
     unknownError: "Error desconocido",
   },
 };

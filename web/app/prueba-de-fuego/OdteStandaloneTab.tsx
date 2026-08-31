@@ -10,6 +10,7 @@ import { DEFAULT_PARAMS, dynamicParams, evaluateEntry, gateEntry, noSetupReason,
 import { altOutlook, altTradeState, despinEstimate, gammaWalls, momentumEntry, type AltFlowCtx, type Conf, type Lean } from "@/lib/odteStandalone/zerodteAlt";
 import { pickTicket, type TicketChainRow } from "@/lib/odteStandalone/zerodteTicket";
 import { unpinRead, type UnpinRead } from "@/lib/odteStandalone/zerodteUnpin";
+import type { StrategySuggestions } from "@/lib/odteStandalone/strategySuggestions";
 import ZeroDteChart from "@/app/components/OdteStandaloneChart";
 import { asLang, type Lang } from "@/lib/odteStandalone/i18n";
 import { CONFIDENCE, DICT, type Dict, WEEKDAYS } from "./odteStandaloneI18n";
@@ -1622,6 +1623,8 @@ export default function ZeroDtePage() {
         </section>
       )}
 
+      {data && <StrategySuggestionsPanel suggestions={data.suggestions} tr={tr} cv={cv} />}
+
       <p className="z-foot">{tr.chainFoot.intro} {tr.chainFoot.wall} {tr.chainFoot.magnet}</p>
     </div>
   );
@@ -1682,6 +1685,97 @@ function Line({
       </td>
       <Aggr read={putAggr} itm={putItm} tr={tr} />
     </tr>
+  );
+}
+
+/** Puntos de la opción → "$ por contrato" (×100), sin decimales. */
+function optUsd(pts: number): string {
+  return `$${Math.round(pts * 100).toLocaleString("en-US")}`;
+}
+
+/** Panel final: sugerencias de estrategia de riesgo definido (vertical, credit
+ *  call, iron condor) sobre la misma cadena/GEX de arriba. Puramente
+ *  informativo — mismo disclaimer que "GEX Trade". */
+function StrategySuggestionsPanel({
+  suggestions,
+  tr,
+  cv,
+}: {
+  suggestions: StrategySuggestions | null;
+  tr: Dict;
+  cv: (v: number) => number;
+}) {
+  const v = suggestions?.vertical ?? null;
+  const cc = suggestions?.creditCall ?? null;
+  const ic = suggestions?.ironCondor ?? null;
+  const any = v || cc || ic;
+
+  return (
+    <section className="z-strat">
+      <header className="z-strat-head">
+        <h2>{tr.strategyHead}</h2>
+        <span>{tr.strategySub}</span>
+      </header>
+
+      {!any && <p className="z-strat-empty">{tr.strategyNone}</p>}
+
+      {any && (
+        <div className="z-strat-grid">
+          {v && (
+            <div className="z-strat-card">
+              <div className="z-strat-card-tag">{v.kind === "bull_call" ? tr.strategyVerticalBullCall : tr.strategyVerticalBearPut}</div>
+              <div className="z-strat-card-legs">
+                <span>{tr.strategyBuy} {cv(v.longStrike)}{v.kind === "bull_call" ? "C" : "P"}</span>
+                <span>{tr.strategySell} {cv(v.shortStrike)}{v.kind === "bull_call" ? "C" : "P"}</span>
+              </div>
+              <div className="z-strat-card-num">
+                <span className="z-strat-card-lbl">{tr.strategyDebit}</span>
+                <b>{v.debit != null ? `${v.debit.toFixed(2)} (${optUsd(v.debit)})` : tr.strategyNoQuote}</b>
+              </div>
+              <p className="z-strat-card-reason">{v.reason}</p>
+            </div>
+          )}
+
+          {cc && (
+            <div className="z-strat-card">
+              <div className="z-strat-card-tag">{tr.strategyCreditCall}</div>
+              <div className="z-strat-card-legs">
+                <span>{tr.strategySell} {cv(cc.shortStrike)}C</span>
+                <span>{tr.strategyBuy} {cv(cc.longStrike)}C</span>
+              </div>
+              <div className="z-strat-card-num">
+                <span className="z-strat-card-lbl">{tr.strategyCredit}</span>
+                <b>{cc.credit != null ? `${cc.credit.toFixed(2)} (${optUsd(cc.credit)})` : tr.strategyNoQuote}</b>
+              </div>
+              <p className="z-strat-card-reason">{cc.reason}</p>
+            </div>
+          )}
+
+          {ic && (
+            <div className="z-strat-card">
+              <div className="z-strat-card-tag">{tr.strategyIronCondor}</div>
+              <div className="z-strat-card-legs">
+                <span>{tr.strategySell} {cv(ic.shortPut)}P / {tr.strategyBuy} {cv(ic.longPut)}P</span>
+                <span>{tr.strategySell} {cv(ic.shortCall)}C / {tr.strategyBuy} {cv(ic.longCall)}C</span>
+              </div>
+              <div className="z-strat-card-num">
+                <span className="z-strat-card-lbl">{tr.strategyCredit}</span>
+                <b>{ic.credit != null ? `${ic.credit.toFixed(2)} (${optUsd(ic.credit)})` : tr.strategyNoQuote}</b>
+              </div>
+              {ic.beLow != null && ic.beHigh != null && (
+                <div className="z-strat-card-num">
+                  <span className="z-strat-card-lbl">{tr.strategyBreakeven}</span>
+                  <b>{cv(ic.beLow)} – {cv(ic.beHigh)}</b>
+                </div>
+              )}
+              <p className="z-strat-card-reason">{ic.reason}</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      <p className="z-strat-disc">{tr.strategyDisclaimer}</p>
+    </section>
   );
 }
 
@@ -2291,4 +2385,18 @@ const CSS = `
 .z-vv-strikes { display: flex; gap: 6px 20px; flex-wrap: wrap; margin-top: 12px; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .z-vv-strikes b { color: var(--text); }
 @media (max-width: 560px) { .z-vv-grid { grid-template-columns: 1fr; } }
+.z-strat { border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; margin: 16px 0 0; background: var(--panel); }
+.z-strat-head { margin-bottom: 12px; }
+.z-strat-head h2 { margin: 0 0 3px; font-size: 15px; font-weight: 700; color: var(--text); }
+.z-strat-head span { font-size: 12.5px; color: var(--muted); }
+.z-strat-empty { padding: 10px 4px; color: var(--faint); font-size: 13px; }
+.z-strat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.z-strat-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; background: var(--panel-2); }
+.z-strat-card-tag { font-size: 12.5px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 8px; }
+.z-strat-card-legs { display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: var(--text); font-variant-numeric: tabular-nums; margin-bottom: 8px; }
+.z-strat-card-num { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+.z-strat-card-lbl { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); min-width: 70px; }
+.z-strat-card-num b { font-size: 13.5px; font-variant-numeric: tabular-nums; color: var(--text); }
+.z-strat-card-reason { margin: 8px 0 0; font-size: 12px; line-height: 1.5; color: var(--faint); }
+.z-strat-disc { margin: 14px 0 0; padding-top: 10px; border-top: 1px dashed var(--border); font-size: 11.5px; color: var(--faint); line-height: 1.5; }
 `;

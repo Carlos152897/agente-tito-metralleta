@@ -14,6 +14,7 @@ import { marketDateStr } from "./occ";
 import type { Lang } from "./i18n";
 import { dynamicParams, evaluateEntry, noSetupReason, riskReward, type EntryDecision } from "./zerodteStrategy";
 import { pickTicket, type Ticket, type TicketChainRow } from "./zerodteTicket";
+import { buildStrategySuggestions, type StrategySuggestions } from "./strategySuggestions";
 import { fetchFuturePrice, getAccessToken, parseSchwabChain, SchwabError, type SchwabChainResponse } from "./schwab";
 import type { ContractType, Row } from "./types";
 import { loadFlow, overlayRealtime, type FlowAccumulator } from "./zerodteFlow";
@@ -1049,6 +1050,9 @@ export interface ZeroDteResult {
   ticket: Ticket | null;
   /** Motivo por el que NO hay setup ahora (para mostrarlo), o null. */
   noSetup: string | null;
+  /** Sugerencias de estrategia (vertical, credit call, iron condor) sobre la
+   *  MISMA cadena — null si no es hoy o no hay spot. Ver strategySuggestions.ts. */
+  suggestions: StrategySuggestions | null;
   /** El índice sobre el que se hizo el análisis (SPX/NDX). Igual al ticker salvo
    *  en futuros (/ES→SPX, /NQ→NDX). La persistencia se llavea por este. */
   analysisTicker: string;
@@ -1136,6 +1140,7 @@ async function fetchNativeFuture(
     entryRR: entry ? riskReward(entry) : null,
     ticket: buildTicket(lines, entry, spot),
     noSetup: isToday && !entry && spot != null ? noSetupReason(spot, gex.regime, gex.kingStrike, entryParams, locale) : null,
+    suggestions: isToday && spot != null ? buildStrategySuggestions(rows, spot, gex, entry, locale) : null,
     analysisTicker: future, // se analiza a sí mismo, ya no vía SPX/NDX
     future,
     basis,
@@ -1241,6 +1246,7 @@ async function fetchIndexTastytrade(
     entryRR: entry ? riskReward(entry) : null,
     ticket: buildTicket(lines, entry, spot),
     noSetup: !entry ? noSetupReason(spot, gex.regime, gex.kingStrike, entryParams, locale) : null,
+    suggestions: buildStrategySuggestions(rows, spot, gex, entry, locale),
     analysisTicker: ticker,
     future: null,
     basis: 0,
@@ -1375,6 +1381,7 @@ export async function fetchZeroDte(
     entryRR: entry ? riskReward(entry) : null,
     ticket: buildTicket(lines, entry, spot),
     noSetup: isToday && !entry && spot != null ? noSetupReason(spot, gex.regime, gex.kingStrike, entryParams, locale) : null,
+    suggestions: isToday && spot != null ? buildStrategySuggestions(rows, spot, gex, entry, locale) : null,
     analysisTicker: analysis.toUpperCase(),
     future,
     basis,
