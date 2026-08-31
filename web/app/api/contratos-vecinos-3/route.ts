@@ -18,6 +18,7 @@ import { isMarketOpen } from "@/lib/marketHours";
 import { etDate } from "@/lib/zerodte";
 import { contratosVecinos3Signal, orderBookSentiment, NEIGHBOR_COUNT, type ActivityLevel } from "@/lib/contratosVecinos3";
 import { zeroDteGex } from "@/lib/zerodte";
+import { fetchGexContext, formatGexNote } from "@/lib/liveTickerActivity";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -101,12 +102,25 @@ export async function GET(request: Request) {
     // (`contratosVecinos3Signal`) nunca lo lee.
     const magnetStrike = zeroDteGex(rows, spot).kingStrike;
 
+    // GEX REAL de MarketSnack (no estimado por Black-Scholes como el de
+    // arriba) — pedido explícito de Carlos (2026-08-27): "ponme lo del GEX en
+    // contratos 3.0" (ya agregado antes al bot de Telegram, ver
+    // lib/liveTickerActivity.ts). Compara la pared real del lado de la
+    // operación contra target1: si está más lejos, hay más recorrido real
+    // posible — mismo mensaje que ya recibe Carlos por Telegram, ahora
+    // también en la pestaña web. Puramente informativo, igual que
+    // `magnetStrike`: el motor de la señal nunca lo lee.
+    const gex = await fetchGexContext(TICKER).catch(() => null);
+    const gexNote = gex && signal.type && signal.target1 ? formatGexNote(gex, signal.type, spot, signal.target1.strike) : null;
+
     return Response.json({
       ticker: TICKER,
       asOf: now.toISOString(),
       spot,
       marketOpen: isMarketOpen(now),
       magnetStrike,
+      gex,
+      gexNote,
       above: aboveLevels,
       below: belowLevels,
       signal,

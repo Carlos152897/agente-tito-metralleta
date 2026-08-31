@@ -57,6 +57,7 @@ interface Result {
   spot: number;
   marketOpen: boolean;
   magnetStrike: number | null;
+  gexNote: string | null;
   above: ActivityLevel[];
   below: ActivityLevel[];
   signal: ContratosVecinos3Signal;
@@ -169,7 +170,7 @@ export default function ContratosVecinos3Tab() {
 
       {data && <OrderBookBanner ob={data.orderBook} />}
 
-      {signal && <SignalBox signal={signal} />}
+      {signal && <SignalBox signal={signal} gexNote={data?.gexNote ?? null} />}
 
       {data && (
         <div className="c3-cols">
@@ -213,7 +214,7 @@ function OrderBookBanner({ ob }: { ob: OrderBookSentiment }) {
   );
 }
 
-function SignalBox({ signal }: { signal: PersistentSignal }) {
+function SignalBox({ signal, gexNote }: { signal: PersistentSignal; gexNote: string | null }) {
   if (!signal.type) {
     return (
       <section className="c3-advice c3-advice-lateral">
@@ -298,6 +299,7 @@ function SignalBox({ signal }: { signal: PersistentSignal }) {
           </ul>
         </div>
       )}
+      {gexNote && <p className="c3-gexnote">{gexNote}</p>}
       <p>{signal.reason}</p>
     </section>
   );
@@ -426,6 +428,7 @@ const CSS = `
   background: var(--panel); border: 1px solid var(--border); }
 .c3-advice-tag-wait { background: var(--amber-bg); color: var(--amber-text); border-color: var(--amber-border); }
 .c3-advice p { margin: 8px 0 0; font-size: 13.5px; line-height: 1.5; color: var(--text); }
+.c3-gexnote { font-weight: 600; color: var(--accent); }
 
 .c3-capcand { margin-top: 12px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border-soft); background: var(--panel-2); }
 .c3-capcand-confirmed { border-color: var(--green); }
