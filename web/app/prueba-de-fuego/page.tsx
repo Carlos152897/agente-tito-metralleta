@@ -10,18 +10,19 @@ import ContratosVecinos2Tab from "./ContratosVecinos2Tab";
 import ContratosVecinos3Tab from "./ContratosVecinos3Tab";
 import ContractSearchTab from "./ContractSearchTab";
 import GrandesEmpresasTab from "./GrandesEmpresasTab";
+import OdteStandaloneTab from "./OdteStandaloneTab";
 import { migrateLegacyKey } from "@/lib/legacyStorage";
 
 const KEY_TAB = "visionary.pruebaDeFuego.tab";
 
-type Tab = "TSLA" | "SPX" | "SPX_VECINOS" | "SPX_0DTE" | "VECINOS_2" | "VECINOS_3" | "buscar" | "GRANDES";
+type Tab = "TSLA" | "SPX" | "SPX_VECINOS" | "SPX_0DTE" | "VECINOS_2" | "VECINOS_3" | "buscar" | "GRANDES" | "ODTE_STANDALONE";
 
 // TSLA/SPX/SPX_VECINOS/SPX_0DTE/VECINOS_2/VECINOS_3: pedido explícito de Carlos (ago 2026) —
 // sacadas de la navegación visible, NO borradas. El componente, la ruta y el
 // `case` de render siguen intactos más abajo a propósito, por si hace falta
 // traerlas de vuelta: para eso alcanza con volver a agregar el `<button>`
 // correspondiente al array de abajo.
-const VISIBLE_TABS: Tab[] = ["SPX_0DTE", "buscar", "GRANDES"];
+const VISIBLE_TABS: Tab[] = ["ODTE_STANDALONE", "buscar", "GRANDES"];
 const DEFAULT_TAB: Tab = "GRANDES";
 
 export default function PruebaDeFuegoPage() {
@@ -50,8 +51,8 @@ export default function PruebaDeFuegoPage() {
       <div className="ideas-body">
         <div className="view-toggle-row">
           <div className="view-toggle">
-            <button className={tab === "SPX_0DTE" ? "active" : ""} onClick={() => pickTab("SPX_0DTE")}>
-              Agente ODTE
+            <button className={tab === "ODTE_STANDALONE" ? "active" : ""} onClick={() => pickTab("ODTE_STANDALONE")}>
+              0DTE
             </button>
             <button className={tab === "buscar" ? "active" : ""} onClick={() => pickTab("buscar")}>
               Búsqueda de contratos
@@ -66,6 +67,7 @@ export default function PruebaDeFuegoPage() {
         {tab === "SPX" && <TickerLiveTab ticker="SPX" />}
         {tab === "SPX_VECINOS" && <SpxVecinosTab ticker="SPX" />}
         {tab === "SPX_0DTE" && <AgenteOdteTab />}
+        {tab === "ODTE_STANDALONE" && <OdteStandaloneTab />}
         {tab === "VECINOS_2" && <ContratosVecinos2Tab />}
         {tab === "VECINOS_3" && <ContratosVecinos3Tab />}
         {tab === "buscar" && <ContractSearchTab />}
