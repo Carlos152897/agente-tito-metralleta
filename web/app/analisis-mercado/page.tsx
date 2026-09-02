@@ -40,6 +40,35 @@ interface Analysis {
   simpleSummary: string;
 }
 
+interface InstrumentLevel {
+  price: number;
+  kind: "soporte" | "resistencia";
+  strength: number;
+  why: string;
+}
+
+interface InstrumentChartPoint {
+  time: string;
+  close: number;
+}
+
+interface InstrumentLevels {
+  key: string;
+  supports: InstrumentLevel[];
+  resistances: InstrumentLevel[];
+  chart: InstrumentChartPoint[];
+  proxyTicker: string | null;
+  isRealAsset: boolean;
+}
+
+type EventLean = "up" | "down";
+
+interface EventImpactItem {
+  key: string;
+  lean: EventLean;
+  reason: string;
+}
+
 interface EarningsItem {
   ticker: string;
   earningsDate: string;
@@ -74,6 +103,8 @@ interface Result {
   futuresOpen: boolean;
   readings: Reading[];
   analysis: Analysis;
+  instrumentLevels: InstrumentLevels[];
+  eventImpacts: EventImpactItem[];
   earningsWatch: EarningsItem[];
   extendedMoves: ExtendedMoveItem[];
   catalystNews: NewsItem[];
@@ -92,6 +123,38 @@ const dateET = (iso: string) => new Date(iso).toLocaleDateString("en-US", { time
 const REGIME_CLASS: Record<Regime, string> = { risk_on: "ma-badge-on", risk_off: "ma-badge-off", mixto: "ma-badge-mixed" };
 const LEAN_CLASS: Record<Lean, string> = { risk_on: "ma-lean-on", risk_off: "ma-lean-off", neutral: "ma-lean-neutral" };
 const LEAN_DOT: Record<Lean, string> = { risk_on: "🟢", risk_off: "🔴", neutral: "⚪" };
+
+/** Mini gráfica de línea con las bandas de soporte/resistencia superpuestas — proporciona la "gráfica en tiempo real" por instrumento que pidió Carlos. */
+function InstrumentSparkline({ levels, last }: { levels: InstrumentLevels; last: number }) {
+  const { chart, supports, resistances } = levels;
+  if (chart.length < 5) return null;
+  const W = 220, H = 60, PAD = 3;
+  const closes = chart.map((c) => c.close);
+  const bandPrices = [...supports, ...resistances].map((l) => l.price);
+  const allVals = [...closes, ...bandPrices, last];
+  const min = Math.min(...allVals);
+  const max = Math.max(...allVals);
+  const range = max - min || Math.max(1, Math.abs(min) * 0.01);
+  const x = (i: number) => PAD + (i / (chart.length - 1)) * (W - PAD * 2);
+  const y = (v: number) => H - PAD - ((v - min) / range) * (H - PAD * 2);
+  const path = chart.map((c, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(c.close).toFixed(1)}`).join(" ");
+  const up = last >= closes[0];
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="ma-spark" preserveAspectRatio="none">
+      {supports.map((l, i) => (
+        <line key={`s${i}`} x1={0} x2={W} y1={y(l.price)} y2={y(l.price)} className="ma-spark-support" />
+      ))}
+      {resistances.map((l, i) => (
+        <line key={`r${i}`} x1={0} x2={W} y1={y(l.price)} y2={y(l.price)} className="ma-spark-resistance" />
+      ))}
+      <path d={path} className={up ? "ma-spark-line-up" : "ma-spark-line-down"} fill="none" />
+      <circle cx={x(chart.length - 1)} cy={y(last)} r={2.6} className={up ? "ma-spark-dot-up" : "ma-spark-dot-down"} />
+    </svg>
+  );
+}
+
+const EVENT_LEAN_TEXT: Record<EventLean, string> = { up: "⬆ presión al alza", down: "⬇ presión a la baja" };
 
 export default function MarketAnalysisPage() {
   const [data, setData] = useState<Result | null>(null);
@@ -112,6 +175,7 @@ export default function MarketAnalysisPage() {
           Array.isArray(parsed.readings) && Array.isArray(parsed.earningsWatch) &&
           Array.isArray(parsed.extendedMoves) && Array.isArray(parsed.catalystNews) &&
           Array.isArray(parsed.otherNews) && Array.isArray(parsed.dailyAlerts) &&
+          Array.isArray(parsed.instrumentLevels) && Array.isArray(parsed.eventImpacts) &&
           typeof parsed.analysis?.simpleSummary === "string";
         if (isComplete) setData(parsed as Result);
         else window.localStorage.removeItem(KEY_LAST);
@@ -219,13 +283,48 @@ export default function MarketAnalysisPage() {
             )}
 
             <section className="ma-instruments">
-              {data.readings.map((r) => (
-                <div key={r.key} className="ma-instrument-card">
-                  <div className="ma-instrument-label">{r.label}</div>
-                  <div className="ma-instrument-price">{money(r.last)}</div>
-                  <div className={`ma-instrument-change ${r.changePct >= 0 ? "ma-up" : "ma-down"}`}>{pct(r.changePct)}</div>
-                </div>
-              ))}
+              {data.readings.map((r) => {
+                const levels = data.instrumentLevels.find((l) => l.key === r.key);
+                const impact = data.eventImpacts.find((e) => e.key === r.key);
+                const keySupport = levels?.supports[0];
+                const keyResistance = levels?.resistances[0];
+                return (
+                  <div key={r.key} className="ma-instrument-card">
+                    <div className="ma-instrument-label">{r.label}</div>
+                    <div className="ma-instrument-price">{money(r.last)}</div>
+                    <div className={`ma-instrument-change ${r.changePct >= 0 ? "ma-up" : "ma-down"}`}>{pct(r.changePct)}</div>
+
+                    {levels && levels.chart.length >= 5 && <InstrumentSparkline levels={levels} last={r.last} />}
+
+                    {(keySupport || keyResistance) && (
+                      <div className="ma-instrument-levels">
+                        {keyResistance && (
+                          <div className="ma-level ma-level-res">
+                            <span>R</span> {money(keyResistance.price)}
+                          </div>
+                        )}
+                        {keySupport && (
+                          <div className="ma-level ma-level-sup">
+                            <span>S</span> {money(keySupport.price)}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {levels?.proxyTicker && !levels.isRealAsset && (
+                      <div className="ma-instrument-proxy">niveles vía {levels.proxyTicker} (proxy, escalado)</div>
+                    )}
+                    {levels?.key === "VIX" && (
+                      <div className="ma-instrument-proxy">bandas fijas de la guía</div>
+                    )}
+
+                    {impact && (
+                      <div className={`ma-instrument-impact ma-instrument-impact-${impact.lean}`}>
+                        {EVENT_LEAN_TEXT[impact.lean]} — {impact.reason}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </section>
 
             <section className="ma-signals">
@@ -298,7 +397,12 @@ export default function MarketAnalysisPage() {
           (entre temporadas de resultados puede no haber ninguna agendada). "Movimiento fuerte fuera de horario"
           es distinto: avisa cuando una de las 13 empresas del radar ya se movió ≥1.5% en pre-market/after-hours
           ahora mismo, sin importar si la fecha estaba agendada — así se ve la reacción real a un reporte que
-          recién salió. Dinero simulado, no es consejo financiero.
+          recién salió. Niveles clave (soporte/resistencia) y gráfica por instrumento: Massive no tiene historial de
+          futuros ni de VIX en este plan, así que se usan proxies líquidos (QQQ/SPY/DIA/IWM/GLD/USO/IEF/UUP) escalados
+          al precio real del instrumento — BTC es el único con datos 100% reales (cripto). VIX usa las bandas fijas de
+          la guía (15/20/25) en vez de historial. Cuando hay guerra/geopolítica en las noticias de hoy, cada
+          instrumento muestra una lectura de "riesgo apagado" (heurística del manual, no una predicción exacta).
+          Dinero simulado, no es consejo financiero.
         </p>
       </div>
     </main>
@@ -351,13 +455,31 @@ const CSS = `
 .ma-extended-chip.ma-up { color: var(--green-dark); }
 .ma-extended-chip.ma-down { color: #b42318; }
 
-.ma-instruments { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; margin: 0 0 18px; }
+.ma-instruments { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; margin: 0 0 18px; }
 .ma-instrument-card { border: 1px solid var(--border); background: var(--panel); border-radius: 10px; padding: 10px 12px; }
 .ma-instrument-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 700; margin-bottom: 4px; }
 .ma-instrument-price { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .ma-instrument-change { font-size: 12.5px; font-weight: 700; margin-top: 2px; }
 .ma-up { color: var(--green-dark); }
 .ma-down { color: #b42318; }
+
+.ma-spark { width: 100%; height: 44px; margin-top: 8px; display: block; }
+.ma-spark-line-up { stroke: var(--green-dark); stroke-width: 1.6; }
+.ma-spark-line-down { stroke: #b42318; stroke-width: 1.6; }
+.ma-spark-dot-up { fill: var(--green-dark); }
+.ma-spark-dot-down { fill: #b42318; }
+.ma-spark-support { stroke: var(--green); stroke-width: 1; stroke-dasharray: 3,3; opacity: .7; }
+.ma-spark-resistance { stroke: #d9524f; stroke-width: 1; stroke-dasharray: 3,3; opacity: .7; }
+
+.ma-instrument-levels { display: flex; gap: 10px; margin-top: 6px; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.ma-level { display: flex; align-items: center; gap: 4px; }
+.ma-level span { font-weight: 800; font-size: 10px; border-radius: 4px; padding: 1px 4px; }
+.ma-level-res span { background: var(--red-bg); color: #b42318; }
+.ma-level-sup span { background: var(--green-bg); color: var(--green-dark); }
+.ma-instrument-proxy { font-size: 10px; color: var(--faint); margin-top: 4px; }
+.ma-instrument-impact { font-size: 11.5px; font-weight: 600; margin-top: 8px; padding: 6px 8px; border-radius: 7px; line-height: 1.4; }
+.ma-instrument-impact-down { background: var(--red-bg); color: #7a271a; }
+.ma-instrument-impact-up { background: var(--green-bg); color: var(--green-dark); }
 
 .ma-signals { margin: 0 0 18px; }
 .ma-signals h2 { font-size: 15px; margin: 0 0 10px; }

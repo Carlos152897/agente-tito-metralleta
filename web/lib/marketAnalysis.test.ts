@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
   analyzeMarket, buildSignals, breadthWarning, buildKidSimpleSummary, vixBand,
-  classifyHeadline, buildDailyAlerts, type MacroReading,
+  classifyHeadline, buildDailyAlerts, buildInstrumentLevels, eventImpacts, type MacroReading,
 } from "./marketAnalysis";
+import type { LvlBar } from "./levels";
 
 function reading(key: MacroReading["key"], changePct: number, last = 100): MacroReading {
   const prevClose = last / (1 + changePct / 100);
@@ -190,5 +191,80 @@ describe("analyzeMarket — mixed scenario", () => {
     ];
     const result = analyzeMarket(readings);
     expect(result.regime).toBe("mixto");
+  });
+});
+
+describe("eventImpacts", () => {
+  it("devuelve vacío sin guerra en las noticias", () => {
+    expect(eventImpacts(false, false)).toHaveLength(0);
+  });
+
+  it("marca risk-off en índices y BTC, risk-on en refugios, cuando hay guerra", () => {
+    const impacts = eventImpacts(false, true);
+    const byKey = Object.fromEntries(impacts.map((i) => [i.key, i.lean]));
+    expect(byKey.NQ).toBe("down");
+    expect(byKey.ES).toBe("down");
+    expect(byKey.BTC).toBe("down");
+    expect(byKey.VIX).toBe("up");
+    expect(byKey.GC).toBe("up");
+    expect(byKey.ZN).toBe("up");
+    expect(byKey.DXY).toBe("up");
+  });
+
+  it("solo agrega petróleo (CL) cuando la guerra toca una zona petrolera", () => {
+    expect(eventImpacts(false, true).some((i) => i.key === "CL")).toBe(false);
+    const withOil = eventImpacts(true, false);
+    expect(withOil.find((i) => i.key === "CL")?.lean).toBe("up");
+  });
+});
+
+describe("buildInstrumentLevels", () => {
+  const now = new Date("2026-08-15T20:00:00Z");
+
+  function makeBars(prices: number[]): LvlBar[] {
+    return prices.map((p, i) => ({
+      time: `2026-07-${String(i + 1).padStart(2, "0")}`,
+      high: p * 1.01, low: p * 0.99, close: p,
+    }));
+  }
+
+  it("VIX usa las bandas fijas de la guía, sin necesidad de barras", () => {
+    const report = buildInstrumentLevels("VIX", null, [], 22, now);
+    expect(report.supports.map((s) => s.price)).toEqual([15]);
+    expect(report.resistances.map((r) => r.price)).toEqual([20, 25]);
+    expect(report.chart).toHaveLength(0);
+  });
+
+  it("devuelve vacío si no hay suficientes barras del proxy", () => {
+    const report = buildInstrumentLevels("NQ", "QQQ", makeBars([480, 481]), 21000, now);
+    expect(report.supports).toHaveLength(0);
+    expect(report.resistances).toHaveLength(0);
+    expect(report.proxyTicker).toBe("QQQ");
+  });
+
+  it("escala los niveles del proxy al precio real del instrumento (NQ vs QQQ)", () => {
+    // Precios de QQQ oscilando 470-490, con un pivote claro en 490.
+    const prices = [470, 475, 480, 485, 490, 485, 480, 478, 480, 482, 480, 478,
+      480, 482, 484, 486, 484, 482, 480, 481, 480, 482, 483, 481, 480];
+    const bars = makeBars(prices);
+    const spot = 21000; // NQ real, muy distinto de QQQ (~480)
+    const report = buildInstrumentLevels("NQ", "QQQ", bars, spot, now);
+    expect(report.proxyTicker).toBe("QQQ");
+    expect(report.isRealAsset).toBe(false);
+    // Los niveles deben quedar en la escala de NQ (miles), no en la de QQQ (cientos).
+    for (const lvl of [...report.supports, ...report.resistances]) {
+      expect(lvl.price).toBeGreaterThan(1000);
+    }
+    expect(report.chart.length).toBe(bars.length);
+    expect(report.chart[report.chart.length - 1].close).toBeGreaterThan(1000);
+  });
+
+  it("BTC no escala — usa el precio real directamente (mismo activo)", () => {
+    const prices = Array.from({ length: 25 }, (_, i) => 60000 + i * 200);
+    const bars = makeBars(prices);
+    const spot = prices[prices.length - 1];
+    const report = buildInstrumentLevels("BTC", "X:BTCUSD", bars, spot, now);
+    expect(report.isRealAsset).toBe(true);
+    expect(report.chart[report.chart.length - 1].close).toBe(spot);
   });
 });

@@ -386,3 +386,142 @@ export function buildDailyAlerts(
 
   return alerts.sort((a, b) => LEVEL_ORDER[a.level] - LEVEL_ORDER[b.level]);
 }
+
+// ── Niveles clave + gráfica por instrumento (pedido explícito de Carlos, ago
+// 2026: "en cada índice dame los key levels y la gráfica en tiempo real").
+// Massive no tiene historial para VIX en este plan (403 "not entitled") ni
+// para los futuros NQ/ES/YM/RTY/ZN/GC/CL (no cotizan como ticker de
+// acción/ETF) — se usa un PROXY líquido y LÍQUIDO (ETF, o el propio activo
+// real para BTC vía `X:BTCUSD`) declarado en la UI (`proxyTicker`), y los
+// niveles/la gráfica se ESCALAN al precio real del instrumento con la razón
+// spot/proxy DEL MOMENTO (no una razón fija) — así sobrevive a splits del ETF
+// y a que la brecha futuro↔proxy se mueva con el tiempo.
+
+import { findLevels, type LvlBar, type Level, type LevelKind } from "./levels";
+
+export const INSTRUMENT_PROXY: Partial<Record<InstrumentKey, string>> = {
+  NQ: "QQQ", ES: "SPY", YM: "DIA", RTY: "IWM",
+  GC: "GLD", CL: "USO", ZN: "IEF", DXY: "UUP",
+  BTC: "X:BTCUSD", // el activo real, no un sustituto — no hace falta escalar
+};
+
+export interface InstrumentLevel {
+  price: number;
+  kind: LevelKind;
+  strength: number;
+  why: string;
+}
+
+export interface InstrumentChartPoint {
+  time: string;
+  close: number;
+}
+
+export interface InstrumentLevelsReport {
+  key: InstrumentKey;
+  supports: InstrumentLevel[];
+  resistances: InstrumentLevel[];
+  chart: InstrumentChartPoint[];
+  /** Ticker de donde salió el historial — null si no hay datos disponibles. */
+  proxyTicker: string | null;
+  /** true si el proxy ES el activo real (BTC), no un ETF sustituto escalado. */
+  isRealAsset: boolean;
+}
+
+/** VIX no tiene historial en este plan — se usan las bandas fijas de la guía (15/20/25) como "niveles clave". */
+function vixFixedLevels(): Pick<InstrumentLevelsReport, "supports" | "resistances"> {
+  return {
+    supports: [{ price: 15, kind: "soporte", strength: 100, why: "banda de calma de la guía — por debajo, complacencia" }],
+    resistances: [
+      { price: 20, kind: "resistencia", strength: 70, why: "banda de nerviosismo — por encima, el mercado se pone cauteloso" },
+      { price: 25, kind: "resistencia", strength: 100, why: "banda de pánico — por encima, miedo real en el mercado" },
+    ],
+  };
+}
+
+const MIN_BARS_FOR_LEVELS = 20;
+
+/**
+ * Niveles clave + serie para la gráfica de UN instrumento. PURA — recibe las
+ * barras crudas del proxy ya descargadas (o [] si falló la red); la razón de
+ * escala se calcula acá mismo con el último cierre del proxy vs. el spot real.
+ */
+export function buildInstrumentLevels(
+  key: InstrumentKey,
+  proxyTicker: string | null,
+  proxyBars: LvlBar[],
+  spot: number,
+  now: Date,
+): InstrumentLevelsReport {
+  if (key === "VIX") {
+    return { key, ...vixFixedLevels(), chart: [], proxyTicker: null, isRealAsset: false };
+  }
+
+  const isRealAsset = key === "BTC";
+  if (!proxyTicker || proxyBars.length < MIN_BARS_FOR_LEVELS || !(spot > 0)) {
+    return { key, supports: [], resistances: [], chart: [], proxyTicker, isRealAsset };
+  }
+
+  const lastProxyClose = proxyBars[proxyBars.length - 1].close;
+  const ratio = isRealAsset ? 1 : lastProxyClose > 0 ? spot / lastProxyClose : 1;
+
+  const scaledBars: LvlBar[] = proxyBars.map((b) => ({
+    time: b.time, high: b.high * ratio, low: b.low * ratio, close: b.close * ratio,
+  }));
+
+  const report = findLevels({ bars: scaledBars, spot, now });
+  const toLevel = (l: Level): InstrumentLevel => ({ price: l.price, kind: l.kind, strength: l.strength, why: l.why });
+
+  return {
+    key,
+    supports: report.supports.slice(0, 3).map(toLevel),
+    resistances: report.resistances.slice(0, 3).map(toLevel),
+    chart: scaledBars.map((b) => ({ time: b.time, close: b.close })),
+    proxyTicker,
+    isRealAsset,
+  };
+}
+
+// ── Impacto de eventos del día sobre CADA instrumento (pedido explícito de
+// Carlos, ago 2026: "si hay un bombardeo, decime que esto va a hacer caer el
+// mercado, para todos los índices que están ahí, incluso BTC"). Reusa la
+// misma clasificación de titulares que ya arma `buildDailyAlerts`
+// (war_oil/war_other) — es el mismo "sí, hoy hay un evento" que ya se
+// muestra arriba, solo que acá se aplica el libro de jugadas de riesgo-
+// apagado (risk-off) a CADA instrumento en vez de solo mencionar NQ/ES.
+// Heurística declarada como tal en el propio `reason` — no una predicción
+// exacta, es la lectura típica del manual de Carlos para este tipo de evento.
+
+export type EventLean = "up" | "down";
+
+export interface EventImpact {
+  key: InstrumentKey;
+  lean: EventLean;
+  reason: string;
+}
+
+/**
+ * Lectura "risk-off" por instrumento cuando hoy hay guerra/geopolítica en las
+ * noticias. `warOil` = además toca una zona petrolera (afecta al crudo
+ * específicamente) — sin eso, CL queda sin lectura porque no todo evento de
+ * guerra mueve el petróleo.
+ */
+export function eventImpacts(warOil: boolean, warOther: boolean): EventImpact[] {
+  if (!warOil && !warOther) return [];
+
+  const impacts: EventImpact[] = [
+    { key: "NQ", lean: "down", reason: "el miedo saca dinero de acciones — presión típica a la baja." },
+    { key: "ES", lean: "down", reason: "el miedo saca dinero de acciones — presión típica a la baja." },
+    { key: "YM", lean: "down", reason: "el miedo saca dinero de acciones — presión típica a la baja." },
+    { key: "RTY", lean: "down", reason: "el miedo saca dinero de acciones — presión típica a la baja, y las empresas chicas suelen caer más fuerte." },
+    { key: "BTC", lean: "down", reason: "en episodios de miedo, bitcoin suele moverse como activo de riesgo — presión típica a la baja (aunque a veces se desacopla)." },
+    { key: "VIX", lean: "up", reason: "el miedo del mercado sube — es normal ver un salto en el VIX." },
+    { key: "ZN", lean: "up", reason: "el dinero busca refugio en bonos del Tesoro — el precio del bono (ZN, vía futuro de la nota) tiende a subir." },
+    { key: "GC", lean: "up", reason: "el oro es el refugio clásico en este tipo de eventos — tiende a subir." },
+    { key: "DXY", lean: "up", reason: "el dólar suele fortalecerse como refugio en episodios de miedo/geopolítica." },
+  ];
+  if (warOil) {
+    impacts.push({ key: "CL", lean: "up", reason: "la noticia toca una zona petrolera — el crudo (WTI) tiende a subir, y eso presiona más todavía a las acciones." });
+  }
+  return impacts;
+}

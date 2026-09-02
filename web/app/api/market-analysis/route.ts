@@ -26,9 +26,13 @@ import { fetchActiveFuture, fetchMacroQuote, TastytradeError } from "@/lib/tasty
 import { fetchAssetSnapshot, MarketSnackError } from "@/lib/marketsnack";
 import { fetchMacroFeeds } from "@/lib/news";
 import { isMarketOpen, isPreMarket, isFuturesMarketOpen } from "@/lib/marketHours";
-import { analyzeMarket, buildDailyAlerts, type InstrumentKey, type MacroReading } from "@/lib/marketAnalysis";
+import {
+  analyzeMarket, buildDailyAlerts, classifyHeadline, buildInstrumentLevels, eventImpacts,
+  INSTRUMENT_PROXY, type InstrumentKey, type MacroReading,
+} from "@/lib/marketAnalysis";
 import { GRANDES_EMPRESAS } from "@/lib/grandesEmpresas";
 import { marketDateStr } from "@/lib/occ";
+import { cachedDailyBars } from "@/lib/barsStore";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -71,7 +75,7 @@ export async function GET() {
   const now = new Date();
 
   try {
-    const [futureReadings, vixQuote, dxySnapshot, macroNews, earningsSnapshots] = await Promise.all([
+    const [futureReadings, vixQuote, dxySnapshot, macroNews, earningsSnapshots, proxyBarsByTicker] = await Promise.all([
       Promise.all(FUTURE_INSTRUMENTS.map((f) => fetchFutureReading(f.key, f.label, f.productCode))),
       fetchMacroQuote({ index: "VIX" }).catch(() => null),
       fetchAssetSnapshot("UUP").catch(() => null),
@@ -82,6 +86,16 @@ export async function GET() {
           return { ticker: t.id, snap };
         }),
       ),
+      // Historial diario del proxy de cada instrumento, para "key levels" +
+      // gráfica (ver lib/marketAnalysis.ts: Massive no tiene VIX ni futuros en
+      // este plan). Cacheado por día de mercado (`cachedDailyBars`) — solo
+      // pega a Massive una vez por ticker por día, el resto sale del cache.
+      Promise.all(
+        Object.entries(INSTRUMENT_PROXY).map(async ([key, ticker]) => {
+          const bars = await cachedDailyBars(ticker, 150, now);
+          return [key, bars] as const;
+        }),
+      ).then((pairs) => new Map(pairs)),
     ]);
 
     const readings: MacroReading[] = futureReadings.filter((r): r is MacroReading => r != null);
@@ -100,6 +114,14 @@ export async function GET() {
     }
 
     const analysis = analyzeMarket(readings);
+
+    // Key levels + gráfica por instrumento (pedido explícito de Carlos: "en
+    // cada índice dame los key levels y la gráfica en tiempo real, incluso
+    // BTC"). VIX se calcula igual (bandas fijas, sin barras) — ver
+    // buildInstrumentLevels en lib/marketAnalysis.ts.
+    const instrumentLevels = readings.map((r) =>
+      buildInstrumentLevels(r.key, INSTRUMENT_PROXY[r.key] ?? null, proxyBarsByTicker.get(r.key) ?? [], r.last, now),
+    );
 
     // Empresas con fecha de resultados REAL ya agendada (no siempre hay —
     // entre temporadas de resultados, MarketSnack la trae en null para todos).
@@ -146,6 +168,16 @@ export async function GET() {
       .map((n) => ({ title: n.title, url: n.url }));
     const dailyAlerts = buildDailyAlerts(headlinesToday, earningsToday);
 
+    // Impacto de eventos del día sobre CADA instrumento (pedido explícito de
+    // Carlos: "si hay un bombardeo, decime que va a caer el mercado, para
+    // todos los índices, incluso BTC"). Reusa la MISMA clasificación de
+    // titulares de hoy que ya arma `dailyAlerts` arriba — si alguno calificó
+    // como guerra, se aplica el libro de riesgo-apagado a cada instrumento.
+    const todaysCategories = headlinesToday.map((h) => classifyHeadline(h.title));
+    const warOil = todaysCategories.includes("war_oil");
+    const warOther = todaysCategories.includes("war_other");
+    const eventImpactsToday = eventImpacts(warOil, warOther);
+
     return Response.json({
       asOf: now.toISOString(),
       marketOpen: isMarketOpen(now),
@@ -153,6 +185,8 @@ export async function GET() {
       futuresOpen: isFuturesMarketOpen(now),
       readings,
       analysis,
+      instrumentLevels,
+      eventImpacts: eventImpactsToday,
       earningsWatch,
       extendedMoves,
       catalystNews,
