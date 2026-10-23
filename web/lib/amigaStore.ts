@@ -248,10 +248,35 @@ export async function processAmigaDay(fecha: string, now: Date): Promise<{ hecha
 
 // ───────────────────────── Lectura en vivo (tastytrade) ─────────────────────────
 
+// La regla lee 3 veces al día (1–5 DTE): la lectura en vivo se reusa 5 min. Si tastytrade
+// corta por exceso de consultas (HTTP 429), se devuelve la última buena marcada como vieja.
+const LIVE_TTL_MS = 5 * 60_000;
 let liveCache: { at: number; lectura: Lectura } | null = null;
 
-export async function amigaLive(now: Date): Promise<Lectura> {
-  if (liveCache && now.getTime() - liveCache.at < 60_000) return liveCache.lectura;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Cotizaciones en tandas de ≤ 100 símbolos, UNA a la vez y con pausa (sin ráfagas). */
+async function quotesSecuenciales(symbols: string[]) {
+  const out = new Map<string, Awaited<ReturnType<typeof fetchOptionQuotesByType>> extends Map<string, infer Q> ? Q : never>();
+  for (let i = 0; i < symbols.length; i += 100) {
+    const part = await fetchOptionQuotesByType(symbols.slice(i, i + 100));
+    for (const [k, v] of part) out.set(k, v);
+    if (i + 100 < symbols.length) await sleep(250);
+  }
+  return out;
+}
+
+export async function amigaLive(now: Date): Promise<Lectura & { stale?: boolean }> {
+  if (liveCache && now.getTime() - liveCache.at < LIVE_TTL_MS) return liveCache.lectura;
+  try {
+    return await amigaLiveFresh(now);
+  } catch (e) {
+    if (liveCache) return { ...liveCache.lectura, stale: true };
+    throw e;
+  }
+}
+
+async function amigaLiveFresh(now: Date): Promise<Lectura> {
   const hoy = marketDateStr(now);
   const exps = await fetchNestedOptionChain("SPX");
   const vencs = [...new Set(exps.map((e) => e["expiration-date"]))].filter((d) => d > hoy).sort().slice(0, REGLA.plazos);
@@ -269,8 +294,14 @@ export async function amigaLive(now: Date): Promise<Lectura> {
   for (const [i, venc] of vencs.entries()) {
     const exp = exps.find((e) => e["expiration-date"] === venc);
     if (!exp) continue;
-    const strikes = exp.strikes.filter((s) => Math.abs(Number(s["strike-price"]) - spot) <= RANGO);
-    const quotes = await fetchOptionQuotesByType(strikes.flatMap((s) => [s.call, s.put]).filter(Boolean));
+    // Rango según la volatilidad de ese plazo (~2.2σ, entre 60 y 250 pts): ahí caen los Δ 0.10–0.20,
+    // los muros (±0.79%) y el imán; pedir más solo gasta consultas.
+    const diasV = Math.max(diasHasta(venc, now.getTime()), 0.5 / 24);
+    const sigmaEst = spot * 0.18 * Math.sqrt(diasV / 365);
+    const rango = Math.min(RANGO, Math.max(60, 2.2 * sigmaEst));
+    const strikes = exp.strikes.filter((s) => Math.abs(Number(s["strike-price"]) - spot) <= rango);
+    const quotes = await quotesSecuenciales(strikes.flatMap((s) => [s.call, s.put]).filter(Boolean));
+    await sleep(250);
     const cot: Cotizacion[] = [];
     for (const s of strikes) {
       for (const [tipo, sym] of [["call", s.call], ["put", s.put]] as const) {

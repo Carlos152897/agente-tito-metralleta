@@ -147,11 +147,14 @@ export default function VisionFuturaAmiga({ replayDate, replayTickMs }: { replay
           <b style={{ fontSize: 14 }}>
             {replay
               ? lectura ? `Lectura de las ${lectura.hora} (SPX ${k(lectura.spot)})` : "Todavía no hubo lectura a esta hora (la primera es a las 10:00)"
-              : lectura ? `Lectura de ahora (SPX ${k(lectura.spot)}, tastytrade)` : "Lectura de ahora"}
+              : lectura ? `Lectura de ahora (SPX ${k(lectura.spot)}, tastytrade, ${new Date(lectura.at).toLocaleTimeString("es-MX", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hour12: false })} NY)` : "Lectura de ahora"}
           </b>
           {!replay && data?.liveError && <span style={{ fontSize: 12, color: "var(--amber-text)" }}>{data.liveError}</span>}
         </div>
-        {!replay && <div style={{ fontSize: 12, color: "var(--faint)" }}>Las lecturas oficiales de la regla son a las 10:00, 12:30 y 15:30; esta es una lectura continua con los precios de este momento.</div>}
+        {!replay && (lectura as (Lectura & { stale?: boolean }) | null)?.stale && (
+          <div style={{ fontSize: 12, color: "var(--amber-text)" }}>tastytrade pidió esperar: se muestra la última lectura buena.</div>
+        )}
+        {!replay && <div style={{ fontSize: 12, color: "var(--faint)" }}>Las lecturas oficiales de la regla son a las 10:00, 12:30 y 15:30; esta se actualiza cada 5 minutos con los precios de ese momento.</div>}
         {lectura && (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 10 }}>
             {lectura.plazos.map((p) => <PlazoCard key={p.plazo} p={p} />)}
