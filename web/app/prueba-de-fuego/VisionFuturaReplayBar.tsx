@@ -6,6 +6,7 @@
 // control deslizante 9:30–16:00 (cada 5 min), ⏮ −5 min ▶/⏸ +5 min ⏭ y velocidad.
 
 import type { ReplayPayload } from "@/lib/visionFuturaReplay";
+import { useVisionLabels } from "./visionLabels";
 
 export interface ReplayDay {
   date: string;
@@ -40,6 +41,7 @@ const btn: React.CSSProperties = {
 };
 
 export default function VisionFuturaReplayBar(p: Props) {
+  const lb = useVisionLabels();
   const ticks = p.replay?.ticks ?? [];
   const last = Math.max(0, ticks.length - 1);
   const tick = ticks[Math.min(p.idx, last)];
@@ -93,7 +95,7 @@ export default function VisionFuturaReplayBar(p: Props) {
           <div style={{ display: "flex", alignItems: "baseline", gap: 14, flexWrap: "wrap" }}>
             <span style={{ fontSize: 28, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{hmNy(tick.time)} <span style={{ fontSize: 13, color: "var(--muted)", fontWeight: 400 }}>NY</span></span>
             <span style={{ fontSize: 15, fontVariantNumeric: "tabular-nums" }}>
-              SPX <b>{tick.spot.spx.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</b>{" "}
+              {lb.main} <b>{tick.spot.spx.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</b>{" "}
               <span style={{ color: move >= 0 ? "var(--green)" : "var(--red-soft)" }}>{move >= 0 ? "+" : ""}{move.toFixed(2)} desde la apertura</span>
             </span>
             <span style={{ fontSize: 12, color: "var(--muted)" }}>momento {Math.min(p.idx, last) + 1} de {ticks.length}</span>
@@ -142,7 +144,7 @@ export default function VisionFuturaReplayBar(p: Props) {
               <div style={{ fontSize: 13 }}>
                 Backtest de este día: <b>{bt.trades}</b> entradas · <b style={{ color: "var(--green)" }}>{bt.wins} ganadas</b> ·{" "}
                 <b style={{ color: "var(--red-soft)" }}>{bt.losses} perdidas</b> ·{" "}
-                <b style={{ color: bt.points >= 0 ? "var(--green)" : "var(--red-soft)" }}>{bt.points >= 0 ? "+" : ""}{bt.points.toFixed(2)} pts SPX</b>
+                <b style={{ color: bt.points >= 0 ? "var(--green)" : "var(--red-soft)" }}>{bt.points >= 0 ? "+" : ""}{bt.points.toFixed(2)} {lb.main === "TSLA" ? "$ por acción" : `pts ${lb.main}`}</b>
                 <span style={{ color: "var(--faint)" }}> (guardado en el Excel)</span>
               </div>
             );

@@ -21,22 +21,24 @@ export async function GET(req: Request) {
   const params = new URL(req.url).searchParams;
   const force = params.get("force") === "1";
   const date = params.get("date");
+  const inst = (params.get("inst") ?? "SPX").toUpperCase();
   try {
     if (date && !force) {
-      const saved = loadSavedReplay(date);
+      const saved = loadSavedReplay(date, inst);
       if (saved) return Response.json(saved);
     }
-    const replay = await buildReplay(new Date(), { force });
+    const replay = await buildReplay(new Date(), { force, inst });
     if (date && replay.date !== date) {
       return Response.json({ error: `No hay repetición guardada del ${date}.` }, { status: 404 });
     }
     if (!replay.partial) {
       saveBacktestDay({
         ...simulateDay({ date: replay.date, alerts: replay.alerts, priceSeries: replay.priceSeries }),
+        instrument: replay.instrument,
         spreads: spreadsForBacktest(replay.spreadTrades ?? []),
       });
       // "Verticales amiga": lecturas + salidas + cierre del día (idempotente, no repite lo hecho).
-      await processAmigaDay(replay.date, new Date()).catch(() => null);
+      if (replay.instrument === "SPX") await processAmigaDay(replay.date, new Date()).catch(() => null);
     }
     return Response.json(replay);
   } catch (err) {

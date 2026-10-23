@@ -9,6 +9,7 @@
 
 import type { ReplaySpreadTrade } from "@/lib/visionFuturaReplay";
 import { spreadPnlAtExpiry } from "@/lib/visionFuturaSpreads";
+import { useVisionLabels } from "./visionLabels";
 
 const UP = "var(--green)";
 const DOWN = "var(--red-soft)";
@@ -16,13 +17,16 @@ const usd = (n: number) => `${n > 0 ? "+" : n < 0 ? "−" : ""}$${Math.abs(Math.
 const lvl = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 2 });
 const hmNy = (ms: number) => new Date(ms).toLocaleTimeString("es-MX", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hour12: false });
 
-export default function VisionFuturaSpreadTrades({ trades, tickMs, spot, isLastTick, partial }: {
+export default function VisionFuturaSpreadTrades({ trades, tickMs, spot, isLastTick, partial, atClose }: {
   trades: ReplaySpreadTrade[];
   tickMs: number;
   spot: number;
   isLastTick: boolean;
   partial: boolean;
+  /** Las opciones no vencen ese día (TSLA): el resultado final es el valor de mercado al cierre. */
+  atClose?: boolean;
 }) {
+  const lb = useVisionLabels();
   const open = trades.filter((t) => t.openedAt <= tickMs).sort((a, b) => b.openedAt - a.openedAt);
   const justOpened = open.filter((t) => t.openedAt === tickMs);
   const final = isLastTick && !partial;
@@ -47,7 +51,7 @@ export default function VisionFuturaSpreadTrades({ trades, tickMs, spot, isLastT
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap", fontSize: 13, alignItems: "baseline" }}>
         <span><b>{open.length}</b> spreads ejecutados {final ? "en el día" : "hasta esta hora"}</span>
         <span>
-          {final ? "Resultado final (al vencimiento)" : `Si el SPX terminara aquí (${lvl(spot)})`}:{" "}
+          {final ? (atClose ? "Resultado al cierre del día (no vencen hoy)" : "Resultado final (al vencimiento)") : `Si ${lb.main} terminara aquí (${lvl(spot)})`}:{" "}
           <b style={{ color: total >= 0 ? UP : DOWN, fontSize: 15 }}>{usd(total)}</b>
         </span>
         <span style={{ color: "var(--muted)" }}>
@@ -66,8 +70,8 @@ export default function VisionFuturaSpreadTrades({ trades, tickMs, spot, isLastT
         // direccionales a la derecha — no se apilan en pantallas angostas.
         <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 14, alignItems: "start" }}>
           {([
-            { list: credit, title: "Prima (crédito)", help: "Cobras prima; ganan si el SPX no llega al strike vendido." },
-            { list: debit, title: "Direccionales (débito)", help: "Pagas; ganan si el SPX llega al objetivo." },
+            { list: credit, title: "Prima (crédito)", help: "Cobras prima; ganan si el precio no llega al strike vendido." },
+            { list: debit, title: "Direccionales (débito)", help: "Pagas; ganan si el precio llega al objetivo." },
           ] as const).map((col) => (
             <div key={col.title} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap", borderBottom: "1px solid var(--border)", paddingBottom: 6 }}>
@@ -104,7 +108,7 @@ export default function VisionFuturaSpreadTrades({ trades, tickMs, spot, isLastT
                         </span>
                       </span>
                     </div>
-                    <div style={{ fontSize: 12, color: "var(--faint)" }}>Por la alerta: {t.alertTitle} · SPX al abrir {lvl(t.spotAtOpen)}</div>
+                    <div style={{ fontSize: 12, color: "var(--faint)" }}>Por la alerta: {t.alertTitle} · {lb.main} al abrir {lvl(t.spotAtOpen)}</div>
                     <div style={{ fontSize: 13, fontVariantNumeric: "tabular-nums", display: "flex", flexDirection: "column", gap: 2 }}>
                       {t.idea.legs.map((l, i) => (
                         <div key={i}>
@@ -120,7 +124,7 @@ export default function VisionFuturaSpreadTrades({ trades, tickMs, spot, isLastT
                       {t.idea.netPrice > 0 ? `Cobrado $${t.idea.netPrice.toFixed(2)}` : `Pagado $${Math.abs(t.idea.netPrice).toFixed(2)}`} · ganancia máx ${t.idea.maxGainUsd} · pérdida máx ${t.idea.maxLossUsd} · {(t.idea.pop * 100).toFixed(0)}% de ganar al abrir
                     </div>
                     <div style={{ fontSize: 14 }}>
-                      {final ? `Cerrado al vencimiento (${lvl(t.settle ?? spot)}): ` : "Si terminara aquí: "}
+                      {final ? (atClose ? `Valor al cierre (${lvl(t.settle ?? spot)}): ` : `Cerrado al vencimiento (${lvl(t.settle ?? spot)}): `) : "Si terminara aquí: "}
                       <b style={{ color: pnl >= 0 ? UP : DOWN }}>{usd(pnl)}</b>
                       {final && <span> {pnl >= 0 ? "✅" : "❌"}</span>}
                     </div>

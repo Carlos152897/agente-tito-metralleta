@@ -68,7 +68,7 @@ export default function VisionFuturaSpreads({ spreads, error, expiration, market
   marketOpen: boolean;
   replay: boolean;
   /** En la repetición: el backtest de spreads hasta el momento elegido. */
-  replayTrades?: { trades: ReplaySpreadTrade[]; tickMs: number; spot: number; isLastTick: boolean; partial: boolean } | null;
+  replayTrades?: { trades: ReplaySpreadTrade[]; tickMs: number; spot: number; isLastTick: boolean; partial: boolean; atClose?: boolean } | null;
 }) {
   const lb = useVisionLabels();
   return (

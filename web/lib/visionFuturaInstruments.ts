@@ -32,20 +32,22 @@ export interface InstrumentConfig {
   volIndex: string | null;
   /** MarketSnack no tiene gráfica intradía del índice: se arma con el ETF × ratio. */
   chartFromEtf: boolean;
+  /** Tiene opciones que vencen TODOS los días (0DTE diario). */
+  dailyExpirations: boolean;
 }
 
 export const INSTRUMENTS: Record<InstrumentId, InstrumentConfig> = {
   SPX: {
     id: "SPX", label: "SPX", main: "SPX", msTicker: "SPX", occRoot: "SPXW", tastyChain: "SPX",
-    tastyMain: { index: "SPX" }, etf: "SPY", future: "ES", volIndex: "VIX", chartFromEtf: false,
+    tastyMain: { index: "SPX" }, etf: "SPY", future: "ES", volIndex: "VIX", chartFromEtf: false, dailyExpirations: true,
   },
   NQ: {
     id: "NQ", label: "NQ", main: "NDX", msTicker: "NDX", occRoot: "NDXP", tastyChain: "NDX",
-    tastyMain: { index: "NDX" }, etf: "QQQ", future: "NQ", volIndex: null, chartFromEtf: true,
+    tastyMain: { index: "NDX" }, etf: "QQQ", future: "NQ", volIndex: null, chartFromEtf: true, dailyExpirations: true,
   },
   TSLA: {
     id: "TSLA", label: "TSLA", main: "TSLA", msTicker: "TSLA", occRoot: "TSLA", tastyChain: "TSLA",
-    tastyMain: { equity: "TSLA" }, etf: null, future: null, volIndex: null, chartFromEtf: false,
+    tastyMain: { equity: "TSLA" }, etf: null, future: null, volIndex: null, chartFromEtf: false, dailyExpirations: false,
   },
 };
 

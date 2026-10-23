@@ -27,7 +27,11 @@ import { join } from "path";
 import { buildVisionFutura, yearsToExpiry, type VisionFuturaReport, type VixReading } from "./visionFutura";
 import { evaluateVisionAlerts, type VisionAlert } from "./visionFuturaAlerts";
 import { fetchAssetPriceChart, fetchContractTradeSummary, fetchGexStats, fetchOptionChainExtended } from "./marketsnack";
-import { fetchMacroQuote } from "./tastytrade";
+import { fetchMacroQuote, fetchUnderlyingQuote } from "./tastytrade";
+import {
+  instrumentOf, labelsOf, REL_VOL, scaleFor, strikeStepNear,
+  type InstrumentId, type InstrumentLabels,
+} from "./visionFuturaInstruments";
 import { bsDelta, bsGamma, bsPrice } from "./blackScholes";
 import { buildSpreads, spreadPnlAtExpiry, spreadsForAlert, type SpreadIdea, type SpreadQuoteRow } from "./visionFuturaSpreads";
 import { buildOccSymbol, marketDateStr } from "./occ";
@@ -38,7 +42,7 @@ const FIVE_MIN = 5 * 60_000;
 const COOLDOWN_MS = 20 * 60_000;
 const RADIUS = 60;
 /** Subir cuando cambie el motor de alertas o el formato: invalida los caches viejos. */
-const REPLAY_VERSION = 6;
+const REPLAY_VERSION = 8;
 const DIR = join(process.cwd(), "data", "vision-futura");
 
 export interface ReplayAlert extends VisionAlert {
@@ -72,7 +76,7 @@ export interface ReplaySpreadTrade {
   idea: SpreadIdea;
   /** De dónde salió el precio de cada pata: llenado real promedio de MarketSnack o teórico. */
   legSources: ("real" | "estimado")[];
-  /** Precio de liquidación (cierre del SPX) — null si la sesión sigue en curso. */
+  /** Precio de liquidación (cierre del subyacente) — null si la sesión sigue en curso. */
   settle: number | null;
   /** Resultado por acción al vencimiento (×100 = $). */
   pnl: number | null;
@@ -81,6 +85,13 @@ export interface ReplaySpreadTrade {
 
 export interface ReplayPayload {
   version: number;
+  instrument: InstrumentId;
+  labels: InstrumentLabels;
+  /** Escala de los umbrales usada (1 = SPX). */
+  scale: number;
+  strikeStep: number;
+  /** Vencimiento de las opciones usado (TSLA no vence todos los días). */
+  expiration: string;
   date: string;
   builtAt: string;
   /** La sesión todavía está en curso (la repetición llega hasta ahora). */
@@ -108,58 +119,123 @@ const latestAtOrBefore = <T extends { ms: number }>(arr: T[], ms: number): T | n
   return r;
 };
 
-export async function buildReplay(now: Date, opts: { force?: boolean } = {}): Promise<ReplayPayload> {
-  const [spxChart, spyChart, vixChart, gexRaw, vixGexRaw] = await Promise.all([
-    fetchAssetPriceChart("SPX"),
-    fetchAssetPriceChart("SPY").catch(() => []),
-    fetchAssetPriceChart("VIX").catch(() => []),
-    fetchGexStats("SPX", { period: "1d" }),
-    fetchGexStats("VIX", { period: "1d" }).catch(() => []),
-  ]);
-  if (spxChart.length === 0) throw new Error("MarketSnack no devolvió el precio intradía de SPX.");
+/** Archivo de la repetición guardada (SPX conserva el nombre original). */
+export const replayFileName = (inst: string, date: string) => (inst === "SPX" ? `replay-${date}.json` : `replay-${inst}-${date}.json`);
 
-  const lastMs = Date.parse(spxChart[spxChart.length - 1].t);
-  const date = nyDate(lastMs);
+export async function buildReplay(now: Date, opts: { force?: boolean; inst?: string } = {}): Promise<ReplayPayload> {
+  const cfg = instrumentOf(opts.inst);
+  // Precio del día: el del instrumento o, si MarketSnack no tiene su gráfica (NDX), la del ETF.
+  const [mainChartRaw, etfChart, vixChart, gexRaw, vixGexRaw, spxChartRef] = await Promise.all([
+    cfg.chartFromEtf ? Promise.resolve([]) : fetchAssetPriceChart(cfg.msTicker),
+    cfg.etf ? fetchAssetPriceChart(cfg.etf).catch(() => []) : Promise.resolve([]),
+    fetchAssetPriceChart("VIX").catch(() => []),
+    fetchGexStats(cfg.msTicker, { period: "1d" }),
+    fetchGexStats("VIX", { period: "1d" }).catch(() => []),
+    cfg.id === "SPX" ? Promise.resolve([]) : fetchAssetPriceChart("SPX").catch(() => []),
+  ]);
+  const baseChart = cfg.chartFromEtf ? etfChart : mainChartRaw;
+  if (baseChart.length === 0) throw new Error(`MarketSnack no devolvió el precio intradía de ${cfg.chartFromEtf ? cfg.etf : cfg.main}.`);
+
+  // Último día con sesión regular en la gráfica (la de un ETF trae también pre/post-market).
+  const rthDays = [...new Set(baseChart.map((p) => Date.parse(p.t)).filter((ms) => isRth(ms)).map((ms) => nyDate(ms)))].sort();
+  const date = rthDays.at(-1) ?? nyDate(Date.parse(baseChart[baseChart.length - 1].t));
   const partial = date === marketDateStr(now) && isMarketOpen(now);
-  const cacheFile = join(DIR, `replay-${date}.json`);
-  if (!opts.force) {
-    try {
-      const cached = JSON.parse(readFileSync(cacheFile, "utf8")) as ReplayPayload;
-      // Sesión cerrada: el cache sirve para siempre. En curso: 5 min.
-      const fresh = !cached.partial || now.getTime() - Date.parse(cached.builtAt) < FIVE_MIN;
-      if (cached.version === REPLAY_VERSION && fresh) return cached;
-    } catch { /* sin cache */ }
+  const cacheFile = join(DIR, replayFileName(cfg.id, date));
+  let previous: ReplayPayload | null = null;
+  try { previous = JSON.parse(readFileSync(cacheFile, "utf8")) as ReplayPayload; } catch { /* sin cache */ }
+  if (!opts.force && previous) {
+    // Sesión cerrada: el cache sirve para siempre. En curso: 5 min.
+    const fresh = !previous.partial || now.getTime() - Date.parse(previous.builtAt) < FIVE_MIN;
+    if (previous.version === REPLAY_VERSION && fresh) return previous;
   }
 
   const sameDay = <T extends { t: string }>(arr: T[]) =>
     arr.map((x) => ({ ...x, ms: Date.parse(x.t) })).filter((x) => nyDate(x.ms) === date).sort((a, b) => a.ms - b.ms);
-  const spx = sameDay(spxChart).filter((p) => isRth(p.ms));
-  const spy = sameDay(spyChart);
+  const etf = sameDay(etfChart);
   const vix = sameDay(vixChart);
   const gex = sameDay(gexRaw);
   const vixGex = sameDay(vixGexRaw);
+
+  // NDX = QQQ × (NDX al cierre ÷ QQQ al cierre): aproximado (MarketSnack no tiene la gráfica del NDX).
+  let spx: { ms: number; v: number; t: string }[];
+  if (cfg.chartFromEtf) {
+    const etfRth = etf.filter((p) => isRth(p.ms));
+    const mainClose = await fetchUnderlyingQuote(cfg.main, !!cfg.tastyMain.index).catch(() => null);
+    const etfClose = etfRth.at(-1)?.v ?? null;
+    if (!mainClose || !etfClose) throw new Error(`No se pudo convertir ${cfg.etf} a ${cfg.main}.`);
+    const ratio = mainClose / etfClose;
+    spx = etfRth.map((p) => ({ ...p, v: Math.round(p.v * ratio * 100) / 100 }));
+  } else {
+    spx = sameDay(mainChartRaw).filter((p) => isRth(p.ms));
+  }
+  if (spx.length === 0) throw new Error(`Sin precio de la sesión ${date} para ${cfg.main}.`);
+  const spxRefClose = cfg.id === "SPX" ? null : sameDay(spxChartRef).filter((p) => isRth(p.ms)).at(-1)?.v ?? null;
 
   // Cierre previo del VIX (solo si se repite el día de hoy; si no, % desde la apertura).
   let vixPrevClose: number | null = null;
   if (date === marketDateStr(now)) vixPrevClose = (await fetchMacroQuote({ index: "VIX" }).catch(() => null))?.prevClose ?? null;
   const vixOpen = latestAtOrBefore(vix, spx[0].ms)?.v ?? vix[0]?.v ?? null;
 
+  // Vencimiento: el del día si existe (0DTE); si no (TSLA no vence todos los días), el siguiente.
+  // MarketSnack deja de devolver la cadena de un vencimiento pocas horas después de vencer (visto
+  // el 2026-10-22: SPX disponible esa noche, ya no a la mañana siguiente). Por eso la primera vez
+  // que se consigue se guarda una copia (strike, tipo, OI, IV) y se reusa al reconstruir.
+  let expiration = date;
+  let chain: ExtendedChainContract[] = [];
+  for (let i = 0; i <= 6; i++) {
+    const d = new Date(`${date}T12:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + i);
+    const exp = d.toISOString().slice(0, 10);
+    const c = (await fetchOptionChainExtended(cfg.msTicker, exp).catch(() => [] as ExtendedChainContract[]));
+    const got = c.length > 0 ? c : loadChainSnapshot(cfg.id, exp);
+    if (got.length > 0) {
+      expiration = exp;
+      chain = got;
+      if (c.length > 0) saveChainSnapshot(cfg.id, exp, c);
+      break;
+    }
+  }
+  // Con vencimientos diarios (SPX, NDX) el 0DTE del día SIEMPRE existe aunque MarketSnack ya no
+  // devuelva su cadena (pasa con NDX después de vencer): se usan sus contratos igual — el flujo por
+  // contrato sí sigue disponible — con strikes sintéticos al paso de la cadena siguiente y sin OI.
+  let chainMissing = false;
+  if (expiration !== date && cfg.dailyExpirations) {
+    chainMissing = true;
+    expiration = date;
+  }
+  const expiresToday = expiration === date;
+
+  // Escala del instrumento (SPX = 1) y volatilidad para la gamma estimada.
+  const closeMain = spx[spx.length - 1].v;
+  const vixClose = vix.filter((p) => isRth(p.ms)).at(-1)?.v ?? 18;
+  const atmIvChain = (() => {
+    const ks = [...new Set(chain.map((c) => c.strike))].sort((a, b) => Math.abs(a - closeMain) - Math.abs(b - closeMain)).slice(0, 2);
+    const ivs = chain.filter((c) => ks.includes(c.strike) && c.implied_volatility && c.implied_volatility > 0.05 && c.implied_volatility < 3).map((c) => c.implied_volatility!);
+    return ivs.length ? ivs.reduce((a, b) => a + b, 0) / ivs.length : null;
+  })();
+  const scale = scaleFor(cfg, closeMain, { spxSpot: spxRefClose, vix: vixClose, atmIv: atmIvChain });
+  // IV del instrumento relativa al VIX (para la gamma de Black-Scholes en cada momento):
+  // SPX 1; NQ 1.2; acciones: su IV ATM ÷ VIX (si la cadena trae una IV razonable), si no 3.
+  const ivRel = cfg.id === "SPX" ? 1 : REL_VOL[cfg.id] ?? (atmIvChain && atmIvChain !== 20 ? atmIvChain / (vixClose / 100) : 3);
+
   // Open interest real del día (al inicio de la sesión, no cambia intradía).
-  const chain = await fetchOptionChainExtended("SPX", date).catch(() => [] as ExtendedChainContract[]);
   const oi = new Map<string, number>();
   for (const c of chain) oi.set(`${c.type}:${c.strike}`, c.open_interest || 0);
 
-  // Flujo por contrato, cada 5 min.
+  // Flujo por contrato, cada 5 min: los strikes reales de la cadena dentro del rango del día ± la ventana.
   const prices = spx.map((p) => p.v);
-  const lo = Math.floor((Math.min(...prices) - RADIUS) / 5) * 5;
-  const hi = Math.ceil((Math.max(...prices) + RADIUS) / 5) * 5;
-  const strikes: number[] = [];
-  for (let s = lo; s <= hi; s += 5) strikes.push(s);
+  const strikeStep = cfg.id === "SPX" ? 5 : strikeStepNear(chain.map((c) => c.strike), closeMain);
+  if (chainMissing) { chain = []; oi.clear(); } // era la cadena de otro vencimiento: solo servía para el paso de strike
+  const radius = cfg.id === "SPX" ? RADIUS : 20 * strikeStep;
+  const lo = Math.min(...prices) - radius, hi = Math.max(...prices) + radius;
+  const strikes: number[] = cfg.id === "SPX" || chainMissing
+    ? (() => { const out: number[] = []; for (let k = Math.floor(lo / strikeStep) * strikeStep; k <= Math.ceil(hi / strikeStep) * strikeStep; k += strikeStep) out.push(k); return out; })()
+    : [...new Set(chain.map((c) => c.strike))].filter((k) => k >= lo && k <= hi).sort((a, b) => a - b);
   const flow = new Map<string, { ms: number; ask: number; bid: number; askVol: number; bidVol: number; vol: number }[]>();
   const jobs = strikes.flatMap((s) => (["call", "put"] as const).map((type) => ({ s, type })));
   for (let i = 0; i < jobs.length; i += 6) {
     await Promise.all(jobs.slice(i, i + 6).map(async ({ s, type }) => {
-      const sym = buildOccSymbol({ underlying: "SPXW", expiration: date, type, strike: s });
+      const sym = buildOccSymbol({ underlying: cfg.occRoot, expiration, type, strike: s });
       const b = await fetchContractTradeSummary(sym).catch(() => []);
       flow.set(`${type}:${s}`, b.map((x) => ({
         ms: Date.parse(x.t), ask: x.ask_premium || 0, bid: x.bid_premium || 0,
@@ -210,9 +286,9 @@ export async function buildReplay(now: Date, opts: { force?: boolean } = {}): Pr
     for (const b of gex) { if (b.ms > T) break; if (b.gamma_flip != null) lastFlip = b.gamma_flip; }
     const gexStats = g ? { ...g, gamma_flip: g.gamma_flip ?? lastFlip, asset_price: p.v } : null;
     const vixNow = latestAtOrBefore(vix, T)?.v ?? null;
-    const iv = vixNow != null && vixNow > 0 ? vixNow / 100 : 0.18;
-    const years = yearsToExpiry(date, new Date(T));
-    const spyNow = latestAtOrBefore(spy, T)?.v ?? null;
+    const iv = (vixNow != null && vixNow > 0 ? vixNow / 100 : 0.18) * ivRel;
+    const years = yearsToExpiry(expiration, new Date(T));
+    const spyNow = cfg.etf ? latestAtOrBefore(etf, T)?.v ?? null : null;
 
     const contracts: ExtendedChainContract[] = [];
     const aggNow = new Map<number, { compras: number; ventas: number }>();
@@ -224,7 +300,7 @@ export async function buildReplay(now: Date, opts: { force?: boolean } = {}): Pr
         const prev5 = cumulative(`${type}:${s}`, T - FIVE_MIN);
         cN += now5.ask; vN += now5.bid; cP += prev5.ask; vP += prev5.bid;
         contracts.push({
-          symbol: "", strike: s, type, expiration: date,
+          symbol: "", strike: s, type, expiration,
           open_interest: oi.get(`${type}:${s}`) ?? 0, volume: now5.vol, price: null,
           greeks: { delta: 0, gamma: bsGamma(p.v, s, years, iv), theta: 0, vega: 0 },
           implied_volatility: iv,
@@ -242,9 +318,9 @@ export async function buildReplay(now: Date, opts: { force?: boolean } = {}): Pr
         })()
       : null;
     const report = buildVisionFutura({
-      contracts, spot: p.v, gexStats, spy: spyNow, es: null, vix: vixReading, radius: RADIUS, yearsToExpiry: years,
+      contracts, spot: p.v, gexStats, spy: spyNow, es: null, vix: vixReading, radius, strikeStep, yearsToExpiry: years,
     });
-    const vixMagnet = latestAtOrBefore(vixGex, T)?.magnet ?? null;
+    const vixMagnet = cfg.id === "SPX" ? latestAtOrBefore(vixGex, T)?.magnet ?? null : null;
 
     const ev = evaluateVisionAlerts({
       now: T, spot: p.v, conversion: report.conversion,
@@ -252,6 +328,10 @@ export async function buildReplay(now: Date, opts: { force?: boolean } = {}): Pr
       prices: spx.filter((x) => x.ms <= T).map((x) => ({ t: x.ms, v: x.v })),
       vix: vix.filter((x) => x.ms <= T).map((x) => ({ t: x.ms, v: x.v })),
       vixMagnet, aggressorNow: aggNow, aggressorPrev: aggPrev,
+      scale,
+      instrumentos: cfg.etf || cfg.future
+        ? { largo: `Calls de ${cfg.main}${cfg.etf ? `/${cfg.etf}` : ""}`, corto: `Puts de ${cfg.main}${cfg.etf ? `/${cfg.etf}` : ""}` }
+        : { largo: `Comprar ${cfg.main} (acciones o calls)`, corto: `Vender ${cfg.main} (acciones o puts)` },
     });
     const activeIds: string[] = [];
     for (const a of ev.filter((x) => x.fires)) {
@@ -267,12 +347,17 @@ export async function buildReplay(now: Date, opts: { force?: boolean } = {}): Pr
           for (const type of ["call", "put"] as const) {
             const q = quoteAt(type, s, T, p.v, years, iv);
             sources.set(`${type}:${s}`, q.real);
-            qRows.push({ type, strike: s, bid: q.bid > 0 ? q.bid : null, ask: q.ask, delta: bsDelta(p.v, s, years, iv, type), iv, openInterest: oi.get(`${type}:${s}`) ?? 0, volume: 0 });
+            // Solo precios reales para EJECUTAR: una pata sin operaciones queda sin bid/ask y ese
+            // spread no se arma (mezclar una pata real con una teórica da créditos imposibles —
+            // visto en NDX el 2026-10-22: $17.71 de crédito en un spread de 20 pts).
+            qRows.push({ type, strike: s, bid: q.real && q.bid > 0 ? q.bid : null, ask: q.real ? q.ask : null, delta: bsDelta(p.v, s, years, iv, type), iv, openInterest: oi.get(`${type}:${s}`) ?? 0, volume: 0 });
           }
         }
         const sp = buildSpreads({
           rows: qRows, spot: p.v, days: years * 365,
           keyLevels: report.keyLevels, dealerLevels: report.dealerLevels, expectedMove: report.expectedMove, fallbackIv: iv,
+          scale,
+          widths: cfg.id === "SPX" ? [5, 10] : [...new Set([5 * scale, 10 * scale].map((w) => Math.max(strikeStep, Math.round(w / strikeStep) * strikeStep)))],
         });
         const picked = spreadsForAlert(sp, a);
         for (const [kind, idea] of [["credito", picked.credit], ["debito", picked.debit]] as const) {
@@ -293,22 +378,41 @@ export async function buildReplay(now: Date, opts: { force?: boolean } = {}): Pr
     ticks.push({ ...report, time: Math.floor(T / 1000), gexAsOf: g?.t ?? null, vixMagnet, activeIds, watch });
   }
 
-  // Liquidación al vencimiento (SPXW 0DTE vencen al cierre): valor intrínseco al último precio del día.
+  // Resultado: si las opciones vencen hoy (0DTE), valor intrínseco al cierre. Si no (TSLA en un
+  // día sin vencimiento), valor de mercado al cierre: recomprar lo vendido al ask y vender lo
+  // comprado al bid, con los llenados reales de los últimos 15 min (o teórico si no hubo).
   if (!partial && spx.length > 0) {
-    const settle = spx[spx.length - 1].v;
+    const last = spx[spx.length - 1];
+    const settle = last.v;
+    const closeT = last.ms + 1;
+    const yearsClose = yearsToExpiry(expiration, new Date(last.ms));
+    const ivClose = (vixClose / 100) * ivRel;
     for (const t of spreadTrades) {
       t.settle = settle;
-      t.pnl = spreadPnlAtExpiry(t.idea, settle);
+      if (expiresToday) t.pnl = spreadPnlAtExpiry(t.idea, settle);
+      else {
+        let v = t.idea.netPrice;
+        for (const l of t.idea.legs) {
+          const q = quoteAt(l.type, l.strike, closeT, settle, yearsClose, ivClose);
+          v += l.action === "COMPRAR" ? q.bid : -q.ask;
+        }
+        t.pnl = Math.round(v * 100) / 100;
+      }
       t.pnlUsd = Math.round(t.pnl * 100);
     }
   }
 
   const payload: ReplayPayload = {
     version: REPLAY_VERSION,
+    instrument: cfg.id,
+    labels: { ...labelsOf(cfg), future: null },
+    scale,
+    strikeStep,
+    expiration,
     date,
     builtAt: now.toISOString(),
     partial,
-    radius: RADIUS,
+    radius,
     priceSeries: spx.map((p) => ({ time: Math.floor(p.ms / 1000), value: p.v })),
     history: gex.map((b) => ({
       time: Math.floor(b.ms / 1000), magnet: b.magnet, callWall: b.call_wall, putWall: b.put_wall,
@@ -318,16 +422,48 @@ export async function buildReplay(now: Date, opts: { force?: boolean } = {}): Pr
     alerts: fired,
     spreadTrades,
     notes: [
-      "Precio, Magneto, paredes, flip, max pain, VIX y flujo por strike: datos reales de MarketSnack de cada momento.",
-      "Imanes ±, resistencias/pisos secundarios y charm: estimados con el open interest real y gamma de Black-Scholes usando el VIX como volatilidad.",
-      "Sin /ES en la repetición: no hay historial intradía del futuro.",
-      "Spreads: precio de cada pata = promedio real al que se llenó en MarketSnack en los últimos 15 min (si no hubo operaciones, teórico con el VIX, marcado 'estimado'); se mantienen hasta el vencimiento y se liquidan al cierre.",
+      `Magneto, paredes, flip, max pain, VIX y flujo por strike: datos reales de MarketSnack de cada momento (${cfg.main}).`,
+      cfg.chartFromEtf
+        ? `Precio de ${cfg.main}: ${cfg.etf} de MarketSnack × (${cfg.main} ÷ ${cfg.etf} al cierre) — aproximado (MarketSnack no tiene la gráfica intradía de ${cfg.main}).`
+        : `Precio de ${cfg.main}: real, cada 5 min (MarketSnack).`,
+      `Imanes ±, resistencias/pisos secundarios y charm: estimados con el open interest real y gamma de Black-Scholes (IV = VIX${ivRel !== 1 ? ` × ${ivRel.toFixed(2)}` : ""}).`,
+      cfg.future ? `Sin ${cfg.future === "ES" ? "/ES" : `/${cfg.future}`} en la repetición: no hay historial intradía del futuro.` : "Acción: sin conversiones.",
+      expiresToday ? `Opciones del vencimiento ${expiration} (vencen ese día).` : `Opciones del vencimiento ${expiration}: no vencen ese día, los spreads se valúan al precio de cierre del día.`,
+      cfg.id === "SPX" ? "Umbrales de SPX (escala 1)." : `Umbrales escalados ×${scale.toFixed(2)} respecto a SPX.`,
+      ...(chainMissing ? [`MarketSnack ya no devuelve la cadena de ${cfg.main} de ${date} (venció): se usan sus contratos 0DTE con el flujo real, pero sin open interest — no hay imanes ±, resistencias/pisos secundarios ni charm; sí Magneto, paredes, flip y max pain.`] : []),
+      "Spreads: solo se ejecutan si las DOS patas tuvieron operaciones reales en los últimos 15 min (precio = promedio real de llenado en MarketSnack); se mantienen hasta el vencimiento (o se valúan al cierre si no vencen ese día).",
       "Resolución de 5 minutos.",
     ],
   };
+  // Nunca reemplazar una repetición que se armó CON la cadena (OI) por una que ya no la tiene:
+  // se conserva la anterior (aunque sea de una versión vieja del motor).
+  const hadOi = (r: ReplayPayload) => r.ticks.some((t) => t.rows.some((row) => row.netGex !== 0));
+  if (chainMissing && previous && hadOi(previous) && !hadOi(payload)) return previous;
   try {
     mkdirSync(DIR, { recursive: true });
     writeFileSync(cacheFile, JSON.stringify(payload), "utf8");
   } catch { /* sin cache en disco: igual se devuelve */ }
   return payload;
+}
+
+// ── Copia de la cadena (OI/IV) de cada vencimiento ──
+const CHAIN_DIR = join(DIR, "chains");
+function saveChainSnapshot(inst: string, exp: string, c: ExtendedChainContract[]) {
+  try {
+    mkdirSync(CHAIN_DIR, { recursive: true });
+    const slim = c.map((x) => ({ strike: x.strike, type: x.type, open_interest: x.open_interest, implied_volatility: x.implied_volatility }));
+    writeFileSync(join(CHAIN_DIR, `${inst}-${exp}.json`), JSON.stringify(slim), "utf8");
+  } catch { /* no crítico */ }
+}
+function loadChainSnapshot(inst: string, exp: string): ExtendedChainContract[] {
+  try {
+    const slim = JSON.parse(readFileSync(join(CHAIN_DIR, `${inst}-${exp}.json`), "utf8")) as { strike: number; type: "call" | "put"; open_interest: number; implied_volatility: number | null }[];
+    return slim.map((x) => ({
+      symbol: "", strike: x.strike, type: x.type, expiration: exp, open_interest: x.open_interest, volume: 0, price: null,
+      greeks: { delta: 0, gamma: 0, theta: 0, vega: 0 }, implied_volatility: x.implied_volatility,
+      premium_breakdown: { bid: 0, mid: 0, ask: 0 },
+    }));
+  } catch {
+    return [];
+  }
 }

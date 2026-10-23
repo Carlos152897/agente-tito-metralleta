@@ -346,7 +346,14 @@ export default function VisionFuturaTab() {
     prevLevelsRef.current = null;
     prevAggRef.current = null;
     setPrevAgg(null);
-    if (id !== "SPX" && mode === "repeticion") setMode("vivo");
+    // La repetición es por instrumento: se descarta la anterior y, si se estaba viendo, se arma la nueva.
+    setReplay(null);
+    setReplayDays([]);
+    setReplayIdx(0);
+    setPlaying(false);
+    setReplayError(null);
+    instRef.current = id;
+    if (mode === "repeticion") loadReplay(false);
     try { window.localStorage.setItem(KEY_INST, id); } catch { /* ignorar */ }
   };
   const pickExp = (i: number) => {
@@ -368,7 +375,7 @@ export default function VisionFuturaTab() {
 
   const loadDays = useCallback(async () => {
     try {
-      const res = await fetch("/api/vision-futura/replay/days", { cache: "no-store" });
+      const res = await fetch(`/api/vision-futura/replay/days?inst=${instRef.current}`, { cache: "no-store" });
       const json = await res.json();
       if (res.ok && Array.isArray(json.days)) setReplayDays(json.days as ReplayDay[]);
     } catch { /* el selector queda con lo que tenía */ }
@@ -379,11 +386,13 @@ export default function VisionFuturaTab() {
     setReplayError(null);
     setPlaying(false);
     try {
-      const qs = new URLSearchParams();
+      const forInst = instRef.current;
+      const qs = new URLSearchParams({ inst: forInst });
       if (force) qs.set("force", "1");
       if (date) qs.set("date", date);
-      const res = await fetch(`/api/vision-futura/replay${qs.size ? `?${qs}` : ""}`, { cache: "no-store" });
+      const res = await fetch(`/api/vision-futura/replay?${qs}`, { cache: "no-store" });
       const json = await res.json();
+      if (instRef.current !== forInst) return; // se cambió de instrumento mientras cargaba
       if (!res.ok || json.error) throw new Error(json.error ?? `Error ${res.status}`);
       setReplay(json as ReplayPayload);
       setReplayIdx(0);
@@ -396,10 +405,6 @@ export default function VisionFuturaTab() {
   }, [loadDays]);
 
   const pickMode = (m: "vivo" | "repeticion") => {
-    if (m === "repeticion" && inst !== "SPX") {
-      setReplayError(`La repetición de ${inst} llega en la siguiente etapa; por ahora solo SPX.`);
-      return;
-    }
     setReplayError(null);
     setMode(m);
     setPlaying(false);
@@ -562,11 +567,11 @@ export default function VisionFuturaTab() {
   const maxGex = Math.max(1, ...view.rows.map((r) => Math.max(r.callGex, r.putGex)));
   const spyRatio = view.conversion.spyRatio;
   const esBasis = view.conversion.esBasis;
-  const labels: InstrumentLabels = (tick ? null : data.labels) ?? DEFAULT_LABELS;
-  const scale = tick ? 1 : data.scale ?? 1;
+  const labels: InstrumentLabels = (tick ? replay?.labels : data.labels) ?? DEFAULT_LABELS;
+  const scale = (tick ? replay?.scale : data.scale) ?? 1;
   const isSpx = labels.main === "SPX";
   // Ventana real de cada botón (misma regla que el servidor: 10/20/30 strikes por lado fuera de SPX).
-  const step = data.strikeStep ?? 5;
+  const step = (tick ? replay?.strikeStep : data.strikeStep) ?? 5;
   const windowFor = (r: number) => (isSpx ? r : (r <= 30 ? 10 : r <= 60 ? 20 : 30) * step);
 
   return (
@@ -791,6 +796,7 @@ export default function VisionFuturaTab() {
           spot: tick.spot.spx,
           isLastTick: replayIdx >= replay.ticks.length - 1,
           partial: replay.partial,
+          atClose: !!replay.expiration && replay.expiration !== replay.date,
         } : null}
       />
 

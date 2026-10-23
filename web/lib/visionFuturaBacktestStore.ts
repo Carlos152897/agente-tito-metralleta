@@ -9,16 +9,23 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import ExcelJS from "exceljs";
 import type { BacktestDay } from "./visionFuturaBacktest";
-import type { ReplayPayload } from "./visionFuturaReplay";
+import { replayFileName, type ReplayPayload } from "./visionFuturaReplay";
 import { loadHistorial } from "./amigaStore";
 
 const DIR = join(process.cwd(), "data", "vision-futura");
 const BT_DIR = join(DIR, "backtest");
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+/** SPX conserva el nombre original ({fecha}.json); el resto lleva prefijo ({inst}-{fecha}.json). */
+const btFile = (day: { date: string; instrument?: string }) =>
+  !day.instrument || day.instrument === "SPX" ? `${day.date}.json` : `${day.instrument}-${day.date}.json`;
+
+/** Nombre de la hoja de Excel de un día: "2026-10-22" para SPX, "NQ 2026-10-22" para el resto. */
+const sheetName = (d: { date: string; instrument?: string }) => (!d.instrument || d.instrument === "SPX" ? d.date : `${d.instrument} ${d.date}`);
+
 export function saveBacktestDay(day: BacktestDay) {
   mkdirSync(BT_DIR, { recursive: true });
-  writeFileSync(join(BT_DIR, `${day.date}.json`), JSON.stringify(day, null, 2), "utf8");
+  writeFileSync(join(BT_DIR, btFile(day)), JSON.stringify(day, null, 2), "utf8");
 }
 
 export function listBacktestDays(): BacktestDay[] {
@@ -26,17 +33,19 @@ export function listBacktestDays(): BacktestDay[] {
     return readdirSync(BT_DIR)
       .filter((f) => f.endsWith(".json"))
       .map((f) => JSON.parse(readFileSync(join(BT_DIR, f), "utf8")) as BacktestDay)
-      .sort((a, b) => a.date.localeCompare(b.date));
+      .map((d) => ({ ...d, instrument: d.instrument ?? "SPX" }))
+      .sort((a, b) => a.date.localeCompare(b.date) || (a.instrument ?? "").localeCompare(b.instrument ?? ""));
   } catch {
     return [];
   }
 }
 
-/** Días con repetición guardada (más reciente primero). */
-export function listReplayDays(): string[] {
+/** Días con repetición guardada de un instrumento (más reciente primero). */
+export function listReplayDays(inst = "SPX"): string[] {
+  const re = inst === "SPX" ? /^replay-(\d{4}-\d{2}-\d{2})\.json$/ : new RegExp(`^replay-${inst}-(\\d{4}-\\d{2}-\\d{2})\\.json$`);
   try {
     return readdirSync(DIR)
-      .map((f) => /^replay-(\d{4}-\d{2}-\d{2})\.json$/.exec(f)?.[1])
+      .map((f) => re.exec(f)?.[1])
       .filter((d): d is string => !!d)
       .sort((a, b) => b.localeCompare(a));
   } catch {
@@ -44,10 +53,10 @@ export function listReplayDays(): string[] {
   }
 }
 
-export function loadSavedReplay(date: string): ReplayPayload | null {
-  if (!DATE_RE.test(date)) return null;
+export function loadSavedReplay(date: string, inst = "SPX"): ReplayPayload | null {
+  if (!DATE_RE.test(date) || !/^[A-Z]{2,5}$/.test(inst)) return null;
   try {
-    return JSON.parse(readFileSync(join(DIR, `replay-${date}.json`), "utf8")) as ReplayPayload;
+    return JSON.parse(readFileSync(join(DIR, replayFileName(inst, date)), "utf8")) as ReplayPayload;
   } catch {
     return null;
   }
@@ -57,6 +66,14 @@ const hmNy = (ms: number) =>
   new Date(ms).toLocaleTimeString("es-MX", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hour12: false });
 
 const FONT = { name: "Arial", size: 10 };
+
+/** $ por punto de cada instrumento (fila de la tabla editable del Resumen). */
+const MULTS = [
+  { row: 2, inst: "SPX", big: 50, micro: 5, desc: "/ES $50 y /MES $5 por punto (CME)", bigLabel: "$ por 1 /ES", microLabel: "$ por 1 /MES" },
+  { row: 3, inst: "NQ", big: 20, micro: 2, desc: "/NQ $20 y /MNQ $2 por punto (CME)", bigLabel: "$ por 1 /NQ", microLabel: "$ por 1 /MNQ" },
+  { row: 4, inst: "TSLA", big: 100, micro: 10, desc: "100 y 10 acciones de TSLA ($ por $1 de movimiento)", bigLabel: "$ por 100 acciones", microLabel: "$ por 10 acciones" },
+];
+const multOf = (inst?: string) => MULTS.find((m) => m.inst === (inst ?? "SPX")) ?? MULTS[0];
 const HEAD = { name: "Arial", size: 10, bold: true, color: { argb: "FFFFFFFF" } };
 const HEAD_FILL: ExcelJS.Fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F3A68" } };
 const INPUT_FONT = { name: "Arial", size: 10, color: { argb: "FF0000FF" } };
@@ -72,31 +89,32 @@ export async function buildBacktestWorkbook(): Promise<Buffer> {
 
   // ── Resumen ──
   const res = wb.addWorksheet("Resumen", { views: [{ state: "frozen", ySplit: 6 }] });
-  res.getCell("A1").value = "VisionFutura — Backtest diario (SPX, alertas de pantalla)";
+  res.getCell("A1").value = "VisionFutura — Backtest diario (SPX, NQ, TSLA · alertas de pantalla)";
   res.getCell("A1").font = { name: "Arial", size: 14, bold: true };
-  res.getCell("A2").value = "$ por punto, 1 contrato /ES";
-  res.getCell("B2").value = 50;
-  res.getCell("A3").value = "$ por punto, 1 contrato /MES";
-  res.getCell("B3").value = 5;
-  for (const c of ["B2", "B3"]) res.getCell(c).font = INPUT_FONT;
-  res.getCell("C2").value = "Multiplicador estándar del contrato de CME (editable).";
-  res.getCell("C3").value = "Multiplicador estándar del contrato de CME (editable).";
-  res.getCell("A4").value =
-    "Precio cada 5 min (MarketSnack); si stop y objetivo caen en el mismo intervalo se cuenta el stop. Sin comisiones ni deslizamiento. Puntos del subyacente, no P&L de opciones.";
-  res.getCell("A4").font = { name: "Arial", size: 9, italic: true, color: { argb: "FF666666" } };
+  // Multiplicadores por instrumento ($ por punto), editables: cada fila usa el de su instrumento.
+  for (const m of MULTS) {
+    res.getCell(`A${m.row}`).value = m.inst;
+    res.getCell(`B${m.row}`).value = m.big;
+    res.getCell(`C${m.row}`).value = m.micro;
+    res.getCell(`D${m.row}`).value = m.desc;
+    for (const c of [`B${m.row}`, `C${m.row}`]) res.getCell(c).font = INPUT_FONT;
+  }
+  res.getCell("E2").value =
+    "Precio cada 5 min (MarketSnack); si stop y objetivo caen en el mismo intervalo se cuenta el stop. Sin comisiones ni deslizamiento. Puntos del subyacente de cada instrumento (SPX, NDX o $ de TSLA), no P&L de opciones. Los puntos de instrumentos distintos no se suman: el total es en $.";
+  res.getCell("E2").font = { name: "Arial", size: 9, italic: true, color: { argb: "FF666666" } };
 
-  const headers = ["Fecha", "Entradas", "Ganadas", "Perdidas", "% acierto", "Puntos SPX", "$ por 1 /ES", "$ por 1 /MES", "Mejor (pts)", "Peor (pts)",
-    "Spreads", "Spreads ganados", "Spreads perdidos", "Resultado spreads ($)"];
+  const headers = ["Fecha", "Entradas", "Ganadas", "Perdidas", "% acierto", "Puntos (del instrumento)", "$ contrato grande", "$ contrato micro", "Mejor (pts)", "Peor (pts)",
+    "Spreads", "Spreads ganados", "Spreads perdidos", "Resultado spreads ($)", "Instrumento"];
   res.getRow(6).values = headers;
   res.getRow(6).eachCell((c) => { c.font = HEAD; c.fill = HEAD_FILL; c.alignment = { horizontal: "center" }; });
 
   days.forEach((d, i) => {
     const r = 7 + i;
     const n = d.trades.length;
-    const sheetRef = `'${d.date}'`;
+    const sheetRef = `'${sheetName(d)}'`;
     const pts = n > 0 ? `${sheetRef}!P2:P${n + 1}` : null;
     const row = res.getRow(r);
-    row.getCell(1).value = d.date;
+    row.getCell(1).value = d.instrument && d.instrument !== "SPX" ? `${d.date} · ${d.instrument}` : d.date;
     if (pts) {
       row.getCell(2).value = { formula: `COUNT(${pts})`, result: n };
       row.getCell(3).value = { formula: `COUNTIF(${pts},">0")`, result: d.wins };
@@ -110,7 +128,7 @@ export async function buildBacktestWorkbook(): Promise<Buffer> {
     row.getCell(5).value = { formula: `IF(B${r}>0,C${r}/B${r},0)`, result: n > 0 ? d.wins / n : 0 };
     const sp = d.spreads ?? [];
     if (sp.length > 0) {
-      const usdRange = `'${d.date} spreads'!N2:N${sp.length + 1}`;
+      const usdRange = `'${sheetName(d)} spreads'!N2:N${sp.length + 1}`;
       const usd = sp.map((x) => Math.round((x.pnl ?? 0) * 100));
       row.getCell(11).value = { formula: `COUNT(${usdRange})`, result: sp.length };
       row.getCell(12).value = { formula: `COUNTIF(${usdRange},">0")`, result: usd.filter((v) => v > 0).length };
@@ -119,8 +137,10 @@ export async function buildBacktestWorkbook(): Promise<Buffer> {
     } else {
       for (const c of [11, 12, 13, 14]) row.getCell(c).value = 0;
     }
-    row.getCell(7).value = { formula: `F${r}*$B$2`, result: d.points * 50 };
-    row.getCell(8).value = { formula: `F${r}*$B$3`, result: d.points * 5 };
+    const m = multOf(d.instrument);
+    row.getCell(15).value = m.inst;
+    row.getCell(7).value = { formula: `F${r}*INDEX($B$2:$B$4,MATCH(O${r},$A$2:$A$4,0))`, result: d.points * m.big };
+    row.getCell(8).value = { formula: `F${r}*INDEX($C$2:$C$4,MATCH(O${r},$A$2:$A$4,0))`, result: d.points * m.micro };
   });
   if (days.length > 0) {
     const first = 7, lastR = 6 + days.length, t = lastR + 1;
@@ -131,9 +151,10 @@ export async function buildBacktestWorkbook(): Promise<Buffer> {
     tot.getCell(3).value = { formula: `SUM(C${first}:C${lastR})`, result: sum("C") };
     tot.getCell(4).value = { formula: `SUM(D${first}:D${lastR})`, result: sum("D") };
     tot.getCell(5).value = { formula: `IF(B${t}>0,C${t}/B${t},0)`, result: sum("B") > 0 ? sum("C") / sum("B") : 0 };
-    tot.getCell(6).value = { formula: `SUM(F${first}:F${lastR})`, result: sum("F") };
-    tot.getCell(7).value = { formula: `SUM(G${first}:G${lastR})`, result: sum("F") * 50 };
-    tot.getCell(8).value = { formula: `SUM(H${first}:H${lastR})`, result: sum("F") * 5 };
+    // Puntos de instrumentos distintos no se suman; los $ sí.
+    tot.getCell(6).value = "—";
+    tot.getCell(7).value = { formula: `SUM(G${first}:G${lastR})`, result: days.reduce((a, d) => a + d.points * multOf(d.instrument).big, 0) };
+    tot.getCell(8).value = { formula: `SUM(H${first}:H${lastR})`, result: days.reduce((a, d) => a + d.points * multOf(d.instrument).micro, 0) };
     const spUsd = days.flatMap((d) => (d.spreads ?? []).map((x) => Math.round((x.pnl ?? 0) * 100)));
     tot.getCell(11).value = { formula: `SUM(K${first}:K${lastR})`, result: spUsd.length };
     tot.getCell(12).value = { formula: `SUM(L${first}:L${lastR})`, result: spUsd.filter((v) => v > 0).length };
@@ -143,18 +164,18 @@ export async function buildBacktestWorkbook(): Promise<Buffer> {
     tot.eachCell((c) => { c.border = { top: { style: "thin" } }; });
   }
   res.columns.forEach((c, i) => {
-    c.width = [14, 10, 10, 10, 11, 12, 13, 13, 12, 12, 10, 14, 15, 19][i] ?? 12;
+    c.width = [18, 10, 10, 10, 11, 14, 15, 15, 12, 12, 10, 14, 15, 19, 12][i] ?? 12;
   });
   res.getColumn(5).numFmt = "0.0%";
   for (const c of [6, 9, 10]) res.getColumn(c).numFmt = PTS_FMT;
   for (const c of [7, 8, 14]) res.getColumn(c).numFmt = USD_FMT;
   res.eachRow((row, rn) => { if (rn > 1 && rn !== 6) row.eachCell((c) => { c.font = { ...FONT, ...(c.font ?? {}), name: "Arial" }; }); });
   res.getCell("A1").font = { name: "Arial", size: 14, bold: true };
-  for (const c of ["B2", "B3"]) res.getCell(c).font = INPUT_FONT;
+  for (const m of MULTS) for (const c of [`B${m.row}`, `C${m.row}`]) res.getCell(c).font = INPUT_FONT;
 
   // ── Una hoja por día ──
   for (const d of days) {
-    const ws = wb.addWorksheet(d.date, { views: [{ state: "frozen", ySplit: 1 }] });
+    const ws = wb.addWorksheet(sheetName(d), { views: [{ state: "frozen", ySplit: 1 }] });
     ws.columns = [
       { header: "Hora entrada (NY)", width: 12 },
       { header: "Alerta", width: 44 },
@@ -172,8 +193,8 @@ export async function buildBacktestWorkbook(): Promise<Buffer> {
       { header: "Hora salida (NY)", width: 12 },
       { header: "Resultado", width: 10 },
       { header: "Puntos", width: 9 },
-      { header: "$ por 1 /ES", width: 12 },
-      { header: "$ por 1 /MES", width: 12 },
+      { header: multOf(d.instrument).bigLabel, width: 14 },
+      { header: multOf(d.instrument).microLabel, width: 14 },
       { header: "Detalle de condiciones", width: 90 },
       { header: "Nota GEX", width: 44 },
     ];
@@ -186,8 +207,9 @@ export async function buildBacktestWorkbook(): Promise<Buffer> {
         t.trap ?? "", t.entry, t.entrySpy ?? "", t.stop, t.target ?? "", t.exit, hmNy(t.exitAt), t.outcome,
       ];
       row.getCell(16).value = { formula: `IF(D${r}="CORTO",I${r}-M${r},M${r}-I${r})`, result: t.points };
-      row.getCell(17).value = { formula: `P${r}*Resumen!$B$2`, result: t.points * 50 };
-      row.getCell(18).value = { formula: `P${r}*Resumen!$B$3`, result: t.points * 5 };
+      const m = multOf(d.instrument);
+      row.getCell(17).value = { formula: `P${r}*Resumen!$B$${m.row}`, result: t.points * m.big };
+      row.getCell(18).value = { formula: `P${r}*Resumen!$C$${m.row}`, result: t.points * m.micro };
       row.getCell(19).value = t.conditions;
       row.getCell(20).value = t.regimeNote ?? "";
       row.font = FONT;
@@ -201,8 +223,8 @@ export async function buildBacktestWorkbook(): Promise<Buffer> {
       tot.getCell(1).value = "Total";
       tot.getCell(15).value = { formula: `COUNTIF(P2:P${n + 1},">0")&" G / "&COUNTIF(P2:P${n + 1},"<0")&" P"`, result: `${d.wins} G / ${d.losses} P` };
       tot.getCell(16).value = { formula: `SUM(P2:P${n + 1})`, result: d.points };
-      tot.getCell(17).value = { formula: `SUM(Q2:Q${n + 1})`, result: d.points * 50 };
-      tot.getCell(18).value = { formula: `SUM(R2:R${n + 1})`, result: d.points * 5 };
+      tot.getCell(17).value = { formula: `SUM(Q2:Q${n + 1})`, result: d.points * multOf(d.instrument).big };
+      tot.getCell(18).value = { formula: `SUM(R2:R${n + 1})`, result: d.points * multOf(d.instrument).micro };
       tot.font = { ...FONT, bold: true };
       tot.eachCell((c) => { c.border = { top: { style: "thin" } }; });
     }
@@ -215,7 +237,7 @@ export async function buildBacktestWorkbook(): Promise<Buffer> {
   for (const d of days) {
     const sp = d.spreads ?? [];
     if (sp.length === 0) continue;
-    const ws = wb.addWorksheet(`${d.date} spreads`, { views: [{ state: "frozen", ySplit: 1 }] });
+    const ws = wb.addWorksheet(`${sheetName(d)} spreads`, { views: [{ state: "frozen", ySplit: 1 }] });
     ws.columns = [
       { header: "Hora (NY)", width: 9 },
       { header: "Alerta que lo ejecutó", width: 40 },

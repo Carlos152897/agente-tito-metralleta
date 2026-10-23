@@ -6,10 +6,11 @@ import { listBacktestDays, listReplayDays } from "@/lib/visionFuturaBacktestStor
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET() {
-  const bt = new Map(listBacktestDays().map((d) => [d.date, d]));
+export async function GET(req: Request) {
+  const inst = (new URL(req.url).searchParams.get("inst") ?? "SPX").toUpperCase();
+  const bt = new Map(listBacktestDays().filter((d) => (d.instrument ?? "SPX") === inst).map((d) => [d.date, d]));
   return Response.json({
-    days: listReplayDays().map((date) => {
+    days: listReplayDays(inst).map((date) => {
       const d = bt.get(date);
       return { date, backtest: d ? { trades: d.trades.length, wins: d.wins, losses: d.losses, points: d.points } : null };
     }),

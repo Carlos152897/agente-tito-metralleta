@@ -52,6 +52,8 @@ export interface BacktestSpread {
 
 export interface BacktestDay {
   date: string;
+  /** SPX (por defecto), NQ o TSLA. */
+  instrument?: string;
   builtAt: string;
   trades: BacktestTrade[];
   wins: number;
