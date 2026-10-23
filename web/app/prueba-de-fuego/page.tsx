@@ -12,18 +12,20 @@ import ContractSearchTab from "./ContractSearchTab";
 import GrandesEmpresasTab from "./GrandesEmpresasTab";
 import GrandesEmpresas2Tab from "./GrandesEmpresas2Tab";
 import OdteStandaloneTab from "./OdteStandaloneTab";
+import BtcTab from "./BtcTab";
+import VisionFuturaTab from "./VisionFuturaTab";
 import { migrateLegacyKey } from "@/lib/legacyStorage";
 
 const KEY_TAB = "visionary.pruebaDeFuego.tab";
 
-type Tab = "TSLA" | "SPX" | "SPX_VECINOS" | "SPX_0DTE" | "VECINOS_2" | "VECINOS_3" | "buscar" | "GRANDES" | "ODTE_STANDALONE" | "GRANDES_2";
+type Tab = "TSLA" | "SPX" | "SPX_VECINOS" | "SPX_0DTE" | "VECINOS_2" | "VECINOS_3" | "buscar" | "GRANDES" | "ODTE_STANDALONE" | "GRANDES_2" | "BTC" | "VISION_FUTURA";
 
 // TSLA/SPX/SPX_VECINOS/SPX_0DTE/VECINOS_2/VECINOS_3: pedido explícito de Carlos (ago 2026) —
 // sacadas de la navegación visible, NO borradas. El componente, la ruta y el
 // `case` de render siguen intactos más abajo a propósito, por si hace falta
 // traerlas de vuelta: para eso alcanza con volver a agregar el `<button>`
 // correspondiente al array de abajo.
-const VISIBLE_TABS: Tab[] = ["ODTE_STANDALONE", "buscar", "GRANDES", "GRANDES_2"];
+const VISIBLE_TABS: Tab[] = ["ODTE_STANDALONE", "buscar", "GRANDES", "GRANDES_2", "BTC", "VISION_FUTURA"];
 const DEFAULT_TAB: Tab = "GRANDES";
 
 export default function PruebaDeFuegoPage() {
@@ -64,6 +66,12 @@ export default function PruebaDeFuegoPage() {
             <button className={tab === "GRANDES_2" ? "active" : ""} onClick={() => pickTab("GRANDES_2")}>
               Grandes empresas 2.0
             </button>
+            <button className={tab === "BTC" ? "active" : ""} onClick={() => pickTab("BTC")}>
+              BTC
+            </button>
+            <button className={tab === "VISION_FUTURA" ? "active" : ""} onClick={() => pickTab("VISION_FUTURA")}>
+              VisionFutura
+            </button>
           </div>
         </div>
 
@@ -77,6 +85,8 @@ export default function PruebaDeFuegoPage() {
         {tab === "buscar" && <ContractSearchTab />}
         {tab === "GRANDES" && <GrandesEmpresasTab />}
         {tab === "GRANDES_2" && <GrandesEmpresas2Tab />}
+        {tab === "BTC" && <BtcTab />}
+        {tab === "VISION_FUTURA" && <VisionFuturaTab />}
       </div>
     </main>
   );

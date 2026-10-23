@@ -20,6 +20,8 @@ Visionary Trades/
 │   └── Proceso Principal.md         # Especificación del agente de Opciones (7 tareas)
 ├── Intrucciones Referencias.md      # Advertencia de liquidez / GEX
 ├── Intrucciones Referencias.pages   # Fuente original
+├── Escalera de gamma - guia sencilla.md   # Referencia de VisionFutura (imanes, techo/piso, flip, agresor, VIX)
+├── Escalera de gamma - guia sencilla.pdf  # Fuente original
 ├── RSS Feed.md                      # Fuentes de noticias a monitorear
 ├── RSS Feed.pages                   # Fuente original
 ├── Sub Agentes/                     # (vacío — agentes secundarios por definir)
@@ -184,6 +186,7 @@ Monitorear los feeds definidos en [RSS Feed](RSS%20Feed.md) (CNBC + Investing.co
 - **Fuente de verdad:** los `.md` son la versión editable; los `.pages`/`.pdf` son los originales de referencia. Al actualizar reglas, editar el `.md` correspondiente y reflejar el cambio aquí.
 - **Al implementar código:** este directorio es documentación de diseño. Cualquier implementación (parser de option chain, motor de flujo, lector RSS) debe respetar las fórmulas y umbrales exactos de arriba.
 - La regla de **liquidez/GEX** es una salvaguarda: ante la duda, no operar y avisar.
+- **VisionFutura** (Prueba de Fuego) toma como referencia la [Escalera de gamma — guía sencilla](Escalera%20de%20gamma%20-%20guia%20sencilla.md): definiciones de Imán +/−, Techo, Piso, Flip, agresor y VIX. Es referencia, no especificación: por decisión de Carlos (2026-10-22) VisionFutura mantiene su propio cálculo (imanes por GEX neto, techo/piso separados de dealers); las diferencias están anotadas al final de esa guía.
 
 ## Rebrand a Visionary Trades (ago 2026)
 
