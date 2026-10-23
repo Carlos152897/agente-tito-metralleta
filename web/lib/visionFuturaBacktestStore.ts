@@ -8,7 +8,7 @@
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import ExcelJS from "exceljs";
-import type { BacktestDay } from "./visionFuturaBacktest";
+import { STOP_VARIANTS, summarizeStops, type BacktestDay } from "./visionFuturaBacktest";
 import { replayFileName, type ReplayPayload } from "./visionFuturaReplay";
 import { loadHistorial } from "./amigaStore";
 
@@ -86,6 +86,7 @@ export async function buildBacktestWorkbook(): Promise<Buffer> {
   const wb = new ExcelJS.Workbook();
   wb.creator = "VisionFutura";
   wb.created = new Date();
+  wb.calcProperties.fullCalcOnLoad = true;
 
   // ── Resumen ──
   const res = wb.addWorksheet("Resumen", { views: [{ state: "frozen", ySplit: 6 }] });
@@ -197,6 +198,12 @@ export async function buildBacktestWorkbook(): Promise<Buffer> {
       { header: multOf(d.instrument).microLabel, width: 14 },
       { header: "Detalle de condiciones", width: 90 },
       { header: "Nota GEX", width: 44 },
+      { header: "Stop ATR×1: distancia", width: 12 },
+      { header: "Stop ATR×1: resultado", width: 12 },
+      { header: "Stop ATR×1: puntos", width: 11 },
+      { header: "Stop nivel+½ATR: distancia", width: 13 },
+      { header: "Stop nivel+½ATR: resultado", width: 13 },
+      { header: "Stop nivel+½ATR: puntos", width: 12 },
     ];
     ws.getRow(1).eachCell((c) => { c.font = HEAD; c.fill = HEAD_FILL; c.alignment = { horizontal: "center", wrapText: true }; });
     d.trades.forEach((t, i) => {
@@ -212,6 +219,9 @@ export async function buildBacktestWorkbook(): Promise<Buffer> {
       row.getCell(18).value = { formula: `P${r}*Resumen!$C$${m.row}`, result: t.points * m.micro };
       row.getCell(19).value = t.conditions;
       row.getCell(20).value = t.regimeNote ?? "";
+      const va = t.stopVariants?.find((v) => v.id === "atr"), vn = t.stopVariants?.find((v) => v.id === "nivel");
+      if (va) { row.getCell(21).value = va.risk; row.getCell(22).value = va.outcome; row.getCell(23).value = va.points; }
+      if (vn) { row.getCell(24).value = vn.risk; row.getCell(25).value = vn.outcome; row.getCell(26).value = vn.points; }
       row.font = FONT;
       const color = t.points > 0 ? "FF0E9F5F" : t.points < 0 ? "FFD92D20" : "FF666666";
       row.getCell(15).font = { ...FONT, bold: true, color: { argb: color } };
@@ -225,12 +235,69 @@ export async function buildBacktestWorkbook(): Promise<Buffer> {
       tot.getCell(16).value = { formula: `SUM(P2:P${n + 1})`, result: d.points };
       tot.getCell(17).value = { formula: `SUM(Q2:Q${n + 1})`, result: d.points * multOf(d.instrument).big };
       tot.getCell(18).value = { formula: `SUM(R2:R${n + 1})`, result: d.points * multOf(d.instrument).micro };
+      const sc = d.stopCompare ?? summarizeStops(d.trades);
+      tot.getCell(23).value = { formula: `SUM(W2:W${n + 1})`, result: sc.find((r) => r.id === "atr")?.points ?? 0 };
+      tot.getCell(26).value = { formula: `SUM(Z2:Z${n + 1})`, result: sc.find((r) => r.id === "nivel")?.points ?? 0 };
       tot.font = { ...FONT, bold: true };
       tot.eachCell((c) => { c.border = { top: { style: "thin" } }; });
     }
     for (const c of [5, 9, 10, 11, 12, 13]) ws.getColumn(c).numFmt = "#,##0.00";
     ws.getColumn(16).numFmt = PTS_FMT;
     for (const c of [17, 18]) ws.getColumn(c).numFmt = USD_FMT;
+    for (const c of [21, 24]) ws.getColumn(c).numFmt = "#,##0.00";
+    for (const c of [23, 26]) ws.getColumn(c).numFmt = PTS_FMT;
+  }
+
+  // ── Comparación de stops (registro en paralelo; el motor sigue con el fijo) ──
+  if (days.length > 0) {
+    const ws = wb.addWorksheet("Comparación de stops", { views: [{ state: "frozen", ySplit: 2 }] });
+    const top = ws.getRow(1);
+    top.getCell(1).value = "Mismas entradas, 3 stops (objetivo a la misma distancia, 1:1). Puntos del instrumento. Fijo = el del motor; ATR×1 = promedio del |cambio| de 5 min de las 12 velas previas; Nivel + ½ ATR = stop detrás del nivel con colchón.";
+    top.getCell(1).font = { name: "Arial", size: 9, italic: true, color: { argb: "FF666666" } };
+    const head = ["Fecha", "Instrumento", "Entradas"];
+    for (const v of STOP_VARIANTS) head.push(`${v.label}: G`, `${v.label}: P`, `${v.label}: puntos`, `${v.label}: stop prom.`);
+    head.push("Mejor stop del día");
+    ws.getRow(2).values = head;
+    ws.getRow(2).eachCell((c) => { c.font = HEAD; c.fill = HEAD_FILL; c.alignment = { horizontal: "center", wrapText: true }; });
+    ws.getRow(2).height = 30;
+    days.forEach((d, i) => {
+      const sc = d.stopCompare ?? summarizeStops(d.trades);
+      const vals: (string | number)[] = [d.date, d.instrument ?? "SPX", d.trades.length];
+      for (const v of STOP_VARIANTS) {
+        const r = sc.find((x) => x.id === v.id);
+        vals.push(r?.wins ?? 0, r?.losses ?? 0, r?.points ?? 0, r?.avgRisk ?? 0);
+      }
+      const best = sc.filter((r) => r.trades > 0).sort((a, b) => b.points - a.points)[0];
+      vals.push(best ? best.label : "—");
+      const row = ws.getRow(3 + i);
+      row.values = vals;
+      row.font = FONT;
+    });
+    // Totales por instrumento (los puntos de instrumentos distintos no se suman entre sí).
+    const last = 2 + days.length;
+    let r = last + 2;
+    ws.getRow(r).getCell(1).value = "Total por instrumento";
+    ws.getRow(r).font = { ...FONT, bold: true };
+    for (const inst of [...new Set(days.map((d) => d.instrument ?? "SPX"))]) {
+      r++;
+      const row = ws.getRow(r);
+      row.getCell(1).value = "Total";
+      row.getCell(2).value = inst;
+      const colL = (c: number) => String.fromCharCode(64 + c);
+      for (let c = 3; c <= 3 + STOP_VARIANTS.length * 4; c++) {
+        const L = colL(c);
+        const isAvg = c > 3 && (c - 3) % 4 === 0;
+        row.getCell(c).value = isAvg
+          ? { formula: `IFERROR(AVERAGEIF($B$3:$B$${last},B${r},${L}3:${L}${last}),0)` }
+          : { formula: `SUMIF($B$3:$B$${last},B${r},${L}3:${L}${last})` };
+      }
+      row.font = { ...FONT, bold: true };
+    }
+    ws.columns.forEach((c, i) => { c.width = i === 0 ? 12 : i === 1 ? 12 : i === 3 + STOP_VARIANTS.length * 4 ? 18 : 11; });
+    STOP_VARIANTS.forEach((_, k) => {
+      ws.getColumn(6 + k * 4).numFmt = PTS_FMT;
+      ws.getColumn(7 + k * 4).numFmt = "#,##0.00";
+    });
   }
 
   // ── Spreads por día ──
