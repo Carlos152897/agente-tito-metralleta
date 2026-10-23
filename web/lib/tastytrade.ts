@@ -212,6 +212,14 @@ export interface TastyFutureInstrument {
   "expiration-date": string;
   "active-month": boolean;
   "next-active-month": boolean;
+  /** Símbolo de DXLink (ej. "/ESZ26:XCME") para velas e históricos. */
+  "streamer-symbol"?: string;
+}
+
+/** Token para el streaming DXLink de tastytrade (velas/históricos; no hay REST de velas). */
+export async function fetchQuoteToken(): Promise<{ token: string; dxlinkUrl: string }> {
+  const d = await tastyGet<{ token: string; "dxlink-url": string }>("/api-quote-tokens");
+  return { token: d.token, dxlinkUrl: d["dxlink-url"] };
 }
 
 /** El contrato de futuro "activo" (más líquido/rolado) de un producto (ej. "ES", "NQ"). */

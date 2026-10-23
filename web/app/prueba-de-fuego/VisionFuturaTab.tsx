@@ -594,7 +594,7 @@ export default function VisionFuturaTab() {
             Las alertas de scalp funcionan igual (en puntos del futuro; 1 pt = ${inst === "ESN" ? "50 en /ES · $5 en /MES" : "20 en /NQ · $2 en /MNQ"}).
             Mejor horario: apertura de Asia (8–10 pm NY) y Europa (3–5 am NY); evita la pausa de 5–6 pm.
           </div>
-          <div style={{ color: "var(--faint)", fontSize: 12 }}>La gráfica empieza desde que se abrió el modo noche (tastytrade no da velas de futuros). Sin repetición ni backtest en este modo.</div>
+          <div style={{ color: "var(--faint)", fontSize: 12 }}>Gráfica: velas reales de 5 min del futuro desde la apertura de la sesión (6 pm NY, tastytrade) + el precio en vivo cada 3 s. Sin repetición ni backtest en este modo.</div>
         </div>
       )}
       {!isNightInst && <VisionFuturaReplayBar
@@ -782,6 +782,7 @@ export default function VisionFuturaTab() {
             rows={view.rows}
             spot={view.spot.spx}
             priceSeries={view.priceSeries}
+            nightSession={isNightInst && !tick}
             history={view.history}
             keyLevels={view.keyLevels}
             dealerLevels={view.dealerLevels}

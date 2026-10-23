@@ -25,6 +25,7 @@ import { maxPainStrike, zeroDteGex } from "./zerodte";
 import { loadNativeFuture, nativeFresh } from "./futuresNative";
 import type { ExtendedChainContract, GexStatsBucket } from "./spxLevels";
 import type { ZRow } from "./zerodteTypes";
+import { fetchFutureCandles } from "./futuresCandles";
 import type { ExpirationChip, VisionFuturaPayload } from "./visionFuturaData";
 
 /** Cuánto se mira alrededor del precio (6%): de sobra para ±30 strikes de /ES y /NQ. */
@@ -66,6 +67,16 @@ export function recordNightPrice(inst: string, tMs: number, value: number) {
   } catch { /* no crítico */ }
 }
 
+/** Apertura de la sesión de futuros en curso: las 6 pm NY más recientes. */
+export function sessionStartMs(now: Date): number {
+  const off = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", timeZoneName: "longOffset" })
+    .formatToParts(now).find((p) => p.type === "timeZoneName")?.value.replace("GMT", "") || "-05:00";
+  const today = marketDateStr(now);
+  let start = Date.parse(`${today}T18:00:00${off}`);
+  if (start > now.getTime()) start -= 24 * 3600_000;
+  return start;
+}
+
 // ── Cadena anidada de opciones del futuro (cambia poco: 30 min) ──
 const nestedCache = new Map<string, { at: number; exps: FuturesOptionExpiration[] }>();
 async function nestedFut(product: string): Promise<FuturesOptionExpiration[]> {
@@ -76,13 +87,23 @@ async function nestedFut(product: string): Promise<FuturesOptionExpiration[]> {
   return exps;
 }
 
-const futCache = new Map<string, { at: number; symbol: string }>();
-export async function activeFutureSymbol(product: string): Promise<string | null> {
+const futCache = new Map<string, { at: number; symbol: string; streamer: string | null }>();
+async function activeFuture(product: string) {
   const c = futCache.get(product);
-  if (c && Date.now() - c.at < 3_600_000) return c.symbol;
+  if (c && Date.now() - c.at < 3_600_000) return c;
   const f = await fetchActiveFuture(product).catch(() => null);
-  if (f) futCache.set(product, { at: Date.now(), symbol: f.symbol });
-  return f?.symbol ?? c?.symbol ?? null;
+  if (f) {
+    const v = { at: Date.now(), symbol: f.symbol, streamer: f["streamer-symbol"] ?? null };
+    futCache.set(product, v);
+    return v;
+  }
+  return c ?? null;
+}
+export async function activeFutureSymbol(product: string): Promise<string | null> {
+  return (await activeFuture(product))?.symbol ?? null;
+}
+async function activeStreamerSymbol(product: string): Promise<string | null> {
+  return (await activeFuture(product))?.streamer ?? null;
 }
 
 const num = (v: string | number | undefined | null) => (v != null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null);
@@ -109,6 +130,10 @@ export function nightGexStats(rows: ZRow[], spot: number, now: Date): GexStatsBu
 export async function loadNightVisionFutura(cfg: InstrumentConfig, now: Date, radius: number, expIndex: number): Promise<VisionFuturaPayload> {
   const night = cfg.night!;
   const futSymbol = await activeFutureSymbol(night.product);
+  // Velas reales de 5 min desde la apertura de la sesión (DXLink), en paralelo con lo demás.
+  const candlesP = activeStreamerSymbol(night.product)
+    .then((sym) => (sym ? fetchFutureCandles(sym, sessionStartMs(now)) : []))
+    .catch(() => []);
   if (!futSymbol) throw new Error(`tastytrade no devolvió el futuro activo de /${night.product}.`);
   const [spot, exps, esRef] = await Promise.all([
     fetchFuturesQuote(futSymbol),
@@ -189,7 +214,13 @@ export async function loadNightVisionFutura(cfg: InstrumentConfig, now: Date, ra
   });
 
   recordNightPrice(cfg.id, now.getTime(), spot);
-  const priceSeries = [...seriesOf(cfg.id)];
+  // Gráfica: cierres de las velas de 5 min + las muestras propias posteriores a la última vela.
+  const candles = await candlesP;
+  const lastCandle = candles.at(-1)?.time ?? 0;
+  const priceSeries = [
+    ...candles.map((b) => ({ time: b.time, value: b.close })),
+    ...seriesOf(cfg.id).filter((p) => p.time > lastCandle + 60),
+  ];
 
   let spreads: SpreadsReport | null = null;
   let spreadsError: string | null = null;

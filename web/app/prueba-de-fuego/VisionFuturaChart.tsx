@@ -69,6 +69,8 @@ interface Props {
   rows: VisionStrikeRow[];
   spot: number;
   priceSeries: { time: number; value: number }[];
+  /** 🌙 Modo noche: eje X desde la apertura de futuros (6 pm NY) hasta ahora, no 9:30–16:00. */
+  nightSession?: boolean;
   history: HistoryPoint[];
   keyLevels: KeyLevel[];
   dealerLevels: DealerLevel[];
@@ -93,6 +95,15 @@ function nyOffset(dateStr: string): string {
   return new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", timeZoneName: "longOffset" })
     .formatToParts(new Date(`${dateStr}T16:00:00Z`))
     .find((p) => p.type === "timeZoneName")?.value.replace("GMT", "") || "-05:00";
+}
+
+/** Sesión de futuros: desde las 6 pm NY más recientes hasta un poco después de ahora. */
+function nightBounds(refSec: number): { open: number; close: number } {
+  const d = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(refSec * 1000));
+  let open = Date.parse(`${d}T18:00:00${nyOffset(d)}`) / 1000;
+  if (open > refSec) open -= 24 * 3600;
+  const close = refSec + Math.max(30 * 60, (refSec - open) * 0.08);
+  return { open, close };
 }
 
 function sessionBounds(refSec: number): { open: number; close: number } {
@@ -159,7 +170,7 @@ export default function VisionFuturaChart(props: Props) {
   const inView = (price: number) => price <= maxStrike + step / 2 && price >= minStrike - step / 2;
 
   const refSec = priceSeries.at(-1)?.time ?? history.at(-1)?.time ?? Date.now() / 1000;
-  const { open, close } = sessionBounds(refSec);
+  const { open, close } = props.nightSession ? nightBounds(refSec) : sessionBounds(refSec);
   const x = (sec: number) => plotL + ((Math.min(Math.max(sec, open), close) - open) / (close - open)) * plotW;
   const nowSec = Math.min(Math.max(refSec, open), close);
   const nowX = x(nowSec);
@@ -241,7 +252,8 @@ export default function VisionFuturaChart(props: Props) {
     .join("");
 
   const ticks: number[] = [];
-  for (let t = open; t <= close; t += 3600) ticks.push(t);
+  const tickStep = close - open > 12 * 3600 ? 7200 : 3600;
+  for (let t = open; t <= close; t += tickStep) ticks.push(t);
 
   const spotRowIdx = rows.reduce((best, r, i) => (Math.abs(r.spx - spot) < Math.abs(rows[best].spx - spot) ? i : best), 0);
   const conv = (s: number) => ({
