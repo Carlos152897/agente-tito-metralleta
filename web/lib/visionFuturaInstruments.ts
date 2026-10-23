@@ -8,7 +8,7 @@
 // (movimiento diario = precio × IV ATM / √252; referencia SPX = 80 pts). SPX usa
 // escala 1 fija para no cambiar nada de lo ya calibrado y backtesteado.
 
-export type InstrumentId = "SPX" | "NQ" | "TSLA";
+export type InstrumentId = "SPX" | "NQ" | "TSLA" | "ESN" | "NQN";
 
 export interface InstrumentConfig {
   id: InstrumentId;
@@ -34,6 +34,12 @@ export interface InstrumentConfig {
   chartFromEtf: boolean;
   /** Tiene opciones que vencen TODOS los días (0DTE diario). */
   dailyExpirations: boolean;
+  /**
+   * Modo noche 🌙: el instrumento ES el futuro (/ES, /NQ) y los niveles salen de sus
+   * opciones de CME en tastytrade (operan casi 24 h), no de MarketSnack.
+   * `mult` = $ por punto de la opción sobre el futuro (/ES $50, /NQ $20).
+   */
+  night?: { product: "ES" | "NQ"; mult: number; micro: string };
 }
 
 export const INSTRUMENTS: Record<InstrumentId, InstrumentConfig> = {
@@ -49,7 +55,20 @@ export const INSTRUMENTS: Record<InstrumentId, InstrumentConfig> = {
     id: "TSLA", label: "TSLA", main: "TSLA", msTicker: "TSLA", occRoot: "TSLA", tastyChain: "TSLA",
     tastyMain: { equity: "TSLA" }, etf: null, future: null, volIndex: null, chartFromEtf: false, dailyExpirations: false,
   },
+  ESN: {
+    id: "ESN", label: "🌙 /ES noche", main: "/ES", msTicker: "", occRoot: "", tastyChain: "ES",
+    tastyMain: {}, etf: null, future: null, volIndex: null, chartFromEtf: false, dailyExpirations: true,
+    night: { product: "ES", mult: 50, micro: "/MES" },
+  },
+  NQN: {
+    id: "NQN", label: "🌙 /NQ noche", main: "/NQ", msTicker: "", occRoot: "", tastyChain: "NQ",
+    tastyMain: {}, etf: null, future: null, volIndex: null, chartFromEtf: false, dailyExpirations: true,
+    night: { product: "NQ", mult: 20, micro: "/MNQ" },
+  },
 };
+
+export const isNight = (cfg: InstrumentConfig | InstrumentId | string | null | undefined): boolean =>
+  !!(typeof cfg === "object" && cfg ? cfg.night : instrumentOf(cfg as string).night);
 
 export function instrumentOf(id: string | null | undefined): InstrumentConfig {
   return INSTRUMENTS[(id ?? "SPX").toUpperCase() as InstrumentId] ?? INSTRUMENTS.SPX;
@@ -64,6 +83,7 @@ export interface InstrumentLabels {
 }
 
 export function labelsOf(cfg: InstrumentConfig, futureSymbol?: string | null): InstrumentLabels {
+  if (cfg.night) return { main: futureSymbol ?? cfg.main, etf: null, future: null, vol: "IV ATM" };
   return {
     main: cfg.main,
     etf: cfg.etf,
@@ -76,12 +96,13 @@ export function labelsOf(cfg: InstrumentConfig, futureSymbol?: string | null): I
  * Volatilidad relativa a SPX cuando el instrumento no tiene una IV confiable propia:
  * el Nasdaq 100 se mueve típicamente ~20% más que el S&P 500.
  */
-export const REL_VOL: Partial<Record<InstrumentId, number>> = { NQ: 1.2 };
+export const REL_VOL: Partial<Record<InstrumentId, number>> = { NQ: 1.2, NQN: 1.2 };
 
 /**
  * Escala de los umbrales = cuánto se mueve el instrumento en un día comparado con SPX.
  *   SPX: 1 (fijo, no cambia nada de lo calibrado).
- *   NQ:  (NDX ÷ SPX) × 1.2 — estable; la IV de las opciones de NDX de corto plazo sale
+ *   /ES noche: 1 (mismo índice, distinta base).
+ *   NQ:  (NDX ÷ SPX) × 1.2 (de noche: /NQ ÷ /ES × 1.2) — estable; la IV de las opciones de NDX de corto plazo sale
  *        inflada fuera de horario (vista en 37% el 2026-10-22 de noche).
  *   TSLA (y acciones): (precio × IV ATM) ÷ (SPX × VIX/100).
  */
@@ -90,7 +111,8 @@ export function scaleFor(
   spot: number,
   ref: { spxSpot: number | null; vix: number | null; atmIv: number | null },
 ): number {
-  if (cfg.id === "SPX") return 1;
+  // /ES de noche se mueve igual que SPX (solo cambia la base): mismos umbrales.
+  if (cfg.id === "SPX" || cfg.id === "ESN") return 1;
   const spx = ref.spxSpot && ref.spxSpot > 0 ? ref.spxSpot : 7000;
   const rel = REL_VOL[cfg.id];
   let scale: number;

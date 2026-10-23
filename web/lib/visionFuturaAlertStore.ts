@@ -12,6 +12,7 @@ import { join } from "path";
 import { loadVisionFutura, type VisionFuturaPayload } from "./visionFuturaData";
 import { evaluateVisionAlerts, ALERT_TUNING, type Sample, type VisionAlert } from "./visionFuturaAlerts";
 import { marketDateStr } from "./occ";
+import { instrumentOf } from "./visionFuturaInstruments";
 
 const STATE_DIR = join(process.cwd(), "data", "vision-futura");
 /** Un archivo de estado por instrumento (SPX conserva el nombre original). */
@@ -78,6 +79,8 @@ export interface VisionFuturaCycle {
 /** Cómo se opera cada lado según el instrumento (texto de la orden de las alertas). */
 function instrumentosDe(p: VisionFuturaPayload): { largo: string; corto: string } {
   const { main, etf, future } = p.labels;
+  const night = instrumentOf(p.instrument).night;
+  if (night) return { largo: `Comprar ${main} (o ${night.micro})`, corto: `Vender ${main} (o ${night.micro})` };
   if (!etf && !future) return { largo: `Comprar ${main} (acciones o calls)`, corto: `Vender ${main} (acciones o puts)` };
   const fut = future ? ` · comprar ${future}` : "";
   const futS = future ? ` · vender ${future}` : "";

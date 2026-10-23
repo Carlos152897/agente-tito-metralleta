@@ -18,6 +18,7 @@ import {
 import { isMarketOpen } from "./marketHours";
 import { marketDateStr } from "./occ";
 import type { ExtendedChainContract } from "./spxLevels";
+import { loadNightVisionFutura } from "./visionFuturaNight";
 
 export class VisionFuturaError extends Error {}
 
@@ -130,6 +131,14 @@ export async function loadVisionFutura(
   expIndex = 0,
 ): Promise<VisionFuturaPayload> {
   const cfg = instrumentOf(instrument);
+  // 🌙 /ES y /NQ de noche: todo sale de las opciones de CME en tastytrade (lib/visionFuturaNight.ts).
+  if (cfg.night) {
+    try {
+      return await loadNightVisionFutura(cfg, now, radius, expIndex);
+    } catch (e) {
+      throw new VisionFuturaError(e instanceof Error ? e.message : `No se pudo cargar ${cfg.label}.`);
+    }
+  }
   const expirations = await expirationsFor(cfg, now).catch(() => [] as ExpirationChip[]);
   const expiration = expirations[Math.min(Math.max(0, expIndex), Math.max(0, expirations.length - 1))]?.date ?? marketDateStr(now);
 

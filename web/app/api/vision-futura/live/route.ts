@@ -7,6 +7,7 @@
 
 import { fetchActiveFuture, fetchLiveQuotes, TastytradeError } from "@/lib/tastytrade";
 import { instrumentOf } from "@/lib/visionFuturaInstruments";
+import { activeFutureSymbol, recordNightPrice } from "@/lib/visionFuturaNight";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,6 +25,17 @@ async function activeFuture(product: string): Promise<string | null> {
 export async function GET(req: Request) {
   const cfg = instrumentOf(new URL(req.url).searchParams.get("inst"));
   try {
+    // 🌙 Modo noche: el instrumento es el propio futuro.
+    if (cfg.night) {
+      const sym = await activeFutureSymbol(cfg.night.product);
+      const q = sym ? (await fetchLiveQuotes({ future: [sym] })).get(sym) : null;
+      if (!sym || !q) return Response.json({ error: `tastytrade no devolvió /${cfg.night.product}.` }, { status: 502 });
+      recordNightPrice(cfg.id, Date.now(), q.price);
+      return Response.json({
+        asOf: new Date().toISOString(), source: "tastytrade", instrument: cfg.id,
+        spx: q.price, spxUpdatedAt: q.updatedAt, spy: null, es: null, esSymbol: sym, vix: null,
+      });
+    }
     const futSymbol = cfg.future ? await activeFuture(cfg.future) : null;
     const index = [cfg.tastyMain.index, cfg.volIndex].filter((x): x is string => !!x);
     const equity = [cfg.tastyMain.equity, cfg.etf].filter((x): x is string => !!x);

@@ -249,7 +249,10 @@ const INSTRUMENT_OPTIONS: { id: InstrumentId; label: string; sub: string }[] = [
   { id: "SPX", label: "SPX", sub: "SPY · /ES" },
   { id: "NQ", label: "NQ", sub: "NDX · QQQ · /NQ" },
   { id: "TSLA", label: "TSLA", sub: "acción" },
+  { id: "ESN", label: "🌙 /ES", sub: "noche · opciones CME" },
+  { id: "NQN", label: "🌙 /NQ", sub: "noche · opciones CME" },
 ];
+const NIGHT_IDS: InstrumentId[] = ["ESN", "NQN"];
 const KEY_INST = "visionary.visionFutura.inst";
 
 /** "Hoy" / "lun 26" para los botones de vencimiento. */
@@ -353,7 +356,9 @@ export default function VisionFuturaTab() {
     setPlaying(false);
     setReplayError(null);
     instRef.current = id;
-    if (mode === "repeticion") loadReplay(false);
+    // El modo noche no tiene repetición: vuelve a "en vivo".
+    if (NIGHT_IDS.includes(id)) setMode("vivo");
+    else if (mode === "repeticion") loadReplay(false);
     try { window.localStorage.setItem(KEY_INST, id); } catch { /* ignorar */ }
   };
   const pickExp = (i: number) => {
@@ -570,15 +575,29 @@ export default function VisionFuturaTab() {
   const labels: InstrumentLabels = (tick ? replay?.labels : data.labels) ?? DEFAULT_LABELS;
   const scale = (tick ? replay?.scale : data.scale) ?? 1;
   const isSpx = labels.main === "SPX";
+  const isNightInst = NIGHT_IDS.includes(inst);
+  const levelsSrc = isNightInst ? "opciones de CME en tastytrade" : "MarketSnack";
   // Ventana real de cada botón (misma regla que el servidor: 10/20/30 strikes por lado fuera de SPX).
   const step = (tick ? replay?.strikeStep : data.strikeStep) ?? 5;
-  const windowFor = (r: number) => (isSpx ? r : (r <= 30 ? 10 : r <= 60 ? 20 : 30) * step);
+  const windowFor = (r: number) => (isSpx || inst === "ESN" ? r : (r <= 30 ? 10 : r <= 60 ? 20 : 30) * step);
 
   return (
     <VisionLabelsContext.Provider value={labels}>
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-md)" }}>
       {instrumentBar}
-      <VisionFuturaReplayBar
+      {isNightInst && (
+        <div className="card" style={{ gap: 6, padding: 14, borderColor: "var(--amber)", fontSize: 13 }}>
+          <b>🌙 Modo noche · {labels.main}</b>
+          <div style={{ color: "var(--muted)" }}>
+            Niveles calculados con gamma × OI de las opciones de CME sobre el futuro (tastytrade), no con MarketSnack. De noche el OI es el del
+            cierre anterior y hay poco volumen: <b style={{ color: "var(--amber-text)" }}>tómalos como referencia, menos confiables que de día</b>.
+            Las alertas de scalp funcionan igual (en puntos del futuro; 1 pt = ${inst === "ESN" ? "50 en /ES · $5 en /MES" : "20 en /NQ · $2 en /MNQ"}).
+            Mejor horario: apertura de Asia (8–10 pm NY) y Europa (3–5 am NY); evita la pausa de 5–6 pm.
+          </div>
+          <div style={{ color: "var(--faint)", fontSize: 12 }}>La gráfica empieza desde que se abrió el modo noche (tastytrade no da velas de futuros). Sin repetición ni backtest en este modo.</div>
+        </div>
+      )}
+      {!isNightInst && <VisionFuturaReplayBar
         mode={mode}
         onMode={pickMode}
         replay={replay}
@@ -594,7 +613,7 @@ export default function VisionFuturaTab() {
         onRebuild={() => loadReplay(true)}
         days={replayDays}
         onPickDay={(d) => loadReplay(false, d)}
-      />
+      />}
       <div className="card" style={{ gap: 14 }}>
         <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, alignItems: "baseline" }}>
           <h3 style={{ margin: 0 }}>VisionFutura · {labels.main}{!isSpx && <span style={{ fontSize: 13, color: "var(--muted)", fontWeight: 400 }}> · umbrales ×{scale.toFixed(2)} vs SPX</span>}</h3>
@@ -609,7 +628,7 @@ export default function VisionFuturaTab() {
         {!tick && <div style={{ fontSize: 12, color: "var(--muted)", display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
           <span style={{ width: 8, height: 8, borderRadius: 999, background: liveAgo != null && liveAgo <= 10 ? "var(--green)" : "var(--amber)" }} />
           Precio en vivo (tastytrade): {liveAgo == null ? "conectando…" : `hace ${liveAgo} s`} · cada {view.marketOpen ? "3" : "15"} s
-          <span style={{ color: "var(--faint)" }}>· Niveles (MarketSnack): cada 15 s, GEX nuevo cada 5 min</span>
+          <span style={{ color: "var(--faint)" }}>· Niveles ({levelsSrc}): cada 15 s{isNightInst ? "" : ", GEX nuevo cada 5 min"}</span>
         </div>}
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
           <Tile label={labels.main} value={fmt(view.spot.spx)} sub={view.regime ? `GEX neto ${view.regime} (${fmtGex(view.netGex ?? 0)})` : "sin GEX"} color={view.regime === "negativo" ? "var(--red-soft)" : undefined} />
@@ -645,7 +664,7 @@ export default function VisionFuturaTab() {
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 460px), 1fr))", gap: "var(--space-md)" }}>
         <div className="card" style={{ gap: 10 }}>
-          <h4 style={{ margin: 0 }}>Niveles clave (GEX real de MarketSnack)</h4>
+          <h4 style={{ margin: 0 }}>Niveles clave (GEX real de {levelsSrc})</h4>
           <div style={{ overflowX: "auto" }}>
             <table style={{ borderCollapse: "collapse", width: "100%" }}>
               <thead>
@@ -757,7 +776,7 @@ export default function VisionFuturaTab() {
           <div style={{ fontSize: 12, color: "var(--amber-text)" }}>La línea de precio de hoy sale de {labels.etf} convertido a {labels.main} (MarketSnack no tiene la gráfica intradía del índice); el punto en vivo es el {labels.main} real.</div>
         )}
         {view.rows.length === 0 ? (
-          <div className="wheel-empty">MarketSnack no devolvió contratos para {view.expiration}.</div>
+          <div className="wheel-empty">{levelsSrc} no devolvió contratos para {view.expiration}.</div>
         ) : (
           <VisionFuturaChart
             rows={view.rows}
