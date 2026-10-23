@@ -448,6 +448,37 @@ export async function buildReplay(now: Date, opts: { force?: boolean; inst?: str
 
 // ── Copia de la cadena (OI/IV) de cada vencimiento ──
 const CHAIN_DIR = join(DIR, "chains");
+
+/**
+ * Copia de la cadena DURANTE el día, para que la repetición tenga OI (y gamma por
+ * strike) aunque se arme después de que MarketSnack borre el vencimiento. Pasó con
+ * NDX el 2026-10-22: la repetición se armó tarde y salió sin GEX por strike.
+ * Se llama desde cada carga de VisionFutura (cualquier instrumento); como mucho
+ * una vez cada 30 min, y solo de 9 am a 11 pm NY entre semana.
+ */
+let lastCapture = 0;
+export async function captureChainsForReplay(now: Date): Promise<void> {
+  if (now.getTime() - lastCapture < 30 * 60_000) return;
+  const p = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short", hour: "numeric", hour12: false }).formatToParts(now);
+  const wd = p.find((x) => x.type === "weekday")?.value ?? "";
+  const hr = Number(p.find((x) => x.type === "hour")?.value ?? 0);
+  if (wd === "Sat" || wd === "Sun" || hr < 9 || hr >= 23) return;
+  lastCapture = now.getTime();
+  const date = marketDateStr(now);
+  for (const cfg of [instrumentOf("SPX"), instrumentOf("NQ"), instrumentOf("TSLA")]) {
+    // Mismo vencimiento que buscará la repetición: el primero desde hoy que tenga cadena.
+    for (let i = 0; i <= 6; i++) {
+      const d = new Date(`${date}T12:00:00Z`);
+      d.setUTCDate(d.getUTCDate() + i);
+      const exp = d.toISOString().slice(0, 10);
+      const c = await fetchOptionChainExtended(cfg.msTicker, exp).catch(() => [] as ExtendedChainContract[]);
+      if (c.length === 0) continue;
+      if (c.some((x) => x.open_interest > 0)) saveChainSnapshot(cfg.id, exp, c);
+      break;
+    }
+  }
+}
+
 function saveChainSnapshot(inst: string, exp: string, c: ExtendedChainContract[]) {
   try {
     mkdirSync(CHAIN_DIR, { recursive: true });

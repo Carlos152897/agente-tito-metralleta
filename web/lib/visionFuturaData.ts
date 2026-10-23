@@ -19,6 +19,7 @@ import { isMarketOpen } from "./marketHours";
 import { marketDateStr } from "./occ";
 import type { ExtendedChainContract } from "./spxLevels";
 import { loadNightVisionFutura } from "./visionFuturaNight";
+import { captureChainsForReplay } from "./visionFuturaReplay";
 
 export class VisionFuturaError extends Error {}
 
@@ -139,6 +140,8 @@ export async function loadVisionFutura(
       throw new VisionFuturaError(e instanceof Error ? e.message : `No se pudo cargar ${cfg.label}.`);
     }
   }
+  // En segundo plano: copia de las cadenas del día para la repetición (no bloquea la carga).
+  void captureChainsForReplay(now).catch(() => {});
   const expirations = await expirationsFor(cfg, now).catch(() => [] as ExpirationChip[]);
   const expiration = expirations[Math.min(Math.max(0, expIndex), Math.max(0, expirations.length - 1))]?.date ?? marketDateStr(now);
 
