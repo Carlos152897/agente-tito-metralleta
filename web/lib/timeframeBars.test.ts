@@ -11,7 +11,7 @@ describe("aggregateHourlyBars", () => {
       { time: 3 * h, open: 13, high: 15, low: 12, close: 14 },
     ];
     const out = aggregateHourlyBars(bars, 4);
-    expect(out).toEqual([{ time: 0, open: 10, high: 15, low: 9, close: 14 }]);
+    expect(out).toEqual([{ time: 0, open: 10, high: 15, low: 9, close: 14, volume: 0 }]);
   });
 
   it("abre un bucket nuevo al cruzar el corte de 4h", () => {
@@ -22,8 +22,8 @@ describe("aggregateHourlyBars", () => {
     ];
     const out = aggregateHourlyBars(bars, 4);
     expect(out).toEqual([
-      { time: 0, open: 10, high: 12, low: 9, close: 11 },
-      { time: 4 * h, open: 11, high: 13, low: 10, close: 12 },
+      { time: 0, open: 10, high: 12, low: 9, close: 11, volume: 0 },
+      { time: 4 * h, open: 11, high: 13, low: 10, close: 12, volume: 0 },
     ]);
   });
 
@@ -41,6 +41,18 @@ describe("aggregateHourlyBars", () => {
     const out = aggregateHourlyBars(bars, 4);
     expect(out).toHaveLength(2);
     expect(out[1].time).toBe(20 * h);
+  });
+
+  it("suma el volumen de las barras horarias dentro del mismo bucket", () => {
+    const h = 3600;
+    const bars = [
+      { time: 0 * h, open: 10, high: 12, low: 9, close: 11, volume: 100 },
+      { time: 1 * h, open: 11, high: 13, low: 10, close: 12, volume: 50 },
+      { time: 2 * h, open: 12, high: 14, low: 11, close: 13, volume: 75 },
+      { time: 3 * h, open: 13, high: 15, low: 12, close: 14, volume: 25 },
+    ];
+    const out = aggregateHourlyBars(bars, 4);
+    expect(out).toEqual([{ time: 0, open: 10, high: 15, low: 9, close: 14, volume: 250 }]);
   });
 });
 

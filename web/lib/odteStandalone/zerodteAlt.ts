@@ -249,6 +249,70 @@ export function momentumEntry(
 }
 
 // ============================================================================
+// Persistencia del momentum γ− — evita operar un parpadeo de 1 minuto.
+//
+// `momentumEntry` es pura y decide sobre UNA sola lectura de flujo. Un burst
+// agresivo de 1 minuto (ruido, no una racha real) ya alcanza para disparar una
+// señal si w>=minStrength ese instante. "Contratos vecinos 3.0"
+// (lib/contratosVecinos3.ts, applyPersistence) encontró exactamente este
+// problema en un backtest real (dos señales del día duraban 1-2 min antes de
+// revertirse, inoperables) y lo corrigió exigiendo que la MISMA señal se
+// sostenga varias lecturas seguidas antes de confirmarla. Acá se aplica el
+// mismo principio al momentum de γ−: `momentumEntry` sigue siendo la señal
+// CRUDA (se sigue logueando tal cual para no perder historial ni romper la
+// calibración existente); `confirmMomentum` es una capa aparte, opcional, que
+// el caller aplica sobre su propio historial acumulado de lecturas crudas.
+// ============================================================================
+
+/** Lecturas seguidas (misma dirección + target ≈ igual) que exige confirmar
+ *  antes de dar por bueno un trade de momentum γ−. Mismo valor que
+ *  PERSISTENCE_REQUIRED en contratosVecinos3.ts — punto de partida razonable,
+ *  no (todavía) validado con datos reales de este motor por falta de muestra
+ *  (ver momentumCalibration.ts). Tunable por env para poder experimentar. */
+export const MOMENTUM_PERSISTENCE_REQUIRED = Number(process.env.NEXT_PUBLIC_MOMENTUM_PERSISTENCE ?? 3);
+
+/** ¿Es la MISMA señal? (misma dirección, target dentro de `tol` puntos) — así
+ *  el precio moviéndose un poco dentro del mismo setup no resetea la cuenta. */
+function sameMomentumSignal(a: EntryDecision | null, b: EntryDecision | null, tol = 1): boolean {
+  return !!a && !!b && a.direction === b.direction && Math.abs(a.target - b.target) <= tol;
+}
+
+/**
+ * Confirma un trade de momentum γ− solo si las últimas `required` lecturas
+ * CRUDAS de `momentumEntry` (sin gatear, en orden cronológico, la más
+ * reciente al final) coinciden en dirección + target. Con `required<=1` no
+ * gatea nada (devuelve la última lectura tal cual) — preserva el
+ * comportamiento de antes de esta capa para cualquier caller que no la pida.
+ * PURA: no acumula nada por sí misma, el caller le pasa su propio historial.
+ */
+export function confirmMomentum(
+  history: (EntryDecision | null)[],
+  required: number = MOMENTUM_PERSISTENCE_REQUIRED,
+): EntryDecision | null {
+  const last = history[history.length - 1] ?? null;
+  if (required <= 1) return last;
+  if (!last || history.length < required) return null;
+  const tail = history.slice(-required);
+  for (const h of tail) if (!sameMomentumSignal(h, last)) return null;
+  return last;
+}
+
+/** Cuántas lecturas SEGUIDAS (contando desde la más reciente hacia atrás)
+ *  coinciden con la última — para mostrar "confirmando 2/3" en la UI mientras
+ *  la racha todavía no llega a `MOMENTUM_PERSISTENCE_REQUIRED`. 0 si la
+ *  última lectura es null (sin setup ahora mismo). PURA. */
+export function momentumStreak(history: (EntryDecision | null)[]): number {
+  const last = history[history.length - 1] ?? null;
+  if (!last) return 0;
+  let n = 0;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (!sameMomentumSignal(history[i], last)) break;
+    n++;
+  }
+  return n;
+}
+
+// ============================================================================
 // GEX Trade ALTERNO unificado: un solo estado que cubre γ+ (fade al imán) y γ−
 // (momentum al muro), con NIVELES DE CONVICCIÓN por confirmación de flujo y aviso
 // vivo de reversión. Reemplaza la lógica dispersa de la alterna. PURA.

@@ -3,7 +3,7 @@ REM Lanzador del streamer de FLUJO de SPY/QQQ (Tastytrade) — fuente primaria
 REM de Agente ODTE para esos dos tickers. Escribe data\0dte\{SPY,QQQ}-<fecha>.json
 REM (mismo archivo que ya lee /api/0dte/flow y lib/zerodte.ts).
 
-set "WEB=C:\Users\carlo\OneDrive\Desktop\visionary-trades\web"
+set "WEB=C:\Users\carlo\Projects\visionary-trades\web"
 set "NODE=C:\Program Files\nodejs\node.exe"
 cd /d "%WEB%"
 if not exist "%WEB%\logs" mkdir "%WEB%\logs"

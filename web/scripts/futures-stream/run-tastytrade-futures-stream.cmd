@@ -3,7 +3,7 @@ REM Lanzador del streamer de futuros nativos ES/NQ (Tastytrade) — fuente
 REM primaria de Agente ODTE para /ES y /NQ. Escribe
 REM data\tastytrade-fut\{ES,NQ}-<fecha>.json.
 
-set "WEB=C:\Users\carlo\OneDrive\Desktop\visionary-trades\web"
+set "WEB=C:\Users\carlo\Projects\visionary-trades\web"
 set "NODE=C:\Program Files\nodejs\node.exe"
 cd /d "%WEB%"
 if not exist "%WEB%\logs" mkdir "%WEB%\logs"

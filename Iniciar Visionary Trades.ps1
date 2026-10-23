@@ -1,12 +1,12 @@
 $ErrorActionPreference = "SilentlyContinue"
 
-$repoDir = "C:\Users\carlo\OneDrive\Desktop\visionary-trades\web"
+$repoDir = "C:\Users\carlo\Projects\visionary-trades\web"
 $npm     = "C:\Program Files\nodejs\npm.cmd"
 $chrome  = "C:\Users\carlo\AppData\Local\Google\Chrome\Application\chrome.exe"
 $port    = 3000
 $url     = "http://localhost:$port"
-# Generous timeout: right after boot, OneDrive may still be rehydrating
-# node_modules files and antivirus may be scanning npm/node for the first time.
+# Generous timeout: right after boot, antivirus may be scanning npm/node for
+# the first time.
 $timeoutSeconds = 90
 $errLog  = Join-Path $repoDir "dev_error.log"
 

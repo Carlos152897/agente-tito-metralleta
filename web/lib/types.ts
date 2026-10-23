@@ -83,6 +83,8 @@ export interface DailyBar {
   high: number;
   low: number;
   close: number;
+  /** Opcional: no todos los llamadores lo piden/mapean todavía. */
+  volume?: number;
 }
 
 /** Barra con tiempo UNIX (segundos) — sirve para diario e intradía. */
@@ -92,6 +94,8 @@ export interface TfBar {
   high: number;
   low: number;
   close: number;
+  /** Opcional: no todos los llamadores lo piden/mapean todavía. */
+  volume?: number;
 }
 
 // ---- Eventos SSE ----

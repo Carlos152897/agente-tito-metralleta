@@ -12,14 +12,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import GrandesEmpresasChart, { type ChartLevelLine, type ChartPremarketWindow } from "./GrandesEmpresasChart";
 import type { TfBar } from "@/lib/types";
 import { applyPersistence, PERSISTENCE_REQUIRED, type ContratosVecinos3Signal, type PersistentSignal } from "@/lib/contratosVecinos3";
-import { GRANDES_EMPRESAS, DEFAULT_GRANDES_EMPRESA } from "@/lib/grandesEmpresas";
+import { GRANDES_EMPRESAS_V1, DEFAULT_GRANDES_EMPRESA } from "@/lib/grandesEmpresas";
 import { searchSp500, SP500_TICKERS, type Sp500Company } from "@/lib/sp500";
 import { CHART_TIMEFRAMES, DEFAULT_CHART_TIMEFRAME, type ChartTimeframeId } from "@/lib/timeframeBars";
 import type { ZeroDteSuggestions } from "@/lib/zerodteSuggestions";
 
 const KEY_TICKER = "visionary.grandesEmpresas.ticker";
 const REFRESH_MS = 60 * 1000;
-const TICKER_IDS = new Set(GRANDES_EMPRESAS.map((t) => t.id));
+const TICKER_IDS = new Set(GRANDES_EMPRESAS_V1.map((t) => t.id));
 
 type Trend = "subiendo" | "bajando" | "estable";
 interface Activity { totalPremium: number; netPremium: number; trend: Trend }
@@ -199,7 +199,7 @@ export default function GrandesEmpresasTab() {
       <header className="ge-head">
         <div>
           <h1>Grandes empresas</h1>
-          <p>Magnificent Seven + PLTR, IREN, NFLX, SPCX, INTC, ORCL, HOOD — Premium Traded real (MarketSnack) + imán del GEX real.</p>
+          <p>Magnificent Seven + PLTR, IREN, NFLX, SPCX, INTC, ORCL, HOOD, AMD, SPY, QQQ — Premium Traded real (MarketSnack) + imán del GEX real.</p>
         </div>
         <div className="ge-controls">
           {lastUpdated && <span className="ge-updated">actualizado {etTime()} ET</span>}
@@ -210,7 +210,7 @@ export default function GrandesEmpresasTab() {
       </header>
 
       <div className="ge-tickers">
-        {GRANDES_EMPRESAS.map((t) => (
+        {GRANDES_EMPRESAS_V1.map((t) => (
           <button key={t.id} className={selTicker === t.id ? "active" : ""} onClick={() => pickTicker(t.id)}>
             {t.label}
           </button>

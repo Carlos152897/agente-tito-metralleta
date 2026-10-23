@@ -6,8 +6,8 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChainLine, ZeroDteResult } from "@/lib/odteStandalone/zerodte";
 import type { AggressorRead } from "@/lib/odteStandalone/zerodteFlow";
-import { DEFAULT_PARAMS, dynamicParams, evaluateEntry, gateEntry, noSetupReason, riskReward } from "@/lib/odteStandalone/zerodteStrategy";
-import { altOutlook, altTradeState, despinEstimate, gammaWalls, momentumEntry, type AltFlowCtx, type Conf, type Lean } from "@/lib/odteStandalone/zerodteAlt";
+import { DEFAULT_PARAMS, dynamicParams, evaluateEntry, gateEntry, noSetupReason, riskReward, type EntryDecision } from "@/lib/odteStandalone/zerodteStrategy";
+import { altOutlook, altTradeState, confirmMomentum, despinEstimate, gammaWalls, momentumEntry, momentumStreak, MOMENTUM_PERSISTENCE_REQUIRED, type AltFlowCtx, type Conf, type Lean } from "@/lib/odteStandalone/zerodteAlt";
 import { pickTicket, type TicketChainRow } from "@/lib/odteStandalone/zerodteTicket";
 import { unpinRead, type UnpinRead } from "@/lib/odteStandalone/zerodteUnpin";
 import type { StrategySuggestions } from "@/lib/odteStandalone/strategySuggestions";
@@ -251,6 +251,28 @@ export default function ZeroDtePage() {
     fetch(`/api/odte-standalone/trade-log?ticker=${encodeURIComponent(ticker)}`).then((r) => r.json()).then(setTradeEval).catch(() => {});
   }, [data, ticker]);
 
+  // Registro CRUDO del contexto de momentum (γ−), para poder recalibrar
+  // MOMENTUM_DEFAULTS después con datos reales — ver momentumCalibration.ts.
+  // A diferencia de trade-log (la señal ya calculada), acá se guarda el INSUMO
+  // sin procesar: cambiar los parámetros más adelante no invalida lo acumulado.
+  const momentumRawRef = useRef<Record<string, unknown> | null>(null);
+  useEffect(() => {
+    const post = () => {
+      // Acumula la lectura CRUDA de este minuto para la persistencia del
+      // momentum γ− (confirmMomentum) — mismo ritmo (1/min) que el journal.
+      const arr = momentumHistoryRef.current;
+      arr.push(altMomentumRawRef.current);
+      if (arr.length > 10) arr.shift();
+      setMomentumTick((x) => x + 1);
+      const s = momentumRawRef.current;
+      if (!s) return;
+      fetch("/api/odte-standalone/momentum-log", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...s, sec: Math.floor(Date.now() / 1000) }) }).catch(() => {});
+    };
+    post();
+    const id = setInterval(post, 60_000);
+    return () => clearInterval(id);
+  }, []);
+
   const load = useCallback(async (t: string, date: string) => {
     setLoading(true);
     setError(null);
@@ -338,6 +360,20 @@ export default function ZeroDtePage() {
   const volSeries = useRef<{ t: number; tape: number; cvd: number }[]>([]);
   const [volTick, setVolTick] = useState(0);
   useEffect(() => { volSeries.current = []; setVolTick((x) => x + 1); }, [ticker, selDate]);
+
+  // --- Persistencia del momentum γ− (confirmMomentum, zerodteAlt.ts) -----
+  // Historial de lecturas CRUDAS de momentumEntry (una por minuto, mismo
+  // cadencia que el registro en data/odte-standalone/momentum-raw/). Solo se
+  // trata como trade real cuando la MISMA señal se sostiene
+  // MOMENTUM_PERSISTENCE_REQUIRED lecturas seguidas — evita operar un
+  // parpadeo de 1 minuto de flujo agresivo (mismo principio que
+  // applyPersistence en Contratos Vecinos 3.0). altMomentumRawRef guarda la
+  // lectura cruda del render actual; el intervalo de 1 min (más abajo) la
+  // acumula al mismo ritmo que ya loguea el momentum-raw journal.
+  const momentumHistoryRef = useRef<(EntryDecision | null)[]>([]);
+  const altMomentumRawRef = useRef<EntryDecision | null>(null);
+  const [momentumTick, setMomentumTick] = useState(0);
+  useEffect(() => { momentumHistoryRef.current = []; setMomentumTick((x) => x + 1); }, [ticker, selDate]);
   useEffect(() => {
     if (!flow || flow.error || flow.buyAggr == null) return;
     const tape = (flow.buyAggr ?? 0) + (flow.sellAggr ?? 0) + (flow.midAggr ?? 0);
@@ -555,12 +591,20 @@ export default function ZeroDtePage() {
   // Best trade alterno: γ+ = igual que el original; γ− = momentum si el flujo confirma.
   // Muros de gamma reales (no por volumen): objetivo del momentum en γ−.
   const walls = data?.gex?.nodes && data.spot != null ? gammaWalls(data.gex.nodes, data.spot) : { callWall: null, putWall: null };
-  const altMomentum = data?.isToday && altCtx && altCtx.regime === "negative"
+  const altMomentumRaw = data?.isToday && altCtx && altCtx.regime === "negative"
     ? momentumEntry(altCtx, walls.callWall, walls.putWall, data.gex.flipStrike, undefined, lang)
     : null;
+  altMomentumRawRef.current = altMomentumRaw; // el intervalo de 1 min la acumula (ver arriba)
+  // Persistencia: solo se opera si la MISMA señal cruda se sostuvo
+  // MOMENTUM_PERSISTENCE_REQUIRED lecturas seguidas — ver confirmMomentum.
+  // `void momentumTick` fuerza a leer el ref recién actualizado por el intervalo.
+  void momentumTick;
+  const altMomentum = confirmMomentum(momentumHistoryRef.current, MOMENTUM_PERSISTENCE_REQUIRED);
+  const momentumStreakN = momentumStreak(momentumHistoryRef.current);
   // GEX Trade alterno UNIFICADO (γ+ fade / γ− momentum) con niveles de convicción
   // + aviso de reversión. `live` = fade base (evaluateEntry, sin gate); altMomentum
-  // = momentum γ−. El flujo decide el nivel (strong/soft/waiting) y el aviso.
+  // = momentum γ− YA CONFIRMADO (persistente). El flujo decide el nivel
+  // (strong/soft/waiting) y el aviso.
   const altState = altCtx ? altTradeState(altCtx, live, altMomentum) : null;
   const altTradeD = altState?.trade ?? null;
   const altRR = altTradeD ? riskReward(altTradeD) : 0;
@@ -623,6 +667,28 @@ export default function ZeroDtePage() {
         spot: data.spot,
         o: liveReady && live ? { d: live.direction, tgt: live.target, stop: live.stop } : null,
         a: altTradeD ? { d: altTradeD.direction, tgt: altTradeD.target, stop: altTradeD.stop, m: altIsMomentum } : null,
+      }
+    : null;
+  // Snapshot CRUDO para la calibración del momentum γ− (ver momentumCalibration.ts):
+  // el mismo AltFlowCtx que ya arma la UI, aplanado, más los muros/flip que usa
+  // momentumEntry. Se loguea siempre que haya spot (no solo en γ−) para que la
+  // ausencia de señal negativa también quede registrada.
+  momentumRawRef.current = data?.isToday && sessionOpen && altCtx
+    ? {
+        ticker,
+        spot: altCtx.spot,
+        regime: altCtx.regime,
+        cvd: altCtx.cvd,
+        cvdDom: altCtx.cvdDom ?? null,
+        velocity: altCtx.velocity,
+        burstBull: altCtx.burstBull,
+        burstBear: altCtx.burstBear,
+        netGex: altCtx.netGex,
+        magnet: altCtx.magnet,
+        sigma: altCtx.sigma,
+        flip: data?.gex?.flipStrike ?? null,
+        callWall: walls.callWall,
+        putWall: walls.putWall,
       }
     : null;
   // Etiqueta de dirección (junto al título de "best trade"). tr.long/tr.short ya
@@ -853,6 +919,9 @@ export default function ZeroDtePage() {
                   <span className={`z-live-waitbadge ${idlePos ? "" : "z-live-nopin"}`}>{idlePos ? tr.waitLabel : tr.noPinLabel}</span>
                   {idleReason && <span className="z-live-idlereason">{idleReason}</span>}
                 </div>
+                {momentumStreakN > 0 && momentumStreakN < MOMENTUM_PERSISTENCE_REQUIRED && (
+                  <p className="z-live-idlereason">{tr.momentumBuilding(momentumStreakN, MOMENTUM_PERSISTENCE_REQUIRED)}</p>
+                )}
                 <div className="z-live-row z-live-idlerow">
                   <div><span className="z-sum-lbl">{tr.regime}</span><b style={{ color: (data?.gex?.totalNetGex ?? 0) >= 0 ? "var(--green-dark)" : "var(--red-text)" }}>GEX {gexUsd(data?.gex?.totalNetGex ?? 0)}</b></div>
                   {spot != null && <div><span className="z-sum-lbl">{tr.priceNow}</span><b>{dec(cvN(spot))}</b></div>}

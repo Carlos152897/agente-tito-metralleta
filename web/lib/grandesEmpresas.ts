@@ -32,6 +32,18 @@ export const GRANDES_EMPRESAS: GrandesEmpresaTicker[] = [
 export const GRANDES_EMPRESAS_TICKERS = new Set(GRANDES_EMPRESAS.map((t) => t.id));
 export const DEFAULT_GRANDES_EMPRESA = "AAPL";
 
+// Extras SOLO para la pestaña "Grandes empresas" (v1) — pedido explícito de
+// Carlos (2026-10-15). A propósito NO van en `GRANDES_EMPRESAS`, que también
+// alimenta Grandes empresas 2.0 y el radar de earnings de Análisis del mercado
+// (SPY/QQQ son ETFs, no tienen earnings).
+export const GRANDES_EMPRESAS_V1: GrandesEmpresaTicker[] = [
+  ...GRANDES_EMPRESAS,
+  { id: "AMD", label: "AMD" },
+  { id: "SPY", label: "SPY" },
+  { id: "QQQ", label: "QQQ" },
+];
+export const GRANDES_EMPRESAS_V1_TICKERS = new Set(GRANDES_EMPRESAS_V1.map((t) => t.id));
+
 /**
  * Ventana de vencimiento que se pide a Massive (`fetchNearTermChain`). 21
  * días de margen: la mayoría de esta lista tiene opciones semanales (el

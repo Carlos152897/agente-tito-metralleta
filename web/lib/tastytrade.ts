@@ -140,6 +140,23 @@ export async function fetchUnderlyingQuote(symbol: string, isIndex: boolean): Pr
   return n(q.last) ?? n(q.mark) ?? null;
 }
 
+/**
+ * Precio de cripto en vivo (ej. "BTC/USD") — verificado en vivo (2026-09-04):
+ * `market-data/by-type?cryptocurrency=` da bid/ask/mark reales con
+ * `updated-at` a segundos de la hora real, sin el delay de horas que trae la
+ * cadena de aggs de Massive para cripto (viene marcada `"status":"DELAYED"`
+ * ahí). Solo el precio en vivo — las velas históricas siguen saliendo de
+ * Massive (tastytrade no tiene REST de velas, solo DXLink).
+ */
+export async function fetchCryptoQuote(symbol: string): Promise<number | null> {
+  const params = new URLSearchParams({ cryptocurrency: symbol });
+  const data = await tastyGet<{ items: TastyQuote[] }>("/market-data/by-type", params);
+  const q = data.items?.[0];
+  if (!q) return null;
+  const n = (v: string | undefined) => (v != null && Number.isFinite(Number(v)) ? Number(v) : null);
+  return n(q.mark) ?? n(q.last) ?? null;
+}
+
 export interface MacroQuote {
   symbol: string;
   last: number;
@@ -253,5 +270,39 @@ export async function fetchFuturesOptionQuotesByType(symbols: string[]): Promise
       for (const q of data.items ?? []) out.set(q.symbol, q);
     }),
   );
+  return out;
+}
+
+export interface LiveQuote {
+  symbol: string;
+  price: number;
+  prevClose: number | null;
+  updatedAt: string | null;
+}
+
+/**
+ * Precio en vivo de varios instrumentos de distintos tipos en UNA sola
+ * llamada a `market-data/by-type` (índices, acciones/ETF y futuros a la vez)
+ * — para VisionFutura, que refresca SPX/SPY//ES/VIX cada pocos segundos
+ * (pedido de Carlos, oct 2026: "quiero todo en vivo"). Índices y acciones:
+ * `last` (en SPX el `mark` es el medio de un bid/ask indicativo muy abierto
+ * — visto en vivo 2026-10-22: bid 7602.3 / ask 7691.65 → mark 7646.98 con el
+ * last real en 7663.43). Futuros: `mark` (bid/ask reales y angostos, y sigue
+ * vivo de noche), `last` de respaldo.
+ */
+export async function fetchLiveQuotes(params: { index?: string[]; equity?: string[]; future?: string[] }): Promise<Map<string, LiveQuote>> {
+  const qs = new URLSearchParams();
+  if (params.index?.length) qs.set("index", params.index.join(","));
+  if (params.equity?.length) qs.set("equity", params.equity.join(","));
+  if (params.future?.length) qs.set("future", params.future.join(","));
+  const data = await tastyGet<{ items: Record<string, string>[] }>("/market-data/by-type", qs);
+  const n = (v: string | undefined) => (v != null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null);
+  const out = new Map<string, LiveQuote>();
+  const futures = new Set(params.future ?? []);
+  for (const q of data.items ?? []) {
+    const price = futures.has(q.symbol) ? n(q.mark) ?? n(q.last) : n(q.last) ?? n(q.mark);
+    if (price == null || price <= 0) continue;
+    out.set(q.symbol, { symbol: q.symbol, price, prevClose: n(q["prev-close"]), updatedAt: q["updated-at"] ?? null });
+  }
   return out;
 }

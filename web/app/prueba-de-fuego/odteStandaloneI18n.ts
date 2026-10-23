@@ -137,6 +137,7 @@ export interface Dict {
   altCmpTitle: string;
   altCmpLine: (o: string, a: string, n: number) => string;
   altCmpDiff: (d: number, w: number) => string;
+  momentumBuilding: (n: number, required: number) => string;
   altCmpWait: string;
   tradeCmpTitle: string;
   tradeCmpLine: (o: string, a: string, n: number) => string;
@@ -468,6 +469,7 @@ export const DICT: Record<Lang, Dict> = {
     altTierStrongNote: "flow (CVD + bursts) confirms the direction",
     altTierSoftNote: "quiet flow — pin gravity, low conviction (slower)",
     altRevNote: "flow is starting to turn against — caution / consider exiting",
+    momentumBuilding: (n, required) => `γ− momentum building: ${n}/${required} confirming reads — not a trade yet, avoids acting on a 1-minute flicker.`,
     altCmpTitle: "Alternate vs original · next 5 min (today)",
     altCmpLine: (o, a, n) => `Directional hit — original ${o}% · alternate ${a}% · over ${n} calls`,
     altCmpDiff: (d, w) => `The alternate differed ${d}× (flow moved the read); it won ${w} of those.`,
@@ -782,6 +784,7 @@ export const DICT: Record<Lang, Dict> = {
     altTierStrongNote: "el flujo (CVD + bursts) confirma la dirección",
     altTierSoftNote: "flujo callado — gravedad del pin, baja convicción (más lento)",
     altRevNote: "el flujo empieza a girar en contra — cuidado / considera salir",
+    momentumBuilding: (n, required) => `Momentum γ− confirmando: ${n}/${required} lecturas seguidas — todavía no es un trade, evita operar un parpadeo de 1 minuto.`,
     altCmpTitle: "Alterna vs original · next 5 min (hoy)",
     altCmpLine: (o, a, n) => `Acierto direccional — original ${o}% · alterna ${a}% · sobre ${n} llamadas`,
     altCmpDiff: (d, w) => `La alterna difirió ${d}× (el flujo cambió la lectura); ganó ${w} de esas.`,

@@ -4,7 +4,7 @@ REM Tastytrade. Escribe data\0dte-stream\SPX-<fecha>.json — NO toca
 REM data\0dte\ (eso lo sigue escribiendo /api/0dte/flow con MarketSnack).
 REM A prueba de reinicios: espera la red y relanza el streamer si se cae.
 
-set "WEB=C:\Users\carlo\OneDrive\Desktop\visionary-trades\web"
+set "WEB=C:\Users\carlo\Projects\visionary-trades\web"
 set "NODE=C:\Program Files\nodejs\node.exe"
 cd /d "%WEB%"
 if not exist "%WEB%\logs" mkdir "%WEB%\logs"

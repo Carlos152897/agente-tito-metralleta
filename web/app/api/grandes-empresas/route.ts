@@ -38,7 +38,7 @@ import { etTimeToUnix, hoursToExpirationClose, marketDateStr } from "@/lib/occ";
 import { findPivots, clusterPivots } from "@/lib/levels";
 import { contratosVecinos3Signal, orderBookSentiment, NEIGHBOR_COUNT, type ActivityLevel } from "@/lib/contratosVecinos3";
 import {
-  GRANDES_EMPRESAS_TICKERS,
+  GRANDES_EMPRESAS_V1_TICKERS,
   DEFAULT_GRANDES_EMPRESA,
   NEAR_TERM_DTE_MAX,
   selectWeeklyExpirations,
@@ -60,7 +60,7 @@ export async function GET(request: Request) {
   // Además de las 14 empresas "guardadas" (pills de acceso rápido), acepta
   // cualquier ticker real del S&P 500 buscado a mano — ver lib/sp500.ts.
   const TICKER =
-    GRANDES_EMPRESAS_TICKERS.has(requested) || SP500_TICKERS.has(requested) ? requested : DEFAULT_GRANDES_EMPRESA;
+    GRANDES_EMPRESAS_V1_TICKERS.has(requested) || SP500_TICKERS.has(requested) ? requested : DEFAULT_GRANDES_EMPRESA;
   const now = new Date();
 
   try {

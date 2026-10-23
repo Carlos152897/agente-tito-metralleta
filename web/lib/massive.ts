@@ -197,10 +197,43 @@ interface AggBar {
   h: number;
   l: number;
   c: number;
+  v?: number;
 }
 
 function toDateStr(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
+}
+
+/**
+ * Descarga TODAS las páginas de un rango de aggs, siguiendo `next_url` (igual
+ * que `fetchOptionChain`) — verificado en vivo (2026-09-04) que el endpoint de
+ * aggs SÍ pagina para rangos grandes: BTC (24/7, mucha más densidad de datos
+ * por día que una acción) truncaba en silencio a la primera página con
+ * `getJson` de una sola llamada, dejando el precio/velas de varias semanas de
+ * atraso sin ningún error — un solo `fetch` no alcanza para timeframes
+ * intradía de BTC con muchos días de historia.
+ */
+async function fetchAggsAllPages(ticker: string, firstPath: string): Promise<AggBar[]> {
+  const key = apiKey();
+  const limit = maxPages();
+  const out: AggBar[] = [];
+  let url: string | null = `${BASE_URL}${firstPath}`;
+  let page = 0;
+
+  while (url) {
+    page += 1;
+    const res = await fetchMassive(url, key);
+    if (res.status === 404) break;
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new MassiveError(describeStatus(res.status, ticker, body), res.status);
+    }
+    const json: { results?: AggBar[]; next_url?: string } = await res.json();
+    out.push(...(json.results ?? []));
+    if (page >= limit) break;
+    url = json.next_url ?? null;
+  }
+  return out;
 }
 
 /** Barras diarias del subyacente en los últimos `days` días (para la gráfica). */
@@ -212,16 +245,27 @@ export async function fetchDailyBars(ticker: string, days = 365): Promise<DailyB
     `/v2/aggs/ticker/${encodeURIComponent(clean)}/range/1/day/` +
     `${toDateStr(from.getTime())}/${toDateStr(to.getTime())}` +
     `?adjusted=true&sort=asc&limit=500`;
-  const json = await getJson<{ results?: AggBar[] }>(path);
-  const bars = json?.results ?? [];
+  const bars = await fetchAggsAllPages(clean, path).catch(() => []);
   return bars.map((b) => ({
     time: toDateStr(b.t),
     open: b.o,
     high: b.h,
     low: b.l,
     close: b.c,
+    volume: b.v ?? 0,
   }));
 }
+
+// Cache corto en memoria + dedup de pedidos en vuelo, mismo motivo que
+// `barsStore.ts` (ese cachea barras diarias un día entero; acá hace falta un
+// TTL corto porque los timeframes intradía se refrescan solos, ej. BTC cada
+// 60s). Sin esto, un timeframe "caro" en días (ej. BTC 4h = 180 días de velas
+// horarias, varias páginas) golpeado por el auto-refresh + más de una pestaña
+// abierta al mismo tiempo agota el límite de peticiones por minuto de Massive
+// y esa temporalidad cae a "sin datos" en silencio (visto en vivo 2026-09-13).
+const BARS_CACHE_TTL_MS = 20_000;
+const barsCache = new Map<string, { at: number; bars: TfBar[] }>();
+const barsInFlight = new Map<string, Promise<TfBar[]>>();
 
 /** Barras del subyacente (diario o intradía) con tiempo UNIX en segundos. */
 export async function fetchBars(
@@ -231,21 +275,39 @@ export async function fetchBars(
   days: number,
 ): Promise<TfBar[]> {
   const clean = ticker.trim().toUpperCase();
-  const to = new Date();
-  const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
-  const path =
-    `/v2/aggs/ticker/${encodeURIComponent(clean)}/range/${multiplier}/${timespan}/` +
-    `${toDateStr(from.getTime())}/${toDateStr(to.getTime())}` +
-    `?adjusted=true&sort=asc&limit=50000`;
-  const json = await getJson<{ results?: AggBar[] }>(path).catch(() => null);
-  const bars = json?.results ?? [];
-  return bars.map((b) => ({
-    time: Math.floor(b.t / 1000),
-    open: b.o,
-    high: b.h,
-    low: b.l,
-    close: b.c,
-  }));
+  const key = `${clean}:${multiplier}:${timespan}:${days}`;
+
+  const cached = barsCache.get(key);
+  if (cached && Date.now() - cached.at < BARS_CACHE_TTL_MS) return cached.bars;
+
+  const existing = barsInFlight.get(key);
+  if (existing) return existing;
+
+  const promise = (async () => {
+    try {
+      const to = new Date();
+      const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
+      const path =
+        `/v2/aggs/ticker/${encodeURIComponent(clean)}/range/${multiplier}/${timespan}/` +
+        `${toDateStr(from.getTime())}/${toDateStr(to.getTime())}` +
+        `?adjusted=true&sort=asc&limit=50000`;
+      const raw = await fetchAggsAllPages(clean, path).catch(() => []);
+      const bars = raw.map((b) => ({
+        time: Math.floor(b.t / 1000),
+        open: b.o,
+        high: b.h,
+        low: b.l,
+        close: b.c,
+        volume: b.v ?? 0,
+      }));
+      if (bars.length > 0) barsCache.set(key, { at: Date.now(), bars });
+      return bars;
+    } finally {
+      barsInFlight.delete(key);
+    }
+  })();
+  barsInFlight.set(key, promise);
+  return promise;
 }
 
 /** Descarga la imagen del logo (o icono) para servirla por proxy. */

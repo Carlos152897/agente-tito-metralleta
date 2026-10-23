@@ -10,7 +10,7 @@
 
 import { fetchBars, MassiveError } from "@/lib/massive";
 import { aggregateHourlyBars, chartTimeframeConfig } from "@/lib/timeframeBars";
-import { GRANDES_EMPRESAS_TICKERS, DEFAULT_GRANDES_EMPRESA } from "@/lib/grandesEmpresas";
+import { GRANDES_EMPRESAS_V1_TICKERS, DEFAULT_GRANDES_EMPRESA } from "@/lib/grandesEmpresas";
 import { SP500_TICKERS } from "@/lib/sp500";
 
 export const runtime = "nodejs";
@@ -20,7 +20,7 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const requested = (searchParams.get("ticker") ?? DEFAULT_GRANDES_EMPRESA).trim().toUpperCase();
   const TICKER =
-    GRANDES_EMPRESAS_TICKERS.has(requested) || SP500_TICKERS.has(requested) ? requested : DEFAULT_GRANDES_EMPRESA;
+    GRANDES_EMPRESAS_V1_TICKERS.has(requested) || SP500_TICKERS.has(requested) ? requested : DEFAULT_GRANDES_EMPRESA;
   const tf = chartTimeframeConfig(searchParams.get("tf") ?? "");
 
   try {

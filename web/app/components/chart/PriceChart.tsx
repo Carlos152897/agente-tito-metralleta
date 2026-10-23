@@ -35,6 +35,14 @@ export interface ChartLevel {
   strength: number;
 }
 
+/** Un punto YA FORMADO de un conteo (ej. Onda de Elliott) para dibujar sobre el histórico. */
+export interface WaveMarker {
+  time: number;
+  price: number;
+  label: string;
+  kind: "high" | "low";
+}
+
 export interface PriceChartProps {
   bars: TfBar[];
   spot: number;
@@ -43,6 +51,9 @@ export interface PriceChartProps {
   series?: ChartSeries[];
   targets?: ChartTarget[];
   levels?: ChartLevel[];
+  /** Ondas ya formadas (histórico) — se dibujan conectadas con etiquetas sobre las velas. */
+  waveMarkers?: WaveMarker[];
+  waveMarkerColor?: string;
   theme: "light" | "dark";
   /** Alto del contenedor. Acepta CSS (`clamp(...)`) — el SVG se mide solo. */
   height: number | string;
@@ -107,6 +118,7 @@ function shortDate(unixSec: number): string {
  */
 export default function PriceChart({
   bars, spot, horizonDays, cone = [], series = [], targets = [], levels = [],
+  waveMarkers = [], waveMarkerColor,
   theme, height, animate = false, showCone1 = false, showSpot = true,
 }: PriceChartProps) {
   const uid = useId().replace(/[^a-zA-Z0-9]/g, "");
@@ -170,6 +182,27 @@ export default function PriceChart({
       top: scales.plotTop, bottom: scales.plotBottom, labelH: chipH, gap: CHIP_GAP,
     });
   }, [targets, spot, showSpot, theme, scales, chipH]);
+
+  // Ubica cada onda ya formada sobre la vela histórica más cercana en el tiempo.
+  // Las que quedaron fuera de la ventana visible (recortada por ancho legible)
+  // se descartan en vez de dibujarse apiladas en el borde izquierdo.
+  const waveDots = useMemo(() => {
+    const vb = scales.visibleBars;
+    if (waveMarkers.length === 0 || vb.length === 0) return [];
+    const out: Array<{ x: number; y: number; label: string; kind: "high" | "low" }> = [];
+    for (const m of waveMarkers) {
+      if (m.time < vb[0].time) continue;
+      let lo = 0, hi = vb.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (vb[mid].time < m.time) lo = mid + 1; else hi = mid;
+      }
+      const idx = lo > 0 && Math.abs(vb[lo - 1].time - m.time) <= Math.abs(vb[lo].time - m.time) ? lo - 1 : lo;
+      out.push({ x: scales.xOfIndex(idx), y: scales.yOfPrice(m.price), label: m.label, kind: m.kind });
+    }
+    return out;
+  }, [waveMarkers, scales]);
+  const waveColor = waveMarkerColor ?? (theme === "dark" ? "#c9d3ea" : "#475467");
 
   const onMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     const el = hostRef.current;
@@ -315,6 +348,26 @@ export default function PriceChart({
               </g>
             ))}
           </g>
+
+          {/* 6b · ondas ya formadas (histórico), conectadas con su etiqueta */}
+          {waveDots.length > 1 && (
+            <polyline
+              className="pc-wave-line"
+              points={waveDots.map((w) => `${w.x},${w.y}`).join(" ")}
+              stroke={waveColor}
+            />
+          )}
+          {waveDots.map((w, i) => (
+            <g key={`wave-${i}-${w.label}`}>
+              <circle cx={w.x} cy={w.y} r={3.5} className="pc-wave-dot" fill={waveColor} stroke={theme === "dark" ? "#0d1220" : "#fff"} />
+              <text
+                x={w.x} y={w.kind === "high" ? w.y - 9 : w.y + 16}
+                textAnchor="middle" className="pc-wave-label" fill={waveColor}
+              >
+                {w.label}
+              </text>
+            </g>
+          ))}
 
           {/* 7 · precio actual */}
           {showSpot && spot > 0 && (

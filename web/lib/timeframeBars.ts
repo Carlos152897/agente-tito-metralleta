@@ -65,12 +65,13 @@ export function aggregateHourlyBars(bars: TfBar[], hours: number): TfBar[] {
     const bucketStart = Math.floor(b.time / bucketSeconds) * bucketSeconds;
     if (current == null || bucketStart !== currentBucketStart) {
       if (current) out.push(current);
-      current = { time: bucketStart, open: b.open, high: b.high, low: b.low, close: b.close };
+      current = { time: bucketStart, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume ?? 0 };
       currentBucketStart = bucketStart;
     } else {
       current.high = Math.max(current.high, b.high);
       current.low = Math.min(current.low, b.low);
       current.close = b.close;
+      current.volume = (current.volume ?? 0) + (b.volume ?? 0);
     }
   }
   if (current) out.push(current);

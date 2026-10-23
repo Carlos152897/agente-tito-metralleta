@@ -98,16 +98,20 @@ function saveState(s: State) {
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
 async function main() {
-  const { isMarketOpen } = await import("../../lib/marketHours");
+  const { isMarketOpen, isFuturesMarketOpen } = await import("../../lib/marketHours");
+  const { isNativeFuture, loadNativeFuture, nativeFresh, futureStoreKey } = await import("../../lib/odteStandalone/futuresNative");
   const now = new Date();
-  if (!isMarketOpen(now)) {
+  // /ES y /NQ cotizan CME casi 24/5 (el motor intenta su cadena de futuro NATIVA
+  // primero, con basis=0, antes de caer al respaldo SPX/NDX+basis) — usar
+  // isMarketOpen (solo RTH) los dejaría sin avisar toda la sesión nocturna real.
+  const marketOpen = isNativeFuture(TICKER) ? isFuturesMarketOpen(now) : isMarketOpen(now);
+  if (!marketOpen) {
     log("Mercado cerrado — no se consulta.");
     return;
   }
 
   const { fetchZeroDte, resolveTicker } = await import("../../lib/odteStandalone/zerodte");
   const { marketDateStr } = await import("../../lib/odteStandalone/occ");
-  const { isNativeFuture, loadNativeFuture, nativeFresh, futureStoreKey } = await import("../../lib/odteStandalone/futuresNative");
   const { loadFlow } = await import("../../lib/odteStandalone/zerodteFlow");
   const { gammaWalls, momentumEntry, altTradeState } = await import("../../lib/odteStandalone/zerodteAlt");
   const { riskReward } = await import("../../lib/odteStandalone/zerodteStrategy");
