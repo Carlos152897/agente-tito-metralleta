@@ -105,6 +105,12 @@ export interface SpreadsInput {
   expectedMove: ExpectedMove | null;
   /** IV de respaldo si la pata no trae la suya (ej. VIX/100). */
   fallbackIv: number;
+  /** Escala de las distancias en puntos (1 = SPX). */
+  scale?: number;
+  /** Anchos a probar (default 5 y 10, los de SPX). */
+  widths?: number[];
+  /** $ por punto del contrato de opciones (100 en SPX/NDX/acciones). */
+  multiplier?: number;
 }
 
 export interface SpreadsReport {
@@ -122,7 +128,17 @@ const fmt0 = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 0
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
 export function buildSpreads(input: SpreadsInput): SpreadsReport {
-  const T = SPREAD_TUNING;
+  const S = input.scale && input.scale > 0 ? input.scale : 1;
+  const MULT = input.multiplier ?? 100;
+  const T = {
+    ...SPREAD_TUNING,
+    widths: input.widths ?? SPREAD_TUNING.widths,
+    minCredit: S === 1 ? SPREAD_TUNING.minCredit : Math.max(0.05, Math.round(SPREAD_TUNING.minCredit * S * 100) / 100),
+    minDistance: SPREAD_TUNING.minDistance * S,
+    debitTargetMin: SPREAD_TUNING.debitTargetMin * S,
+    debitTargetMax: SPREAD_TUNING.debitTargetMax * S,
+    minDebitWidth: SPREAD_TUNING.minDebitWidth * S,
+  };
   const { rows, spot, days, keyLevels, dealerLevels, expectedMove, fallbackIv } = input;
   const byKey = new Map(rows.map((r) => [`${r.type}:${r.strike}`, r]));
   const ivOf = (r: SpreadQuoteRow) => (r.iv && r.iv > 0 ? r.iv : fallbackIv);
@@ -186,7 +202,7 @@ export function buildSpreads(input: SpreadsInput): SpreadsReport {
             { action: "COMPRAR", type, strike: longK, price: long.ask, side: "ask" },
           ],
           width, netPrice: net,
-          maxGainUsd: Math.round(net * 100), maxLossUsd: Math.round((width - net) * 100),
+          maxGainUsd: Math.round(net * MULT), maxLossUsd: Math.round((width - net) * MULT),
           breakevens: [r2(be)], pop, rr: net / (width - net), refDelta: short.delta,
           levels: protectors,
           outsideVixRange: expectedMove ? (type === "call" ? K >= expectedMove.high.spx : K <= expectedMove.low.spx) : false,
@@ -210,7 +226,7 @@ export function buildSpreads(input: SpreadsInput): SpreadsReport {
     // lejano cuestan $600+; acercar la compra al objetivo baja el costo).
     const longs = rows
       .filter((r) => r.type === type && (type === "call" ? r.strike >= spot - 5 : r.strike <= spot + 5) && r.ask != null && r.ask > 0);
-    const maxCost = T.maxDebitLossUsd / 100;
+    const maxCost = T.maxDebitLossUsd / MULT;
     const out: SpreadIdea[] = [];
     for (const long of longs) {
       for (const t of targets) {
@@ -234,7 +250,7 @@ export function buildSpreads(input: SpreadsInput): SpreadsReport {
             { action: "VENDER", type, strike: t.spx, price: short.bid, side: "bid" },
           ],
           width, netPrice: -cost,
-          maxGainUsd: Math.round(gain * 100), maxLossUsd: Math.round(cost * 100),
+          maxGainUsd: Math.round(gain * MULT), maxLossUsd: Math.round(cost * MULT),
           breakevens: [r2(be)], pop, rr, refDelta: long.delta,
           levels: [`Objetivo: ${t.label} ${fmt0(t.spx)}`],
           outsideVixRange: false,
@@ -275,7 +291,7 @@ export function buildSpreads(input: SpreadsInput): SpreadsReport {
       title: `Iron condor ${fmt0(p.legs[1].strike)}/${fmt0(p.legs[0].strike)} — ${fmt0(c.legs[0].strike)}/${fmt0(c.legs[1].strike)}`,
       legs: [...p.legs, ...c.legs],
       width: c.width, netPrice: net,
-      maxGainUsd: Math.round(net * 100), maxLossUsd: Math.round((c.width - net) * 100),
+      maxGainUsd: Math.round(net * MULT), maxLossUsd: Math.round((c.width - net) * MULT),
       breakevens: [r2(beDown), r2(beUp)], pop, rr: net / (c.width - net), refDelta: null,
       levels: [...p.levels.slice(0, 1), ...c.levels.slice(0, 1)],
       outsideVixRange: c.outsideVixRange && p.outsideVixRange,

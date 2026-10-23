@@ -9,6 +9,7 @@
 import type { AlertView } from "@/lib/visionFuturaAlertStore";
 import type { AlertOrder, VisionAlert } from "@/lib/visionFuturaAlerts";
 import type { ConvertedLevel } from "@/lib/visionFutura";
+import { useVisionLabels } from "./visionLabels";
 
 const fmt = (n: number | null | undefined, d = 2) =>
   n == null || !Number.isFinite(n) ? "—" : n.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -20,11 +21,13 @@ const UP = "var(--green)";
 const DOWN = "var(--red-soft)";
 
 function Levels({ l }: { l: ConvertedLevel | null }) {
+  const lb = useVisionLabels();
   if (!l) return <span style={{ color: "var(--faint)" }}>sin objetivo claro</span>;
   return (
     <span style={{ fontVariantNumeric: "tabular-nums" }}>
       <b>{fmt(l.spx)}</b>
-      <span style={{ color: "var(--muted)" }}> · SPY {fmt(l.spy)} · /ES {fmt(l.es)}</span>
+      {lb.etf && <span style={{ color: "var(--muted)" }}> · {lb.etf} {fmt(l.spy)}</span>}
+      {lb.future && <span style={{ color: "var(--muted)" }}> · {lb.future} {fmt(l.es)}</span>}
     </span>
   );
 }

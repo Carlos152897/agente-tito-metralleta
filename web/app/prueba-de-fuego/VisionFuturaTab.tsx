@@ -11,6 +11,8 @@ import VisionFuturaAlerts from "./VisionFuturaAlerts";
 import VisionFuturaSpreads from "./VisionFuturaSpreads";
 import VisionFuturaAmiga from "./VisionFuturaAmiga";
 import VisionFuturaReplayBar from "./VisionFuturaReplayBar";
+import { DEFAULT_LABELS, VisionLabelsContext, useVisionLabels } from "./visionLabels";
+import type { InstrumentId, InstrumentLabels } from "@/lib/visionFuturaInstruments";
 import type { AlertView } from "@/lib/visionFuturaAlertStore";
 import type { ReplayPayload } from "@/lib/visionFuturaReplay";
 import type { ReplayDay } from "./VisionFuturaReplayBar";
@@ -57,6 +59,12 @@ const KEY_RADIUS = "visionary.visionFutura.radius";
 const KEY_LAYERS = "visionary.visionFutura.layers";
 
 interface VisionData extends VisionFuturaReport {
+  instrument?: InstrumentId;
+  labels?: InstrumentLabels;
+  scale?: number;
+  strikeStep?: number;
+  expirations?: { date: string; dte: number }[];
+  priceSeriesApprox?: boolean;
   asOf: string;
   gexAsOf: string | null;
   marketOpen: boolean;
@@ -134,11 +142,24 @@ function Tile({ label, value, sub, extra, color }: { label: string; value: strin
 }
 
 function Triple({ l }: { l: ConvertedLevel }) {
+  const lb = useVisionLabels();
   return (
     <>
       <td style={{ ...td, fontWeight: 600 }}>{fmt(l.spx, 2)}</td>
-      <td style={td}>{fmt(l.spy, 2)}</td>
-      <td style={td}>{fmt(l.es, 2)}</td>
+      {lb.etf && <td style={td}>{fmt(l.spy, 2)}</td>}
+      {lb.future && <td style={td}>{fmt(l.es, 2)}</td>}
+    </>
+  );
+}
+
+/** Encabezados de las columnas de precio del instrumento (principal · ETF · futuro). */
+function PriceHeads() {
+  const lb = useVisionLabels();
+  return (
+    <>
+      <th style={th}>{lb.main}</th>
+      {lb.etf && <th style={th}>{lb.etf}</th>}
+      {lb.future && <th style={th}>{lb.future}</th>}
     </>
   );
 }
@@ -150,9 +171,7 @@ function Ladder({ rows, spot, maxGex }: { rows: VisionStrikeRow[]; spot: number;
       <table style={{ borderCollapse: "collapse", width: "100%" }}>
         <thead>
           <tr>
-            <th style={th}>SPX</th>
-            <th style={th}>SPY</th>
-            <th style={th}>/ES</th>
+            <PriceHeads />
             <th style={{ ...th, textAlign: "center" }}>GEX puts ◀ ▶ GEX calls</th>
             <th style={th}>GEX neto</th>
             <th style={th}>Flujo calls</th>
@@ -211,12 +230,13 @@ function Ladder({ rows, spot, maxGex }: { rows: VisionStrikeRow[]; spot: number;
 }
 
 function FragmentRow({ showSpot, spot, children }: { showSpot: boolean; spot: number; children: React.ReactNode }) {
+  const lb = useVisionLabels();
   return (
     <>
       {showSpot && (
         <tr>
           <td colSpan={9} style={{ padding: "4px 8px", fontSize: 12, color: "var(--accent)", borderTop: "2px solid var(--accent)", borderBottom: "1px solid var(--border-soft)" }}>
-            ▶ spot SPX {fmt(spot, 2)}
+            ▶ spot {lb.main} {fmt(spot, 2)}
           </td>
         </tr>
       )}
@@ -225,8 +245,30 @@ function FragmentRow({ showSpot, spot, children }: { showSpot: boolean; spot: nu
   );
 }
 
+const INSTRUMENT_OPTIONS: { id: InstrumentId; label: string; sub: string }[] = [
+  { id: "SPX", label: "SPX", sub: "SPY · /ES" },
+  { id: "NQ", label: "NQ", sub: "NDX · QQQ · /NQ" },
+  { id: "TSLA", label: "TSLA", sub: "acción" },
+];
+const KEY_INST = "visionary.visionFutura.inst";
+
+/** "Hoy" / "lun 26" para los botones de vencimiento. */
+function expLabel(date: string, dte: number): string {
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
+  if (dte === 0 && date === today) return "Hoy";
+  const d = new Date(`${date}T12:00:00Z`);
+  return `${d.toLocaleDateString("es-MX", { weekday: "short", timeZone: "UTC" }).replace(".", "")} ${d.getUTCDate()}`;
+}
+
 export default function VisionFuturaTab() {
   const [radius, setRadius] = useState<number>(60);
+  const [inst, setInst] = useState<InstrumentId>("SPX");
+  const [expIdx, setExpIdx] = useState(0);
+  // Lo elegido AHORA: una respuesta que llega tarde de otro instrumento/vencimiento se descarta.
+  const paramsRef = useRef("");
+  paramsRef.current = `${radius}|${inst}|${expIdx}`;
+  const instRef = useRef(inst);
+  instRef.current = inst;
   const [data, setData] = useState<VisionData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -254,15 +296,19 @@ export default function VisionFuturaTab() {
     try {
       const saved = Number(window.localStorage.getItem(KEY_RADIUS));
       if ((RADII as readonly number[]).includes(saved)) setRadius(saved);
+      const savedInst = window.localStorage.getItem(KEY_INST);
+      if (savedInst && INSTRUMENT_OPTIONS.some((o) => o.id === savedInst)) setInst(savedInst as InstrumentId);
       const savedLayers = JSON.parse(window.localStorage.getItem(KEY_LAYERS) ?? "null");
       if (savedLayers && typeof savedLayers === "object") setLayers({ ...DEFAULT_LAYERS, ...savedLayers });
     } catch { /* sin storage: queda el default */ }
   }, []);
 
   const load = useCallback(async () => {
+    const key = `${radius}|${inst}|${expIdx}`;
     try {
-      const res = await fetch(`/api/vision-futura?radius=${radius}`, { cache: "no-store" });
+      const res = await fetch(`/api/vision-futura?radius=${radius}&inst=${inst}&exp=${expIdx}`, { cache: "no-store" });
       const json = await res.json();
+      if (paramsRef.current !== key) return; // ya se eligió otra cosa
       if (!res.ok || json.error) throw new Error(json.error ?? `Error ${res.status}`);
       const next = json as VisionData;
       setPrevAgg(prevAggRef.current);
@@ -286,7 +332,31 @@ export default function VisionFuturaTab() {
     } finally {
       setLoading(false);
     }
-  }, [radius]);
+  }, [radius, inst, expIdx]);
+
+  // Cambio de instrumento o vencimiento: se empieza de cero (niveles, agresor, precio en vivo).
+  const pickInst = (id: InstrumentId) => {
+    if (id === inst) return;
+    setInst(id);
+    setExpIdx(0);
+    setData(null);
+    setLive(null);
+    setLivePoints([]);
+    setLevelChanges([]);
+    prevLevelsRef.current = null;
+    prevAggRef.current = null;
+    setPrevAgg(null);
+    if (id !== "SPX" && mode === "repeticion") setMode("vivo");
+    try { window.localStorage.setItem(KEY_INST, id); } catch { /* ignorar */ }
+  };
+  const pickExp = (i: number) => {
+    if (i === expIdx) return;
+    setExpIdx(i);
+    setLevelChanges([]);
+    prevLevelsRef.current = null;
+    prevAggRef.current = null;
+    setPrevAgg(null);
+  };
 
   useEffect(() => {
     if (mode === "repeticion") return; // en la repetición no se refresca lo en vivo
@@ -326,6 +396,11 @@ export default function VisionFuturaTab() {
   }, [loadDays]);
 
   const pickMode = (m: "vivo" | "repeticion") => {
+    if (m === "repeticion" && inst !== "SPX") {
+      setReplayError(`La repetición de ${inst} llega en la siguiente etapa; por ahora solo SPX.`);
+      return;
+    }
+    setReplayError(null);
     setMode(m);
     setPlaying(false);
     if (m === "repeticion" && !replay && !replayLoading) loadReplay(false);
@@ -349,10 +424,11 @@ export default function VisionFuturaTab() {
     const pull = async () => {
       if (document.hidden) return;
       try {
-        const res = await fetch("/api/vision-futura/live", { cache: "no-store" });
+        const res = await fetch(`/api/vision-futura/live?inst=${inst}`, { cache: "no-store" });
         const json = await res.json();
         if (stop || !res.ok || json.error) return;
-        const q = json as LiveQuote;
+        const q = json as LiveQuote & { instrument?: string };
+        if (q.instrument && q.instrument !== instRef.current) return;
         setLive(q);
         const t = Math.floor(Date.parse(q.asOf) / 1000);
         setLivePoints((prev) => {
@@ -366,7 +442,7 @@ export default function VisionFuturaTab() {
     const id = window.setInterval(pull, marketOpen ? LIVE_MS_OPEN : LIVE_MS_CLOSED);
     const tick = window.setInterval(() => setTick((n) => n + 1), 1000);
     return () => { stop = true; window.clearInterval(id); window.clearInterval(tick); };
-  }, [marketOpen, mode]);
+  }, [marketOpen, mode, inst]);
 
   const pickRadius = (r: number) => {
     setRadius(r);
@@ -381,8 +457,50 @@ export default function VisionFuturaTab() {
   const setAllLayers = (on: boolean) =>
     saveLayers(Object.fromEntries(LAYERS.map((l) => [l.key, on])) as Record<LayerKey, boolean>);
 
-  if (loading && !data) return <div className="card wheel-empty">Cargando VisionFutura…</div>;
-  if (error && !data) return <div className="card" style={{ color: "var(--red-soft)" }}>{error}</div>;
+  const instrumentBar = (
+    <div className="card" style={{ gap: 10, padding: 14 }}>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600, letterSpacing: 0.5 }}>INSTRUMENTO</span>
+        {INSTRUMENT_OPTIONS.map((o) => (
+          <button
+            key={o.id}
+            onClick={() => pickInst(o.id)}
+            style={{
+              padding: "6px 14px", borderRadius: 10, cursor: "pointer", textAlign: "center", minWidth: 84,
+              border: `1px solid ${inst === o.id ? "var(--accent)" : "var(--border)"}`,
+              background: inst === o.id ? "var(--accent-dim)" : "var(--panel-2)", color: "var(--text)",
+            }}
+          >
+            <div style={{ fontWeight: 700, fontSize: 15 }}>{o.label}</div>
+            <div style={{ fontSize: 10, color: inst === o.id ? "var(--accent)" : "var(--faint)" }}>{o.sub}</div>
+          </button>
+        ))}
+      </div>
+      {data?.expirations && data.expirations.length > 0 && mode === "vivo" && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600, letterSpacing: 0.5 }}>VENCIMIENTO</span>
+          {data.expirations.map((e) => (
+            <button
+              key={e.date}
+              onClick={() => pickExp(e.dte)}
+              title={e.date}
+              style={{
+                padding: "5px 12px", borderRadius: 10, cursor: "pointer", textAlign: "center", minWidth: 64,
+                border: `1px solid ${expIdx === e.dte ? "var(--accent)" : "var(--border)"}`,
+                background: expIdx === e.dte ? "var(--accent-dim)" : "var(--panel-2)", color: "var(--text)",
+              }}
+            >
+              <div style={{ fontSize: 14, fontWeight: expIdx === e.dte ? 700 : 500 }}>{expLabel(e.date, e.dte)}</div>
+              <div style={{ fontSize: 10, color: expIdx === e.dte ? "var(--accent)" : "var(--faint)" }}>{e.dte}DTE</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  if (loading && !data) return <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-md)" }}>{instrumentBar}<div className="card wheel-empty">Cargando VisionFutura · {inst}…</div></div>;
+  if (error && !data) return <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-md)" }}>{instrumentBar}<div className="card" style={{ color: "var(--red-soft)" }}>{error}</div></div>;
   if (!data) return null;
 
   // Vista en vivo: precio, SPY, /ES, VIX y conversiones de tastytrade (cada
@@ -444,9 +562,17 @@ export default function VisionFuturaTab() {
   const maxGex = Math.max(1, ...view.rows.map((r) => Math.max(r.callGex, r.putGex)));
   const spyRatio = view.conversion.spyRatio;
   const esBasis = view.conversion.esBasis;
+  const labels: InstrumentLabels = (tick ? null : data.labels) ?? DEFAULT_LABELS;
+  const scale = tick ? 1 : data.scale ?? 1;
+  const isSpx = labels.main === "SPX";
+  // Ventana real de cada botón (misma regla que el servidor: 10/20/30 strikes por lado fuera de SPX).
+  const step = data.strikeStep ?? 5;
+  const windowFor = (r: number) => (isSpx ? r : (r <= 30 ? 10 : r <= 60 ? 20 : 30) * step);
 
   return (
+    <VisionLabelsContext.Provider value={labels}>
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-md)" }}>
+      {instrumentBar}
       <VisionFuturaReplayBar
         mode={mode}
         onMode={pickMode}
@@ -466,7 +592,7 @@ export default function VisionFuturaTab() {
       />
       <div className="card" style={{ gap: 14 }}>
         <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, alignItems: "baseline" }}>
-          <h3 style={{ margin: 0 }}>VisionFutura · SPX</h3>
+          <h3 style={{ margin: 0 }}>VisionFutura · {labels.main}{!isSpx && <span style={{ fontSize: 13, color: "var(--muted)", fontWeight: 400 }}> · umbrales ×{scale.toFixed(2)} vs SPX</span>}</h3>
           <div style={{ fontSize: 12, color: "var(--muted)" }}>
             {tick
               ? <><b style={{ color: "var(--amber-text)" }}>⏪ Repetición del {view.expiration}</b> · {timeNy(view.asOf)} NY{view.gexAsOf && <> · GEX {timeNy(view.gexAsOf)}</>}</>
@@ -481,14 +607,18 @@ export default function VisionFuturaTab() {
           <span style={{ color: "var(--faint)" }}>· Niveles (MarketSnack): cada 15 s, GEX nuevo cada 5 min</span>
         </div>}
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-          <Tile label="SPX" value={fmt(view.spot.spx)} sub={view.regime ? `GEX neto ${view.regime} (${fmtGex(view.netGex ?? 0)})` : "sin GEX"} color={view.regime === "negativo" ? "var(--red-soft)" : undefined} />
-          <Tile label="SPY" value={fmt(view.spot.spy)} sub={spyRatio != null ? `ratio ${spyRatio.toFixed(5)} × SPX` : "sin cotización"} />
-          <Tile label={view.esSymbol ?? "/ES"} value={fmt(view.spot.es)} sub={esBasis != null ? `base ${esBasis >= 0 ? "+" : ""}${esBasis.toFixed(2)} pts vs SPX` : "sin cotización"} />
+          <Tile label={labels.main} value={fmt(view.spot.spx)} sub={view.regime ? `GEX neto ${view.regime} (${fmtGex(view.netGex ?? 0)})` : "sin GEX"} color={view.regime === "negativo" ? "var(--red-soft)" : undefined} />
+          {labels.etf && <Tile label={labels.etf} value={fmt(view.spot.spy)} sub={spyRatio != null ? `ratio ${spyRatio.toFixed(5)} × ${labels.main}` : "sin cotización"} />}
+          {labels.future && <Tile label={view.esSymbol ?? labels.future} value={fmt(view.spot.es)} sub={esBasis != null ? `base ${esBasis >= 0 ? "+" : ""}${esBasis.toFixed(2)} pts vs ${labels.main}` : "sin cotización"} />}
           <Tile
-            label="VIX"
-            value={fmt(view.vix?.last)}
-            color={view.vix ? (view.vix.changePct > 0 ? "var(--red-soft)" : "var(--green)") : undefined}
-            sub={view.vix && view.expectedMove ? `${view.vix.changePct >= 0 ? "+" : ""}${view.vix.changePct.toFixed(2)}% · rango hoy ±${view.expectedMove.points.toFixed(1)} pts` : "sin cotización"}
+            label={labels.vol}
+            value={view.vix ? `${fmt(view.vix.last)}${labels.vol === "VIX" ? "" : "%"}` : "—"}
+            color={view.vix && labels.vol === "VIX" ? (view.vix.changePct > 0 ? "var(--red-soft)" : "var(--green)") : undefined}
+            sub={view.vix && view.expectedMove
+              ? labels.vol === "VIX"
+                ? `${view.vix.changePct >= 0 ? "+" : ""}${view.vix.changePct.toFixed(2)}% · rango hoy ±${view.expectedMove.points.toFixed(1)} pts`
+                : `de sus opciones · rango hoy ±${view.expectedMove.points.toFixed(1)} pts`
+              : "sin cotización"}
             extra={view.vixMagnet != null && (
               <div style={{ fontSize: 12, marginTop: 4, color: KIND_COLOR.magneto, fontWeight: 600 }}>
                 Magneto VIX {fmt(view.vixMagnet, 2)}
@@ -514,7 +644,7 @@ export default function VisionFuturaTab() {
           <div style={{ overflowX: "auto" }}>
             <table style={{ borderCollapse: "collapse", width: "100%" }}>
               <thead>
-                <tr><th style={th}>Nivel</th><th style={th}>SPX</th><th style={th}>SPY</th><th style={th}>/ES</th><th style={th}>Dist.</th></tr>
+                <tr><th style={th}>Nivel</th><PriceHeads /><th style={th}>Dist.</th></tr>
               </thead>
               <tbody>
                 {view.keyLevels.map((k: KeyLevel) => (
@@ -527,12 +657,12 @@ export default function VisionFuturaTab() {
                 {view.expectedMove && (
                   <>
                     <tr title="Spot + VIX/√252">
-                      <td style={{ ...td, color: "var(--muted)" }}>Rango VIX ↑</td>
+                      <td style={{ ...td, color: "var(--muted)" }}>Rango {labels.vol} ↑</td>
                       <Triple l={view.expectedMove.high} />
                       <td style={{ ...td, color: "var(--muted)" }}>+{view.expectedMove.points.toFixed(1)}</td>
                     </tr>
                     <tr title="Spot − VIX/√252">
-                      <td style={{ ...td, color: "var(--muted)" }}>Rango VIX ↓</td>
+                      <td style={{ ...td, color: "var(--muted)" }}>Rango {labels.vol} ↓</td>
                       <Triple l={view.expectedMove.low} />
                       <td style={{ ...td, color: "var(--muted)" }}>−{view.expectedMove.points.toFixed(1)}</td>
                     </tr>
@@ -552,7 +682,7 @@ export default function VisionFuturaTab() {
             <div style={{ overflowX: "auto" }}>
               <table style={{ borderCollapse: "collapse", width: "100%" }}>
                 <thead>
-                  <tr><th style={th}>Lectura</th><th style={th}>SPX</th><th style={th}>SPY</th><th style={th}>/ES</th><th style={th}>Premium</th></tr>
+                  <tr><th style={th}>Lectura</th><PriceHeads /><th style={th}>Premium</th></tr>
                 </thead>
                 <tbody>
                   {view.dealerLevels.map((d) => (
@@ -580,7 +710,7 @@ export default function VisionFuturaTab() {
             <span style={{ fontSize: 12, color: "var(--muted)" }}>±{view.radius} pts (fijo en la repetición)</span>
           ) : <div className="view-toggle">
             {RADII.map((r) => (
-              <button key={r} className={radius === r ? "active" : ""} onClick={() => pickRadius(r)}>±{r}</button>
+              <button key={r} className={radius === r ? "active" : ""} onClick={() => pickRadius(r)}>±{windowFor(r)}</button>
             ))}
           </div>}
         </div>
@@ -617,6 +747,9 @@ export default function VisionFuturaTab() {
               </span>
             ))}
           </div>
+        )}
+        {!tick && data.priceSeriesApprox && (
+          <div style={{ fontSize: 12, color: "var(--amber-text)" }}>La línea de precio de hoy sale de {labels.etf} convertido a {labels.main} (MarketSnack no tiene la gráfica intradía del índice); el punto en vivo es el {labels.main} real.</div>
         )}
         {view.rows.length === 0 ? (
           <div className="wheel-empty">MarketSnack no devolvió contratos para {view.expiration}.</div>
@@ -661,7 +794,8 @@ export default function VisionFuturaTab() {
         } : null}
       />
 
-      <VisionFuturaAmiga replayDate={tick && replay ? replay.date : null} replayTickMs={tick ? tickMs : null} />
+      {isSpx && <VisionFuturaAmiga replayDate={tick && replay ? replay.date : null} replayTickMs={tick ? tickMs : null} />}
     </div>
+    </VisionLabelsContext.Provider>
   );
 }

@@ -14,7 +14,8 @@ import { evaluateVisionAlerts, ALERT_TUNING, type Sample, type VisionAlert } fro
 import { marketDateStr } from "./occ";
 
 const STATE_DIR = join(process.cwd(), "data", "vision-futura");
-const STATE_FILE = join(STATE_DIR, "alert-state.json");
+/** Un archivo de estado por instrumento (SPX conserva el nombre original). */
+const stateFile = (inst: string) => join(STATE_DIR, inst === "SPX" ? "alert-state.json" : `alert-state-${inst}.json`);
 /** Un mismo setup (tipo + nivel) no se vuelve a anunciar antes de esto. */
 const COOLDOWN_MS = 20 * 60_000;
 /** Cada cuánto se toma una foto nueva del agresor para comparar. */
@@ -41,19 +42,19 @@ function emptyState(date: string): AlertState {
   return { date, prices: [], vix: [], aggLast: null, aggPrev: null, fired: [] };
 }
 
-function loadState(date: string): AlertState {
+function loadState(date: string, inst: string): AlertState {
   try {
-    const s = JSON.parse(readFileSync(STATE_FILE, "utf8")) as AlertState;
+    const s = JSON.parse(readFileSync(stateFile(inst), "utf8")) as AlertState;
     return s.date === date ? { ...emptyState(date), ...s } : emptyState(date);
   } catch {
     return emptyState(date);
   }
 }
 
-function saveState(s: AlertState) {
+function saveState(s: AlertState, inst: string) {
   try {
     mkdirSync(STATE_DIR, { recursive: true });
-    writeFileSync(STATE_FILE, JSON.stringify(s), "utf8");
+    writeFileSync(stateFile(inst), JSON.stringify(s), "utf8");
   } catch {
     // no crítico: sin disco, las alertas solo pierden memoria entre refrescos
   }
@@ -74,10 +75,20 @@ export interface VisionFuturaCycle {
   watch: VisionAlert[];
 }
 
-export async function runVisionFuturaCycle(now: Date, radius: number): Promise<VisionFuturaCycle> {
-  const payload = await loadVisionFutura(now, radius);
+/** Cómo se opera cada lado según el instrumento (texto de la orden de las alertas). */
+function instrumentosDe(p: VisionFuturaPayload): { largo: string; corto: string } {
+  const { main, etf, future } = p.labels;
+  if (!etf && !future) return { largo: `Comprar ${main} (acciones o calls)`, corto: `Vender ${main} (acciones o puts)` };
+  const fut = future ? ` · comprar ${future}` : "";
+  const futS = future ? ` · vender ${future}` : "";
+  return { largo: `Calls de ${main}${etf ? `/${etf}` : ""}${fut}`, corto: `Puts de ${main}${etf ? `/${etf}` : ""}${futS}` };
+}
+
+export async function runVisionFuturaCycle(now: Date, radius: number, instrument = "SPX", expIndex = 0): Promise<VisionFuturaCycle> {
+  const payload = await loadVisionFutura(now, radius, instrument, expIndex);
+  const inst = payload.instrument;
   const t = now.getTime();
-  const state = loadState(marketDateStr(now));
+  const state = loadState(marketDateStr(now), inst);
 
   if (payload.marketOpen) {
     const lastP = state.prices.at(-1);
@@ -117,6 +128,8 @@ export async function runVisionFuturaCycle(now: Date, radius: number): Promise<V
       vixMagnet: payload.vixMagnet,
       aggressorNow: state.aggLast ? toMap(state.aggLast.map) : new Map(),
       aggressorPrev: state.aggPrev ? toMap(state.aggPrev.map) : null,
+      scale: payload.scale,
+      instrumentos: instrumentosDe(payload),
     });
   }
 
@@ -127,7 +140,7 @@ export async function runVisionFuturaCycle(now: Date, radius: number): Promise<V
     if (existing) existing.lastSeenAt = t;
     else state.fired.push({ ...a, firedAt: t, lastSeenAt: t });
   }
-  saveState(state);
+  saveState(state, inst);
 
   const alerts: AlertView[] = [...state.fired]
     .sort((a, b) => b.firedAt - a.firedAt)

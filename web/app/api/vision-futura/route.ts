@@ -14,10 +14,13 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
-  const radiusParam = Number(new URL(req.url).searchParams.get("radius"));
+  const params = new URL(req.url).searchParams;
+  const radiusParam = Number(params.get("radius"));
   const radius = Number.isFinite(radiusParam) && radiusParam > 0 ? Math.min(radiusParam, 300) : 60;
+  const inst = params.get("inst") ?? "SPX";
+  const exp = Math.max(0, Math.min(5, Number(params.get("exp")) || 0));
   try {
-    const { payload, alerts, watch } = await runVisionFuturaCycle(new Date(), radius);
+    const { payload, alerts, watch } = await runVisionFuturaCycle(new Date(), radius, inst, exp);
     return Response.json({ ...payload, alerts, watch });
   } catch (err) {
     const message = err instanceof MarketSnackError || err instanceof VisionFuturaError

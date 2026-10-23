@@ -186,4 +186,24 @@ describe("evaluateVisionAlerts", () => {
     }));
     expect(find(clean, "defensa_piso:7650").trap).toBeNull();
   });
+
+  it("con escala (NQ ≈ 4.5): toque, rebote, stop y objetivo se multiplican", () => {
+    const k = 4.5;
+    const lvS = (v: number) => ({ spx: v, spy: null, es: null });
+    const keyN = (kind: KeyLevel["kind"], label: string, spx: number): KeyLevel => ({ kind, label, fuente: "", distance: 0, ...lvS(spx) });
+    const r = evaluateVisionAlerts({
+      now: NOW, spot: 28970, conversion: { spyRatio: null, esBasis: null },
+      keyLevels: [keyN("resistencia", "Resistencia", 29000), keyN("piso", "Piso", 28800)],
+      dealerLevels: [], rows: [{ ...row(29000, { callFlow: -1e6 }), spy: null, es: null }], regime: "negativo",
+      prices: series([28920, 28990, 28970]), // tocó 28,990 (≤ 13.5 del techo), retrocede 20 (≥ 13.5) y está a 30 (≤ 36)
+      vix: series([19, 19.3]), vixMagnet: null,
+      aggressorPrev: agg([[29000, 1e6, 1e6]]), aggressorNow: agg([[29000, 1e6, 3e6]]),
+      scale: k, instrumentos: { largo: "Calls de NDX/QQQ · comprar /NQ", corto: "Puts de NDX/QQQ · vender /NQ" },
+    });
+    const a = find(r, "rechazo_techo:29000");
+    expect(a.fires).toBe(true);
+    expect(a.order.stop.spx).toBe(28970 + 13.5);
+    expect(a.order.target?.spx).toBe(28970 - 13.5);
+    expect(a.order.instrumento).toBe("Puts de NDX/QQQ · vender /NQ");
+  });
 });

@@ -118,10 +118,10 @@ export const ALERT_TUNING = {
 
 interface LevelCandidate { spx: number; sources: string[] }
 
-function collectLevels(keyLevels: KeyLevel[], dealerLevels: DealerLevel[], side: "techo" | "piso", spot: number): LevelCandidate[] {
+function collectLevels(keyLevels: KeyLevel[], dealerLevels: DealerLevel[], side: "techo" | "piso", spot: number, maxDistance: number): LevelCandidate[] {
   const map = new Map<number, string[]>();
   const add = (spx: number, src: string) => {
-    if (Math.abs(spx - spot) > ALERT_TUNING.maxDistance) return;
+    if (Math.abs(spx - spot) > maxDistance) return;
     map.set(spx, [...(map.get(spx) ?? []), src]);
   };
   for (const k of keyLevels) {
@@ -149,12 +149,13 @@ function aggressorDelta(
   level: number,
   current: Map<number, { compras: number; ventas: number }>,
   previous: Map<number, { compras: number; ventas: number }> | null,
+  zone: number,
 ): number | null {
   if (!previous) return null;
   let d = 0;
   let any = false;
   for (const [strike, cur] of current) {
-    if (Math.abs(strike - level) > ALERT_TUNING.aggressorZone) continue;
+    if (Math.abs(strike - level) > zone) continue;
     const prev = previous.get(strike);
     if (!prev) continue;
     any = true;
@@ -186,12 +187,33 @@ export interface EvaluateInput {
   vixMagnet: number | null;
   aggressorNow: Map<number, { compras: number; ventas: number }>;
   aggressorPrev: Map<number, { compras: number; ventas: number }> | null;
+  /**
+   * Escala de los umbrales en puntos (1 = SPX). Ver lib/visionFuturaInstruments.ts:
+   * NQ/TSLA multiplican toque, rebote, ruptura, distancias, zona del agresor y el scalp.
+   */
+  scale?: number;
+  /** Cómo operar cada lado en el instrumento (texto de la orden). */
+  instrumentos?: { largo: string; corto: string };
 }
 
 /** Evalúa todos los setups posibles. Devuelve también los que NO disparan (para el "vigilando" de la pantalla). */
 export function evaluateVisionAlerts(input: EvaluateInput): VisionAlert[] {
   const { now, spot, conversion, keyLevels, dealerLevels, rows, regime, vix, vixMagnet, aggressorNow, aggressorPrev } = input;
-  const prices = input.prices.filter((p) => p.t >= now - ALERT_TUNING.windowMs);
+  // Umbrales en puntos escalados al instrumento (SPX = 1, sin cambios).
+  const S = input.scale && input.scale > 0 ? input.scale : 1;
+  const sc = (v: number) => Math.round(v * S * 100) / 100;
+  const T = {
+    ...ALERT_TUNING,
+    touchPts: sc(ALERT_TUNING.touchPts),
+    reactionPts: sc(ALERT_TUNING.reactionPts),
+    breakPts: sc(ALERT_TUNING.breakPts),
+    maxDistance: sc(ALERT_TUNING.maxDistance),
+    aggressorZone: sc(ALERT_TUNING.aggressorZone),
+    maxEntryPts: sc(ALERT_TUNING.maxEntryPts),
+    targetPts: sc(ALERT_TUNING.targetPts),
+    stopPts: sc(ALERT_TUNING.stopPts),
+    stopBufferPts: sc(ALERT_TUNING.stopBufferPts),
+  };  const prices = input.prices.filter((p) => p.t >= now - ALERT_TUNING.windowMs);
   if (prices.length === 0) return [];
   const hi = Math.max(...prices.map((p) => p.v));
   const lo = Math.min(...prices.map((p) => p.v));
@@ -216,7 +238,7 @@ export function evaluateVisionAlerts(input: EvaluateInput): VisionAlert[] {
     ...keyLevels.filter((k) => k.kind === "resistencia" || k.kind === "iman_positivo" || k.kind === "magneto").map((k) => ({ spx: k.spx, label: k.label })),
     ...dealerLevels.filter((d) => d.role === "resistencia" || d.role === "acelera_arriba").map((d) => ({ spx: d.spx, label: d.role === "resistencia" ? "Dealers: techo" : "Dealers: acelera ↑" })),
   ];
-  const T = ALERT_TUNING;
+
   // El primer nivel en la dirección del trade (más allá de la entrada): si
   // está más cerca que el objetivo del scalp, está "en el camino".
   const nextLevel = (dir: "up" | "down") => {
@@ -296,7 +318,9 @@ export function evaluateVisionAlerts(input: EvaluateInput): VisionAlert[] {
       price: conv(spot), conditions, score, fires: conditionsOk && blocked == null, blocked, trap: trapFor(kind, lvl.spx), target, regimeNote: note,
       order: {
         side,
-        instrumento: side === "largo" ? "Calls de SPX/SPY · comprar /ES" : "Puts de SPX/SPY · vender /ES",
+        instrumento: input.instrumentos
+          ? (side === "largo" ? input.instrumentos.largo : input.instrumentos.corto)
+          : side === "largo" ? "Calls de SPX/SPY · comprar /ES" : "Puts de SPX/SPY · vender /ES",
         entry: conv(spot),
         stop: conv(stopSpx),
         target: conv(targetSpx),
@@ -309,10 +333,10 @@ export function evaluateVisionAlerts(input: EvaluateInput): VisionAlert[] {
 
 
   // ── Techos ──
-  for (const lvl of collectLevels(keyLevels, dealerLevels, "techo", spot)) {
+  for (const lvl of collectLevels(keyLevels, dealerLevels, "techo", spot, T.maxDistance)) {
     const L = lvl.spx;
     const row = nearestRow(rows, L);
-    const agg = aggressorDelta(L, aggressorNow, aggressorPrev);
+    const agg = aggressorDelta(L, aggressorNow, aggressorPrev, T.aggressorZone);
 
     // Rechazo: tocó el techo y ahora está debajo, retrocediendo.
     const llega = hi >= L - T.touchPts;
@@ -340,10 +364,10 @@ export function evaluateVisionAlerts(input: EvaluateInput): VisionAlert[] {
   }
 
   // ── Pisos ──
-  for (const lvl of collectLevels(keyLevels, dealerLevels, "piso", spot)) {
+  for (const lvl of collectLevels(keyLevels, dealerLevels, "piso", spot, T.maxDistance)) {
     const L = lvl.spx;
     const row = nearestRow(rows, L);
-    const agg = aggressorDelta(L, aggressorNow, aggressorPrev);
+    const agg = aggressorDelta(L, aggressorNow, aggressorPrev, T.aggressorZone);
 
     const llega = lo <= L + T.touchPts;
     const reaccion = llega && spot > L && spot - lo >= T.reactionPts && spot - L <= T.maxEntryPts;

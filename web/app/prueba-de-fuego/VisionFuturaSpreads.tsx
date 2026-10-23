@@ -8,6 +8,7 @@
 import type { SpreadIdea, SpreadsReport } from "@/lib/visionFuturaSpreads";
 import type { ReplaySpreadTrade } from "@/lib/visionFuturaReplay";
 import VisionFuturaSpreadTrades from "./VisionFuturaSpreadTrades";
+import { useVisionLabels } from "./visionLabels";
 
 const UP = "var(--green)";
 const DOWN = "var(--red-soft)";
@@ -16,10 +17,10 @@ const px = (n: number) => `$${n.toFixed(2)}`;
 const lvl = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 
 const GROUPS: { key: keyof Pick<SpreadsReport, "callCredit" | "putCredit" | "callDebit" | "putDebit">; title: string; help: string; color: string }[] = [
-  { key: "callCredit", title: "Call credit (bear call)", help: "Cobras prima si el SPX NO sube más allá del strike vendido.", color: DOWN },
-  { key: "putCredit", title: "Put credit (bull put)", help: "Cobras prima si el SPX NO baja más allá del strike vendido.", color: UP },
-  { key: "callDebit", title: "Call debit", help: "Pagas para ganar si el SPX SUBE hasta el objetivo.", color: UP },
-  { key: "putDebit", title: "Put debit", help: "Pagas para ganar si el SPX BAJA hasta el objetivo.", color: DOWN },
+  { key: "callCredit", title: "Call credit (bear call)", help: "Cobras prima si el precio NO sube más allá del strike vendido.", color: DOWN },
+  { key: "putCredit", title: "Put credit (bull put)", help: "Cobras prima si el precio NO baja más allá del strike vendido.", color: UP },
+  { key: "callDebit", title: "Call debit", help: "Pagas para ganar si el precio SUBE hasta el objetivo.", color: UP },
+  { key: "putDebit", title: "Put debit", help: "Pagas para ganar si el precio BAJA hasta el objetivo.", color: DOWN },
 ];
 
 function Card({ s, color }: { s: SpreadIdea; color: string }) {
@@ -69,13 +70,14 @@ export default function VisionFuturaSpreads({ spreads, error, expiration, market
   /** En la repetición: el backtest de spreads hasta el momento elegido. */
   replayTrades?: { trades: ReplaySpreadTrade[]; tickMs: number; spot: number; isLastTick: boolean; partial: boolean } | null;
 }) {
+  const lb = useVisionLabels();
   return (
     <div className="card" style={{ gap: 14 }}>
       <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, alignItems: "baseline" }}>
         <h4 style={{ margin: 0 }}>Spreads</h4>
         {spreads && !replay && (
           <span style={{ fontSize: 12, color: "var(--muted)" }}>
-            SPXW vencimiento {expiration} · sesgo del día (Magneto): <b>{spreads.bias}</b> · precios de tastytrade (vende al bid, compra al ask)
+            {lb.main} vencimiento {expiration} · sesgo del día (Magneto): <b>{spreads.bias}</b> · precios de tastytrade (vende al bid, compra al ask)
           </span>
         )}
       </div>
@@ -121,7 +123,7 @@ export default function VisionFuturaSpreads({ spreads, error, expiration, market
                   {col.withCondor && spreads.ironCondor && (
                     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                       <div style={{ fontSize: 13 }}>
-                        <b style={{ color: "var(--accent)" }}>Iron condor</b> <span style={{ color: "var(--faint)" }}>· Cobras prima si el SPX se queda entre los dos lados.</span>
+                        <b style={{ color: "var(--accent)" }}>Iron condor</b> <span style={{ color: "var(--faint)" }}>· Cobras prima si el precio se queda entre los dos lados.</span>
                       </div>
                       <Card s={spreads.ironCondor} color="var(--accent)" />
                     </div>

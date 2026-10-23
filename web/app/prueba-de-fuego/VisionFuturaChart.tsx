@@ -10,6 +10,7 @@
 // escalera con filas por strike no encaja en lightweight-charts.
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useVisionLabels } from "./visionLabels";
 import type { DealerLevel, KeyLevel, KeyLevelKind, VisionStrikeRow, ExpectedMove, Conversion } from "@/lib/visionFutura";
 
 export type LayerKey =
@@ -121,6 +122,7 @@ const gexM = (v: number) => {
 interface Chip { y: number; text: string; color: string; dashed?: boolean; key: string; offscreen?: boolean }
 
 export default function VisionFuturaChart(props: Props) {
+  const lb = useVisionLabels();
   const { rows, spot, priceSeries, history, keyLevels, dealerLevels, expectedMove, conversion, layers, prevAggressor } = props;
   const wrapRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(900);
@@ -272,12 +274,14 @@ export default function VisionFuturaChart(props: Props) {
               <rect x={0} y={ry} width={width} height={ROW_H} fill={isSpot ? "rgba(47,107,255,0.14)" : i % 2 ? "rgba(255,255,255,0.015)" : "transparent"} />
               <text x={6} y={ry + 14} fontSize={11} fill={isSpot ? "#f5f7fb" : "#9aa5c0"} fontWeight={isSpot ? 700 : 400}>
                 {n2(r.spx, 0)}
-                <tspan fill="#6b7591"> · {n2(c.spy, 1)}{c.es != null ? ` · ${n2(c.es, 0)}` : ""}</tspan>
+                {(c.spy != null || c.es != null) && (
+                  <tspan fill="#6b7591">{c.spy != null ? ` · ${n2(c.spy, 1)}` : ""}{c.es != null ? ` · ${n2(c.es, 0)}` : ""}</tspan>
+                )}
               </text>
             </g>
           );
         })}
-        <text x={6} y={height - 8} fontSize={10} fill="#6b7591">{conversion.esBasis != null ? "SPX · SPY · /ES" : "SPX · SPY"}</text>
+        <text x={6} y={height - 8} fontSize={10} fill="#6b7591">{[lb.main, conversion.spyRatio != null ? lb.etf : null, conversion.esBasis != null ? lb.future : null].filter(Boolean).join(" · ")}</text>
 
         {/* Columna de posicionamiento */}
         {layers.posicionamiento && (

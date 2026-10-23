@@ -196,6 +196,8 @@ export function buildVisionFutura(input: {
   yearsToExpiry?: number;
   /** Ventana de strikes alrededor del spot, en puntos de SPX. */
   radius?: number;
+  /** Paso entre strikes (5 en SPX); define la tolerancia para etiquetar niveles en la escalera. */
+  strikeStep?: number;
 }): VisionFuturaReport {
   const { contracts, spot, gexStats, vix } = input;
   const radius = input.radius ?? 60;
@@ -293,7 +295,7 @@ export function buildVisionFutura(input: {
       (best, s) => (best == null || Math.abs(s - k.spx) < Math.abs(best - k.spx) ? s : best),
       null,
     );
-    if (nearestStrike == null || Math.abs(nearestStrike - k.spx) > 2.5) continue;
+    if (nearestStrike == null || Math.abs(nearestStrike - k.spx) > (input.strikeStep ?? 5) / 2) continue;
     tagsAt.set(nearestStrike, [...(tagsAt.get(nearestStrike) ?? []), k.kind]);
   }
 
