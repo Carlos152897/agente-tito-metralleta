@@ -28,6 +28,16 @@ export function positioningSides(r: Pick<FlowRow, "callFlow" | "putFlow">): { up
   };
 }
 
+/** Las cuatro piezas del posicionamiento: arriba = calls compradas + puts vendidas; abajo = calls vendidas + puts compradas. */
+export function positioningParts(r: Pick<FlowRow, "callFlow" | "putFlow">) {
+  return {
+    callsBought: Math.max(r.callFlow, 0),
+    putsSold: Math.max(-r.putFlow, 0),
+    callsSold: Math.max(-r.callFlow, 0),
+    putsBought: Math.max(r.putFlow, 0),
+  };
+}
+
 export function snapshotOf(rows: FlowRow[]): Map<number, FlowSnapshot> {
   return new Map(rows.map((r) => [r.spx, { compras: r.compras, ventas: r.ventas, ...positioningSides(r) }]));
 }

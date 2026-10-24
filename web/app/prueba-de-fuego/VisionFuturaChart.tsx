@@ -9,7 +9,7 @@
 // (`layers`) para que la gráfica no se vea sobrecargada. SVG propio: la
 // escalera con filas por strike no encaja en lightweight-charts.
 
-import { positioningSides, type FlowSnapshot, type UnusualHit } from "@/lib/visionFuturaFlowChanges";
+import { positioningParts, positioningSides, type FlowSnapshot, type UnusualHit } from "@/lib/visionFuturaFlowChanges";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useVisionLabels } from "./visionLabels";
 import type { DealerLevel, KeyLevel, KeyLevelKind, VisionStrikeRow, ExpectedMove, Conversion } from "@/lib/visionFutura";
@@ -55,6 +55,9 @@ export const DEFAULT_LAYERS: Record<LayerKey, boolean> = {
 
 const COLOR = Object.fromEntries(LAYERS.map((l) => [l.key, l.color])) as Record<LayerKey, string>;
 const POS_DOWN = "#a855f7"; // morado: se posicionan para abajo
+// Tono claro de cada lado = la parte que viene de PUTS (el fuerte = CALLS).
+const POS_UP_PUT = "#86efac";
+const POS_DOWN_PUT = "#d8b4fe";
 const CHARM_NEG = "#fb923c";
 
 export interface HistoryPoint {
@@ -194,8 +197,9 @@ export default function VisionFuturaChart(props: Props) {
   // y cuánto creció cada uno contra el refresco anterior.
   const pos = rows.map((r) => {
     const { up, down } = positioningSides(r);
+    const parts = positioningParts(r);
     const prev = prevAggressor?.get(r.spx);
-    return { strike: r.spx, up, down, dUp: prev ? up - prev.up : 0, dDown: prev ? down - prev.down : 0 };
+    return { strike: r.spx, up, down, ...parts, dUp: prev ? up - prev.up : 0, dDown: prev ? down - prev.down : 0 };
   });
   const maxPos = Math.max(1, ...pos.map((p) => Math.max(p.up, p.down)));
   // Crecimientos menores al 1% de la barra mayor no se marcan (ruido).
@@ -333,20 +337,36 @@ export default function VisionFuturaChart(props: Props) {
               const gd = p.dDown > minGrowth ? Math.min(wd, Math.max(2, (p.dDown / maxPos) * POS_SPAN)) : 0;
               return (
                 <g key={`pos-${p.strike}`}>
-                  {wd > 0 && <rect x={posX - wd} y={ry} width={wd} height={12} rx={2} fill={POS_DOWN} opacity={0.85} />}
-                  {wu > 0 && <rect x={posX} y={ry} width={wu} height={12} rx={2} fill={COLOR.posicionamiento} opacity={0.85} />}
-                  {gd > 0 && <rect x={posX - wd} y={ry} width={gd} height={12} rx={2} fill="#fff" opacity={0.45} />}
-                  {gu > 0 && <rect x={posX + wu - gu} y={ry} width={gu} height={12} rx={2} fill="#fff" opacity={0.45} />}
-                  {wd >= 40 && <text x={posX - wd + 3} y={ry + 10} fontSize={9} fill="#fff">{money(p.down)}</text>}
-                  {wu >= 40 && <text x={posX + wu - 3} y={ry + 10} fontSize={9} fill="#fff" textAnchor="end">{money(p.up)}</text>}
+                  {/* Cada lado partido en dos: pegado al centro = CALLS (tono fuerte), afuera = PUTS (tono claro). */}
+                  {(() => {
+                    const wdC = p.down > 0 ? (p.callsSold / p.down) * wd : 0, wdP = wd - wdC;
+                    const wuC = p.up > 0 ? (p.callsBought / p.up) * wu : 0, wuP = wu - wuC;
+                    const seg = (x0: number, w: number, fill: string, label: string, txt: string, tip: string, dark: boolean) => w <= 0 ? null : (
+                      <g>
+                        <rect x={x0} y={ry} width={Math.max(1, w)} height={12} fill={fill} opacity={0.9}><title>{tip}</title></rect>
+                        {w >= 38 && <text x={x0 + w / 2} y={ry + 10} fontSize={9} textAnchor="middle" fill={dark ? "#14111f" : "#fff"} style={{ pointerEvents: "none" }}>{label} {txt}</text>}
+                      </g>
+                    );
+                    const tip = `${n2(p.strike, 0)} · arriba ${money(p.up)} (calls compradas ${money(p.callsBought)} + puts vendidas ${money(p.putsSold)}) · abajo ${money(p.down)} (calls vendidas ${money(p.callsSold)} + puts compradas ${money(p.putsBought)})`;
+                    return (
+                      <>
+                        {seg(posX - wdC, wdC, POS_DOWN, "C", money(p.callsSold), tip, false)}
+                        {seg(posX - wd, wdP, POS_DOWN_PUT, "P", money(p.putsBought), tip, true)}
+                        {seg(posX, wuC, COLOR.posicionamiento, "C", money(p.callsBought), tip, false)}
+                        {seg(posX + wuC, wuP, POS_UP_PUT, "P", money(p.putsSold), tip, true)}
+                      </>
+                    );
+                  })()}
+                  {gd > 0 && <rect x={posX - wd} y={ry} width={gd} height={12} rx={2} fill="#fff" opacity={0.35} style={{ pointerEvents: "none" }} />}
+                  {gu > 0 && <rect x={posX + wu - gu} y={ry} width={gu} height={12} rx={2} fill="#fff" opacity={0.35} style={{ pointerEvents: "none" }} />}
                   {/* "▲$" en la orilla: ese lado está aumentando. */}
                   {p.dDown > minGrowth && <text x={LABEL_W + 3} y={ry + 10} fontSize={9} fontWeight={700} fill={POS_DOWN}>▲{money(p.dDown)}</text>}
                   {p.dUp > minGrowth && <text x={plotL - 4} y={ry + 10} fontSize={9} fontWeight={700} fill={COLOR.posicionamiento} textAnchor="end">▲{money(p.dUp)}</text>}
                 </g>
               );
             })}
-            <text x={posX - 6} y={height - 8} fontSize={10} textAnchor="end" fill={POS_DOWN}>← abajo</text>
-            <text x={posX + 6} y={height - 8} fontSize={10} fill={COLOR.posicionamiento}>arriba →</text>
+            <text x={posX - 6} y={height - 8} fontSize={10} textAnchor="end"><tspan fill={POS_DOWN}>← abajo</tspan> <tspan fill="#6b7591">C</tspan><tspan fill={POS_DOWN}>■</tspan><tspan fill="#6b7591">P</tspan><tspan fill={POS_DOWN_PUT}>■</tspan></text>
+            <text x={posX + 6} y={height - 8} fontSize={10}><tspan fill="#6b7591">C</tspan><tspan fill={COLOR.posicionamiento}>■</tspan><tspan fill="#6b7591">P</tspan><tspan fill={POS_UP_PUT}>■</tspan> <tspan fill={COLOR.posicionamiento}>arriba →</tspan></text>
           </g>
         )}
 
