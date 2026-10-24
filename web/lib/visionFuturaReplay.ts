@@ -95,6 +95,8 @@ export interface ReplayPayload {
   labels: InstrumentLabels;
   /** Escala de los umbrales usada (1 = SPX). */
   scale: number;
+  /** IV del instrumento ÷ VIX usada para la gamma estimada (congelada junto con `scale`). */
+  ivRel?: number;
   strikeStep: number;
   /** Vencimiento de las opciones usado (TSLA no vence todos los días). */
   expiration: string;
@@ -223,10 +225,19 @@ export async function buildReplay(now: Date, opts: { force?: boolean; inst?: str
     const ivs = chain.filter((c) => ks.includes(c.strike) && c.implied_volatility && c.implied_volatility > 0.05 && c.implied_volatility < 3).map((c) => c.implied_volatility!);
     return ivs.length ? ivs.reduce((a, b) => a + b, 0) / ivs.length : null;
   })();
-  const scale = scaleFor(cfg, closeMain, { spxSpot: spxRefClose, vix: vixClose, atmIv: atmIvChain });
+  // Escala e IV relativa CONGELADAS por día: la primera repetición de la sesión las fija y cada
+  // reconstrucción las reusa. Si no, cambian según la hora en que se reconstruye (visto con TSLA el
+  // 23-oct: 0.208 a las 7:36 pm → 0.112 a las 11:35 pm, porque la cadena ya vencida trae una IV basura)
+  // y el backtest del día se mueve solo. Repeticiones viejas sin `ivRel`: se lee de sus notas.
+  const frozen = previous && previous.date === date && (previous.instrument ?? "SPX") === cfg.id ? previous : null;
+  const frozenIvRel = frozen?.ivRel ?? (() => {
+    const m = frozen?.notes?.map((n) => /IV = VIX × ([\d.]+)/.exec(n)).find(Boolean);
+    return m ? Number(m[1]) : frozen && frozen.notes?.some((n) => n.includes("(IV = VIX).")) ? 1 : null;
+  })();
+  const scale = frozen?.scale ?? scaleFor(cfg, closeMain, { spxSpot: spxRefClose, vix: vixClose, atmIv: atmIvChain });
   // IV del instrumento relativa al VIX (para la gamma de Black-Scholes en cada momento):
   // SPX 1; NQ 1.2; acciones: su IV ATM ÷ VIX (si la cadena trae una IV razonable), si no 3.
-  const ivRel = cfg.id === "SPX" ? 1 : REL_VOL[cfg.id] ?? (atmIvChain && atmIvChain !== 20 ? atmIvChain / (vixClose / 100) : 3);
+  const ivRel = frozenIvRel ?? (cfg.id === "SPX" ? 1 : REL_VOL[cfg.id] ?? (atmIvChain && atmIvChain !== 20 ? atmIvChain / (vixClose / 100) : 3));
 
   // Open interest real del día (al inicio de la sesión, no cambia intradía).
   const oi = new Map<string, number>();
@@ -468,6 +479,7 @@ export async function buildReplay(now: Date, opts: { force?: boolean; inst?: str
     instrument: cfg.id,
     labels: { ...labelsOf(cfg), future: null },
     scale,
+    ivRel,
     strikeStep,
     expiration,
     date,
