@@ -7,6 +7,7 @@
 // de mercado. Las muestras solo se acumulan mientras alguien tiene la pestaña
 // abierta (cada refresco de 30 s es un ciclo) — sin Telegram por ahora.
 
+import { evaluateLottos, lecturaAt, lottoPnlAtExpiry, lottoTradeFrom, minutesToClose, type LottoIdea, type LottoQuote, type LottoTrade } from "./visionFuturaLottos";
 import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { loadVisionFutura, type VisionFuturaPayload } from "./visionFuturaData";
@@ -37,10 +38,24 @@ interface AlertState {
   aggLast: { t: number; map: AggMap } | null;
   aggPrev: { t: number; map: AggMap } | null;
   fired: FiredAlert[];
+  /** Flujo direccional (Σ net premium calls − puts de la pantalla) para los lottos; `r` = radio de la pantalla. */
+  flowDir?: { t: number; v: number; r: number }[];
+  /** Lecturas de lottos ya hechas hoy ("15:00"…) y los lottos comprados. */
+  lottoDone?: string[];
+  lottos?: LottoTrade[];
 }
 
 function emptyState(date: string): AlertState {
-  return { date, prices: [], vix: [], aggLast: null, aggPrev: null, fired: [] };
+  return { date, prices: [], vix: [], aggLast: null, aggPrev: null, fired: [], flowDir: [], lottoDone: [], lottos: [] };
+}
+
+export interface LottoLive {
+  /** Mejores candidatos de ahora (vacío antes de las 15:00 o sin 0DTE). */
+  ideas: LottoIdea[];
+  /** Lottos comprados hoy en las lecturas, con su valor actual (bid en vivo) o el resultado al cierre. */
+  trades: (LottoTrade & { markNow: number | null })[];
+  /** El vencimiento elegido es el del día (los lottos solo aplican a 0DTE). */
+  zeroDte: boolean;
 }
 
 function loadState(date: string, inst: string): AlertState {
@@ -70,6 +85,7 @@ export interface AlertView extends FiredAlert {
 
 export interface VisionFuturaCycle {
   payload: VisionFuturaPayload;
+  lottos: LottoLive;
   /** Alertas disparadas hoy, la más reciente primero. */
   alerts: AlertView[];
   /** Setups más cerca de cumplirse ahora (no disparados), para el "vigilando". */
@@ -143,6 +159,53 @@ export async function runVisionFuturaCycle(now: Date, radius: number, instrument
     if (existing) existing.lastSeenAt = t;
     else state.fired.push({ ...a, firedAt: t, lastSeenAt: t });
   }
+  // ── Lottos al cierre (lib/visionFuturaLottos.ts): desde las 15:00, solo 0DTE y sesión de día ──
+  const quotes: LottoQuote[] = (payload.optionQuotes ?? []).map((q) => ({ type: q.type, strike: q.strike, bid: q.bid, ask: q.ask, real: true }));
+  delete payload.optionQuotes; // no viaja al navegador
+  const zeroDte = payload.expiration === marketDateStr(now) && !instrumentOf(inst).night;
+  const nyMin = 16 * 60 - minutesToClose(t);
+  state.flowDir ??= [];
+  state.lottoDone ??= [];
+  state.lottos ??= [];
+  let lottoIdeas: LottoIdea[] = [];
+  if (zeroDte && payload.marketOpen) {
+    const fd = payload.rows.reduce((a, r) => a + r.callFlow - r.putFlow, 0);
+    const lastF = state.flowDir.at(-1);
+    if (!lastF || t - lastF.t >= 20_000 || lastF.r !== payload.radius) state.flowDir.push({ t, v: fd, r: payload.radius });
+    state.flowDir = state.flowDir.filter((s) => s.t >= t - 40 * 60_000);
+    if (nyMin >= 15 * 60) {
+      const ago = t - 15 * 60_000;
+      const pastPrices = [...payload.priceSeries.map((p) => ({ t: p.time * 1000, v: p.value })), ...state.prices]
+        .filter((s) => s.t <= ago).sort((a, b) => a.t - b.t);
+      const priceAgo = pastPrices.at(-1);
+      // Solo si hay una muestra de flujo de hace ~15 min (±5) con el mismo radio de pantalla.
+      const flowAgo = [...state.flowDir].reverse().find((s) => s.t <= ago && s.t >= ago - 5 * 60_000 && s.r === payload.radius);
+      lottoIdeas = evaluateLottos({
+        now: t, spot: payload.spot.spx, keyLevels: payload.keyLevels, regime: payload.regime, vix: payload.vix?.last ?? null,
+        priceAgo15: priceAgo && priceAgo.t >= ago - 5 * 60_000 ? priceAgo.v : null,
+        flowChange15: flowAgo ? fd - flowAgo.v : null, quotes, scale: payload.scale,
+      }).slice(0, 3);
+      const lec = lecturaAt(t);
+      if (lec && !state.lottoDone.includes(lec)) {
+        state.lottoDone.push(lec);
+        const tr = lottoIdeas[0] ? lottoTradeFrom(lottoIdeas[0], t, payload.spot.spx) : null;
+        if (tr) state.lottos.push(tr);
+      }
+    }
+  }
+  // Después del cierre: valor intrínseco con el último precio del día.
+  if (!payload.marketOpen && nyMin >= 16 * 60) {
+    for (const tr of state.lottos) {
+      if (tr.pnlUsd != null) continue;
+      tr.settle = payload.spot.spx;
+      tr.pnlUsd = lottoPnlAtExpiry(tr, payload.spot.spx);
+    }
+  }
+  const lottos: LottoLive = {
+    ideas: lottoIdeas,
+    zeroDte,
+    trades: state.lottos.map((tr) => ({ ...tr, markNow: quotes.find((q) => q.type === tr.side && q.strike === tr.strike)?.bid ?? null })),
+  };
   saveState(state, inst);
 
   const alerts: AlertView[] = [...state.fired]
@@ -154,5 +217,5 @@ export async function runVisionFuturaCycle(now: Date, radius: number, instrument
     .sort((a, b) => b.score - a.score || Math.abs(a.level.spx - a.price.spx) - Math.abs(b.level.spx - b.price.spx))
     .slice(0, 4);
 
-  return { payload, alerts, watch };
+  return { payload, alerts, watch, lottos };
 }

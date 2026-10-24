@@ -10,10 +10,11 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties } from "re
 import VisionFuturaAlerts from "./VisionFuturaAlerts";
 import VisionFuturaSpreads from "./VisionFuturaSpreads";
 import VisionFuturaAmiga from "./VisionFuturaAmiga";
+import VisionFuturaLottos from "./VisionFuturaLottos";
 import VisionFuturaReplayBar from "./VisionFuturaReplayBar";
 import { DEFAULT_LABELS, VisionLabelsContext, useVisionLabels } from "./visionLabels";
 import type { InstrumentId, InstrumentLabels } from "@/lib/visionFuturaInstruments";
-import type { AlertView } from "@/lib/visionFuturaAlertStore";
+import type { AlertView, LottoLive } from "@/lib/visionFuturaAlertStore";
 import type { ReplayPayload } from "@/lib/visionFuturaReplay";
 import type { ReplayDay } from "./VisionFuturaReplayBar";
 import type { VisionAlert } from "@/lib/visionFuturaAlerts";
@@ -79,6 +80,7 @@ interface VisionData extends VisionFuturaReport {
   spreadsError?: string | null;
   alerts: AlertView[];
   watch: VisionAlert[];
+  lottos?: LottoLive;
 }
 
 const KIND_COLOR: Record<KeyLevelKind, string> = {
@@ -547,6 +549,7 @@ export default function VisionFuturaTab() {
   const view: VisionData = tick && replay
     ? {
         ...tick,
+        lottos: undefined, // los candidatos del paso van aparte (tick.lottos); este campo es el de "en vivo"
         asOf: new Date(tickMs).toISOString(),
         marketOpen: true,
         expiration: replay.date,
@@ -830,6 +833,21 @@ export default function VisionFuturaTab() {
           atClose: !!replay.expiration && replay.expiration !== replay.date,
         } : null}
       />
+
+      {!isNightInst && (
+        <VisionFuturaLottos
+          live={tick ? null : view.lottos ?? null}
+          marketOpen={view.marketOpen}
+          replay={tick && replay ? {
+            ideas: tick.lottos,
+            trades: replay.lottoTrades ?? [],
+            tickMs,
+            spot: tick.spot.spx,
+            isLastTick: replayIdx >= replay.ticks.length - 1,
+            partial: replay.partial,
+          } : null}
+        />
+      )}
 
       {isSpx && <VisionFuturaAmiga replayDate={tick && replay ? replay.date : null} replayTickMs={tick ? tickMs : null} />}
     </div>

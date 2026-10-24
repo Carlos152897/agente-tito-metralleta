@@ -9,6 +9,7 @@
 // dentro de un mismo intervalo, y stop/objetivo se llenan al precio exacto
 // (sin deslizamiento ni comisiones). Son puntos del subyacente, no P&L de opciones.
 
+import type { LottoTrade } from "./visionFuturaLottos";
 import type { ReplayAlert, ReplaySpreadTrade } from "./visionFuturaReplay";
 
 export interface BacktestTrade {
@@ -99,6 +100,8 @@ export interface BacktestDay {
   spreads?: BacktestSpread[];
   /** Totales del día por tipo de stop (ver STOP_VARIANTS). */
   stopCompare?: StopCompareRow[];
+  /** Lottos al cierre del día (lib/visionFuturaLottos.ts), ya liquidados. */
+  lottos?: LottoTrade[];
 }
 
 /** Spreads ejecutados en la repetición → filas del backtest (solo los ya liquidados). */

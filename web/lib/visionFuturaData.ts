@@ -30,6 +30,8 @@ export interface ExpirationChip {
 }
 
 export interface VisionFuturaPayload extends VisionFuturaReport {
+  /** Cotizaciones de tastytrade del vencimiento (uso interno del ciclo: lottos). No se envían al navegador. */
+  optionQuotes?: SpreadQuoteRow[];
   instrument: InstrumentId;
   labels: InstrumentLabels;
   /** Escala de los umbrales en puntos (1 = SPX). */
@@ -222,8 +224,10 @@ export async function loadVisionFutura(
   // Spreads (no rompen la pestaña si tastytrade falla). Anchos ≈ 5 y 10 pts de SPX escalados al paso de strike.
   let spreads: SpreadsReport | null = null;
   let spreadsError: string | null = null;
+  let optionQuotes: SpreadQuoteRow[] = [];
   try {
     const rows = await spreadQuotes(cfg.tastyChain, expiration, spot, 80 * scale);
+    optionQuotes = rows;
     const widths = cfg.id === "SPX" ? [5, 10] : [...new Set([snap(5 * scale, strikeStep), snap(10 * scale, strikeStep)])];
     spreads = rows.length === 0 ? null : buildSpreads({
       rows, spot,
@@ -245,6 +249,7 @@ export async function loadVisionFutura(
     expirations,
     spreads,
     spreadsError,
+    optionQuotes,
     asOf: now.toISOString(),
     gexAsOf: gexStats?.t ?? null,
     marketOpen: isMarketOpen(now),

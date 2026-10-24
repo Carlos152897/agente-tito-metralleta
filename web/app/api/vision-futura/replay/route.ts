@@ -36,6 +36,7 @@ export async function GET(req: Request) {
         ...simulateDay({ date: replay.date, alerts: replay.alerts, priceSeries: replay.priceSeries }),
         instrument: replay.instrument,
         spreads: spreadsForBacktest(replay.spreadTrades ?? []),
+        lottos: (replay.lottoTrades ?? []).filter((t) => t.pnlUsd != null),
       });
       // "Verticales amiga": lecturas + salidas + cierre del día (idempotente, no repite lo hecho).
       if (replay.instrument === "SPX") await processAmigaDay(replay.date, new Date()).catch(() => null);

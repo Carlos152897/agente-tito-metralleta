@@ -105,7 +105,7 @@ export async function buildBacktestWorkbook(): Promise<Buffer> {
   res.getCell("E2").font = { name: "Arial", size: 9, italic: true, color: { argb: "FF666666" } };
 
   const headers = ["Fecha", "Entradas", "Ganadas", "Perdidas", "% acierto", "Puntos (del instrumento)", "$ contrato grande", "$ contrato micro", "Mejor (pts)", "Peor (pts)",
-    "Spreads", "Spreads ganados", "Spreads perdidos", "Resultado spreads ($)", "Instrumento"];
+    "Spreads", "Spreads ganados", "Spreads perdidos", "Resultado spreads ($)", "Instrumento", "Lottos", "Lottos ganados", "Resultado lottos ($)"];
   res.getRow(6).values = headers;
   res.getRow(6).eachCell((c) => { c.font = HEAD; c.fill = HEAD_FILL; c.alignment = { horizontal: "center" }; });
 
@@ -138,6 +138,15 @@ export async function buildBacktestWorkbook(): Promise<Buffer> {
     } else {
       for (const c of [11, 12, 13, 14]) row.getCell(c).value = 0;
     }
+    const lt = d.lottos ?? [];
+    if (lt.length > 0) {
+      const rng = `'${sheetName(d)} lottos'!N2:N${lt.length + 1}`;
+      row.getCell(16).value = { formula: `COUNT(${rng})`, result: lt.length };
+      row.getCell(17).value = { formula: `COUNTIF(${rng},">0")`, result: lt.filter((x) => (x.pnlUsd ?? 0) > 0).length };
+      row.getCell(18).value = { formula: `SUM(${rng})`, result: lt.reduce((a, x) => a + (x.pnlUsd ?? 0), 0) };
+    } else {
+      for (const c of [16, 17, 18]) row.getCell(c).value = 0;
+    }
     const m = multOf(d.instrument);
     row.getCell(15).value = m.inst;
     row.getCell(7).value = { formula: `F${r}*INDEX($B$2:$B$4,MATCH(O${r},$A$2:$A$4,0))`, result: d.points * m.big };
@@ -161,15 +170,19 @@ export async function buildBacktestWorkbook(): Promise<Buffer> {
     tot.getCell(12).value = { formula: `SUM(L${first}:L${lastR})`, result: spUsd.filter((v) => v > 0).length };
     tot.getCell(13).value = { formula: `SUM(M${first}:M${lastR})`, result: spUsd.filter((v) => v < 0).length };
     tot.getCell(14).value = { formula: `SUM(N${first}:N${lastR})`, result: spUsd.reduce((a, b) => a + b, 0) };
+    const lt = days.flatMap((d) => d.lottos ?? []);
+    tot.getCell(16).value = { formula: `SUM(P${first}:P${lastR})`, result: lt.length };
+    tot.getCell(17).value = { formula: `SUM(Q${first}:Q${lastR})`, result: lt.filter((x) => (x.pnlUsd ?? 0) > 0).length };
+    tot.getCell(18).value = { formula: `SUM(R${first}:R${lastR})`, result: lt.reduce((a, x) => a + (x.pnlUsd ?? 0), 0) };
     tot.font = { ...FONT, bold: true };
     tot.eachCell((c) => { c.border = { top: { style: "thin" } }; });
   }
   res.columns.forEach((c, i) => {
-    c.width = [18, 10, 10, 10, 11, 14, 15, 15, 12, 12, 10, 14, 15, 19, 12][i] ?? 12;
+    c.width = [18, 10, 10, 10, 11, 14, 15, 15, 12, 12, 10, 14, 15, 19, 12, 9, 13, 17][i] ?? 12;
   });
   res.getColumn(5).numFmt = "0.0%";
   for (const c of [6, 9, 10]) res.getColumn(c).numFmt = PTS_FMT;
-  for (const c of [7, 8, 14]) res.getColumn(c).numFmt = USD_FMT;
+  for (const c of [7, 8, 14, 18]) res.getColumn(c).numFmt = USD_FMT;
   res.eachRow((row, rn) => { if (rn > 1 && rn !== 6) row.eachCell((c) => { c.font = { ...FONT, ...(c.font ?? {}), name: "Arial" }; }); });
   res.getCell("A1").font = { name: "Arial", size: 14, bold: true };
   for (const m of MULTS) for (const c of [`B${m.row}`, `C${m.row}`]) res.getCell(c).font = INPUT_FONT;
@@ -347,6 +360,43 @@ export async function buildBacktestWorkbook(): Promise<Buffer> {
     for (const c of [7, 11, 12, 13]) ws.getColumn(c).numFmt = "#,##0.00";
     for (const c of [8, 9]) ws.getColumn(c).numFmt = "$#,##0";
     ws.getColumn(10).numFmt = "0.0%";
+    ws.getColumn(14).numFmt = USD_FMT;
+  }
+
+  // ── Lottos al cierre por día ──
+  for (const d of days) {
+    const lt = d.lottos ?? [];
+    if (lt.length === 0) continue;
+    const ws = wb.addWorksheet(`${sheetName(d)} lottos`, { views: [{ state: "frozen", ySplit: 1 }] });
+    ws.columns = [
+      { header: "Lectura (NY)", width: 10 }, { header: "Tipo", width: 7 }, { header: "Strike", width: 9 }, { header: "Prima", width: 8 },
+      { header: "Precio", width: 12 }, { header: "Objetivo", width: 22 }, { header: "Nivel objetivo", width: 11 }, { header: "Spot al comprar", width: 12 },
+      { header: "Paga si llega (×)", width: 11 }, { header: "Mejor venta", width: 10 }, { header: "Hora mejor venta", width: 11 },
+      { header: "Cierre", width: 10 }, { header: "Valor al cierre", width: 10 }, { header: "Resultado $ (1 contrato)", width: 13 }, { header: "Confirmaciones", width: 90 },
+    ];
+    ws.getRow(1).eachCell((c) => { c.font = HEAD; c.fill = HEAD_FILL; c.alignment = { horizontal: "center", wrapText: true }; });
+    lt.forEach((t, i) => {
+      const r = i + 2;
+      const row = ws.getRow(r);
+      row.values = [t.lectura, t.side.toUpperCase(), t.strike, t.price, t.priceReal ? "llenado real" : "estimado", t.target.label, t.target.spx, t.spotAtOpen,
+        t.payoff ?? "", t.bestExit?.price ?? "", t.bestExit ? hmNy(t.bestExit.at) : "", t.settle ?? ""];
+      row.getCell(13).value = { formula: `IF(B${r}="CALL",MAX(0,L${r}-C${r}),MAX(0,C${r}-L${r}))`, result: t.settle == null ? 0 : Math.max(0, t.side === "call" ? t.settle - t.strike : t.strike - t.settle) };
+      row.getCell(14).value = { formula: `(M${r}-D${r})*100`, result: t.pnlUsd ?? 0 };
+      row.getCell(15).value = t.conditions.map((c) => `${c.ok ? "✓" : "✗"} ${c.label}: ${c.detail}`).join(" | ");
+      row.font = FONT;
+      row.getCell(14).font = { ...FONT, bold: true, color: { argb: (t.pnlUsd ?? 0) > 0 ? "FF0E9F5F" : "FFD92D20" } };
+    });
+    const n = lt.length, t = n + 2;
+    const tot = ws.getRow(t);
+    tot.getCell(1).value = "Total";
+    tot.getCell(4).value = { formula: `SUM(D2:D${n + 1})*100`, result: Math.round(lt.reduce((a, x) => a + x.price, 0) * 100) };
+    tot.getCell(14).value = { formula: `SUM(N2:N${n + 1})`, result: lt.reduce((a, x) => a + (x.pnlUsd ?? 0), 0) };
+    tot.font = { ...FONT, bold: true };
+    tot.eachCell((c) => { c.border = { top: { style: "thin" } }; });
+    ws.getRow(t + 2).getCell(1).value = "Total de la columna Prima = $ invertidos (×100). Regla: lib/visionFuturaLottos.ts (objetivo al alcance + 2 de 3: GEX negativo, momentum 15 min, flujo 15 min; prima $0.05–$1.00; paga ≥ 3× si llega). 1 contrato, al vencimiento.";
+    ws.getRow(t + 2).getCell(1).font = { name: "Arial", size: 9, italic: true, color: { argb: "FF666666" } };
+    for (const c of [4, 10, 13]) ws.getColumn(c).numFmt = "$0.00";
+    for (const c of [7, 8, 12]) ws.getColumn(c).numFmt = "#,##0.00";
     ws.getColumn(14).numFmt = USD_FMT;
   }
 

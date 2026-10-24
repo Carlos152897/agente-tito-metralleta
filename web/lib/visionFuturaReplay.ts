@@ -22,6 +22,7 @@
 // y el mismo cooldown, en memoria — no tocan el estado de las alertas en vivo.
 // Resultado cacheado en data/vision-futura/replay-{fecha}.json.
 
+import { evaluateLottos, lottoPnlAtExpiry, lottoTradeFrom, LOTTO_TUNING, nyHm, type LottoIdea, type LottoQuote, type LottoTrade } from "./visionFuturaLottos";
 import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { buildVisionFutura, yearsToExpiry, type VisionFuturaReport, type VixReading } from "./visionFutura";
@@ -42,7 +43,7 @@ const FIVE_MIN = 5 * 60_000;
 const COOLDOWN_MS = 20 * 60_000;
 const RADIUS = 60;
 /** Subir cuando cambie el motor de alertas o el formato: invalida los caches viejos. */
-const REPLAY_VERSION = 8;
+const REPLAY_VERSION = 9;
 const DIR = join(process.cwd(), "data", "vision-futura");
 
 export interface ReplayAlert extends VisionAlert {
@@ -51,6 +52,8 @@ export interface ReplayAlert extends VisionAlert {
 }
 
 export interface ReplayTick extends VisionFuturaReport {
+  /** Lottos al cierre: mejores candidatos de este momento (desde las 15:00). */
+  lottos?: LottoIdea[];
   /** Hora del tick (segundos unix). */
   time: number;
   gexAsOf: string | null;
@@ -102,6 +105,8 @@ export interface ReplayPayload {
   ticks: ReplayTick[];
   alerts: ReplayAlert[];
   spreadTrades: ReplaySpreadTrade[];
+  /** Lottos "comprados" en las lecturas de 15:00/15:15/15:30/15:45 (solo con precio real). */
+  lottoTrades?: LottoTrade[];
   notes: string[];
 }
 
@@ -275,6 +280,17 @@ export async function buildReplay(now: Date, opts: { force?: boolean; inst?: str
     return { bid: Math.round(bid! * 100) / 100, ask: Math.round(ask! * 100) / 100, real };
   };
   const spreadTrades: ReplaySpreadTrade[] = [];
+  const lottoTrades: LottoTrade[] = [];
+  // Flujo direccional acumulado hasta T: Σ net premium de calls − Σ net premium de puts (todos los strikes).
+  const dirFlow = (beforeMs: number) => {
+    let v = 0;
+    for (const s of strikes) {
+      const c = cumulative(`call:${s}`, beforeMs), q = cumulative(`put:${s}`, beforeMs);
+      v += (c.ask - c.bid) - (q.ask - q.bid);
+    }
+    return v;
+  };
+  const LOTTO_FROM = 15 * 60;
 
   const ticks: ReplayTick[] = [];
   const fired: ReplayAlert[] = [];
@@ -375,7 +391,28 @@ export async function buildReplay(now: Date, opts: { force?: boolean; inst?: str
       .sort((a, b) => b.score - a.score || Math.abs(a.level.spx - a.price.spx) - Math.abs(b.level.spx - b.price.spx))
       .slice(0, 4);
 
-    ticks.push({ ...report, time: Math.floor(T / 1000), gexAsOf: g?.t ?? null, vixMagnet, activeIds, watch });
+    // Lottos al cierre (solo con opciones que vencen hoy): candidatos desde las 15:00; en cada
+    // lectura se "compra" el mejor que cumpla, con el precio real de llenado.
+    let lottos: LottoIdea[] | undefined;
+    if (expiresToday && nyMinutes(T) >= LOTTO_FROM && nyMinutes(T) < 16 * 60) {
+      const ago = latestAtOrBefore(spx, T - 15 * 60_000);
+      const lq: LottoQuote[] = [];
+      for (const s of strikes) for (const type of ["call", "put"] as const) {
+        const q = quoteAt(type, s, T, p.v, years, iv);
+        if (q.real) lq.push({ type, strike: s, bid: q.bid, ask: q.ask, real: true });
+      }
+      const ideas = evaluateLottos({
+        now: T, spot: p.v, keyLevels: report.keyLevels, regime: report.regime, vix: vixNow != null ? vixNow * ivRel : null,
+        priceAgo15: ago && ago.ms < T ? ago.v : null, flowChange15: dirFlow(T) - dirFlow(T - 15 * 60_000), quotes: lq, scale,
+      });
+      lottos = ideas.slice(0, 3);
+      if ((LOTTO_TUNING.lecturas as readonly string[]).includes(nyHm(T))) {
+        const tr = ideas[0] ? lottoTradeFrom(ideas[0], T, p.v) : null;
+        if (tr) lottoTrades.push(tr);
+      }
+    }
+
+    ticks.push({ ...report, time: Math.floor(T / 1000), gexAsOf: g?.t ?? null, vixMagnet, activeIds, watch, ...(lottos ? { lottos } : {}) });
   }
 
   // Resultado: si las opciones vencen hoy (0DTE), valor intrínseco al cierre. Si no (TSLA en un
@@ -400,6 +437,18 @@ export async function buildReplay(now: Date, opts: { force?: boolean; inst?: str
       }
       t.pnlUsd = Math.round(t.pnl * 100);
     }
+    for (const t of lottoTrades) {
+      t.settle = settle;
+      t.pnlUsd = lottoPnlAtExpiry(t, settle);
+      // Mejor venta posible después de la compra: el promedio real de llenado al bid más alto.
+      let best: { price: number; at: number } | null = null;
+      for (const b of flow.get(`${t.side}:${t.strike}`) ?? []) {
+        if (b.ms < t.openedAt || b.bidVol <= 0) continue;
+        const px = Math.round((b.bid / (b.bidVol * 100)) * 100) / 100;
+        if (!best || px > best.price) best = { price: px, at: b.ms };
+      }
+      t.bestExit = best;
+    }
   }
 
   const payload: ReplayPayload = {
@@ -421,6 +470,7 @@ export async function buildReplay(now: Date, opts: { force?: boolean; inst?: str
     ticks,
     alerts: fired,
     spreadTrades,
+    lottoTrades,
     notes: [
       `Magneto, paredes, flip, max pain, VIX y flujo por strike: datos reales de MarketSnack de cada momento (${cfg.main}).`,
       cfg.chartFromEtf
@@ -432,6 +482,7 @@ export async function buildReplay(now: Date, opts: { force?: boolean; inst?: str
       cfg.id === "SPX" ? "Umbrales de SPX (escala 1)." : `Umbrales escalados ×${scale.toFixed(2)} respecto a SPX.`,
       ...(chainMissing ? [`MarketSnack ya no devuelve la cadena de ${cfg.main} de ${date} (venció): se usan sus contratos 0DTE con el flujo real, pero sin open interest — no hay imanes ±, resistencias/pisos secundarios ni charm; sí Magneto, paredes, flip y max pain.`] : []),
       "Spreads: solo se ejecutan si las DOS patas tuvieron operaciones reales en los últimos 15 min (precio = promedio real de llenado en MarketSnack); se mantienen hasta el vencimiento (o se valúan al cierre si no vencen ese día).",
+      "Lottos al cierre: lecturas 15:00/15:15/15:30/15:45 con la regla de lib/visionFuturaLottos.ts; prima = promedio real de llenado al ask; se sostienen al vencimiento. 'Mejor venta' = el promedio de llenado al bid más alto después de la compra.",
       "Resolución de 5 minutos.",
     ],
   };
