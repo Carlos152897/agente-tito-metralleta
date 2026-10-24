@@ -105,7 +105,7 @@ export async function buildBacktestWorkbook(): Promise<Buffer> {
   res.getCell("E2").font = { name: "Arial", size: 9, italic: true, color: { argb: "FF666666" } };
 
   const headers = ["Fecha", "Entradas", "Ganadas", "Perdidas", "% acierto", "Puntos (del instrumento)", "$ contrato grande", "$ contrato micro", "Mejor (pts)", "Peor (pts)",
-    "Spreads", "Spreads ganados", "Spreads perdidos", "Resultado spreads ($)", "Instrumento", "Lottos", "Lottos ganados", "Resultado lottos ($)"];
+    "Spreads", "Spreads ganados", "Spreads perdidos", "Resultado spreads ($)", "Instrumento", "Lottos", "Lottos ganados", "Resultado lottos ($)", "Señales del dinero", "Señales ganadas", "Puntos señales", "$ señales (contrato grande)"];
   res.getRow(6).values = headers;
   res.getRow(6).eachCell((c) => { c.font = HEAD; c.fill = HEAD_FILL; c.alignment = { horizontal: "center" }; });
 
@@ -147,6 +147,16 @@ export async function buildBacktestWorkbook(): Promise<Buffer> {
     } else {
       for (const c of [16, 17, 18]) row.getCell(c).value = 0;
     }
+    const mt = d.money ?? [];
+    if (mt.length > 0) {
+      const rng = `'${sheetName(d)} dinero'!N2:N${mt.length + 1}`;
+      row.getCell(19).value = { formula: `COUNT(${rng})`, result: mt.length };
+      row.getCell(20).value = { formula: `COUNTIF(${rng},">0")`, result: mt.filter((x) => (x.points ?? 0) > 0).length };
+      row.getCell(21).value = { formula: `SUM(${rng})`, result: mt.reduce((a, x) => a + (x.points ?? 0), 0) };
+    } else {
+      for (const c of [19, 20, 21]) row.getCell(c).value = 0;
+    }
+    row.getCell(22).value = { formula: `U${r}*INDEX($B$2:$B$4,MATCH(O${r},$A$2:$A$4,0))`, result: mt.reduce((a, x) => a + (x.points ?? 0), 0) * multOf(d.instrument).big };
     const m = multOf(d.instrument);
     row.getCell(15).value = m.inst;
     row.getCell(7).value = { formula: `F${r}*INDEX($B$2:$B$4,MATCH(O${r},$A$2:$A$4,0))`, result: d.points * m.big };
@@ -174,15 +184,21 @@ export async function buildBacktestWorkbook(): Promise<Buffer> {
     tot.getCell(16).value = { formula: `SUM(P${first}:P${lastR})`, result: lt.length };
     tot.getCell(17).value = { formula: `SUM(Q${first}:Q${lastR})`, result: lt.filter((x) => (x.pnlUsd ?? 0) > 0).length };
     tot.getCell(18).value = { formula: `SUM(R${first}:R${lastR})`, result: lt.reduce((a, x) => a + (x.pnlUsd ?? 0), 0) };
+    const mt = days.flatMap((d) => d.money ?? []);
+    tot.getCell(19).value = { formula: `SUM(S${first}:S${lastR})`, result: mt.length };
+    tot.getCell(20).value = { formula: `SUM(T${first}:T${lastR})`, result: mt.filter((x) => (x.points ?? 0) > 0).length };
+    tot.getCell(21).value = "—"; // puntos de instrumentos distintos no se suman
+    tot.getCell(22).value = { formula: `SUM(V${first}:V${lastR})`, result: days.reduce((a, d) => a + (d.money ?? []).reduce((b, x) => b + (x.points ?? 0), 0) * multOf(d.instrument).big, 0) };
     tot.font = { ...FONT, bold: true };
     tot.eachCell((c) => { c.border = { top: { style: "thin" } }; });
   }
   res.columns.forEach((c, i) => {
-    c.width = [18, 10, 10, 10, 11, 14, 15, 15, 12, 12, 10, 14, 15, 19, 12, 9, 13, 17][i] ?? 12;
+    c.width = [18, 10, 10, 10, 11, 14, 15, 15, 12, 12, 10, 14, 15, 19, 12, 9, 13, 17, 12, 12, 12, 16][i] ?? 12;
   });
   res.getColumn(5).numFmt = "0.0%";
   for (const c of [6, 9, 10]) res.getColumn(c).numFmt = PTS_FMT;
-  for (const c of [7, 8, 14, 18]) res.getColumn(c).numFmt = USD_FMT;
+  for (const c of [7, 8, 14, 18, 22]) res.getColumn(c).numFmt = USD_FMT;
+  res.getColumn(21).numFmt = PTS_FMT;
   res.eachRow((row, rn) => { if (rn > 1 && rn !== 6) row.eachCell((c) => { c.font = { ...FONT, ...(c.font ?? {}), name: "Arial" }; }); });
   res.getCell("A1").font = { name: "Arial", size: 14, bold: true };
   for (const m of MULTS) for (const c of [`B${m.row}`, `C${m.row}`]) res.getCell(c).font = INPUT_FONT;
@@ -398,6 +414,46 @@ export async function buildBacktestWorkbook(): Promise<Buffer> {
     for (const c of [4, 10, 13]) ws.getColumn(c).numFmt = "$0.00";
     for (const c of [7, 8, 12]) ws.getColumn(c).numFmt = "#,##0.00";
     ws.getColumn(14).numFmt = USD_FMT;
+  }
+
+  // ── Señales del dinero por día ──
+  for (const d of days) {
+    const mt = d.money ?? [];
+    if (mt.length === 0) continue;
+    const m = multOf(d.instrument);
+    const ws = wb.addWorksheet(`${sheetName(d)} dinero`, { views: [{ state: "frozen", ySplit: 1 }] });
+    ws.columns = [
+      { header: "Hora (NY)", width: 9 }, { header: "Lado", width: 8 }, { header: "Entrada", width: 11 }, { header: "Objetivo", width: 11 },
+      { header: "Nivel objetivo", width: 22 }, { header: "Stop", width: 11 }, { header: "Stop basado en", width: 24 }, { header: "Riesgo (pts)", width: 10 },
+      { header: "Ganancia posible (pts)", width: 12 }, { header: "R:B", width: 7 }, { header: "Resultado", width: 10 }, { header: "Salida", width: 11 },
+      { header: "Hora salida", width: 10 }, { header: "Puntos", width: 9 }, { header: m.bigLabel, width: 14 }, { header: m.microLabel, width: 14 }, { header: "Votos", width: 110 },
+    ];
+    ws.getRow(1).eachCell((c) => { c.font = HEAD; c.fill = HEAD_FILL; c.alignment = { horizontal: "center", wrapText: true }; });
+    mt.forEach((t, i) => {
+      const r = i + 2;
+      const row = ws.getRow(r);
+      row.values = [hmNy(t.openedAt), t.side.toUpperCase(), t.entry, t.target, t.targetLabel, t.stop, t.stopLabel, t.riskPts, t.rewardPts, t.rb, t.outcome ?? "", t.exit ?? "", t.exitAt ? hmNy(t.exitAt) : ""];
+      row.getCell(14).value = { formula: `IF(B${r}="CORTO",C${r}-L${r},L${r}-C${r})`, result: t.points ?? 0 };
+      row.getCell(15).value = { formula: `N${r}*Resumen!$B$${m.row}`, result: (t.points ?? 0) * m.big };
+      row.getCell(16).value = { formula: `N${r}*Resumen!$C$${m.row}`, result: (t.points ?? 0) * m.micro };
+      row.getCell(17).value = t.votes.map((v) => `${v.vote > 0 ? "↑" : v.vote < 0 ? "↓" : "·"} ${v.label}: ${v.detail}`).join(" | ");
+      row.font = FONT;
+      row.getCell(11).font = { ...FONT, bold: true, color: { argb: (t.points ?? 0) > 0 ? "FF0E9F5F" : "FFD92D20" } };
+    });
+    const n = mt.length, t = n + 2;
+    const tot = ws.getRow(t);
+    tot.getCell(1).value = "Total";
+    tot.getCell(11).value = { formula: `COUNTIF(N2:N${n + 1},">0")&" G / "&COUNTIF(N2:N${n + 1},"<0")&" P"` };
+    tot.getCell(14).value = { formula: `SUM(N2:N${n + 1})`, result: mt.reduce((a, x) => a + (x.points ?? 0), 0) };
+    tot.getCell(15).value = { formula: `SUM(O2:O${n + 1})` };
+    tot.getCell(16).value = { formula: `SUM(P2:P${n + 1})` };
+    tot.font = { ...FONT, bold: true };
+    tot.eachCell((c) => { c.border = { top: { style: "thin" } }; });
+    ws.getRow(t + 2).getCell(1).value = "Regla (lib/visionFuturaMoneyFlow.ts): dispara cuando el dinero nuevo de 15 min tiene dirección y al menos 2 de 3 (Magneto, apuestas del día, barra más grande) lo acompañan. Objetivo = nivel más cercano a ≥ 8 pts; stop detrás del nivel en contra + 2 pts (5–15 pts); R:B ≥ 1.2. Precio de 5 min, si stop y objetivo caen en el mismo intervalo cuenta el stop.";
+    ws.getRow(t + 2).getCell(1).font = { name: "Arial", size: 9, italic: true, color: { argb: "FF666666" } };
+    for (const c of [3, 4, 6, 12]) ws.getColumn(c).numFmt = "#,##0.00";
+    ws.getColumn(14).numFmt = PTS_FMT;
+    for (const c of [15, 16]) ws.getColumn(c).numFmt = USD_FMT;
   }
 
   // ── Verticales amiga (regla Sombra 1–5 DTE): historial acumulado ──

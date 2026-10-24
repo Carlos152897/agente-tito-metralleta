@@ -11,10 +11,11 @@ import VisionFuturaAlerts from "./VisionFuturaAlerts";
 import VisionFuturaSpreads from "./VisionFuturaSpreads";
 import VisionFuturaAmiga from "./VisionFuturaAmiga";
 import VisionFuturaLottos from "./VisionFuturaLottos";
+import VisionFuturaMoney from "./VisionFuturaMoney";
 import VisionFuturaReplayBar from "./VisionFuturaReplayBar";
 import { DEFAULT_LABELS, VisionLabelsContext, useVisionLabels } from "./visionLabels";
 import type { InstrumentId, InstrumentLabels } from "@/lib/visionFuturaInstruments";
-import type { AlertView, LottoLive } from "@/lib/visionFuturaAlertStore";
+import type { AlertView, LottoLive, MoneyLive } from "@/lib/visionFuturaAlertStore";
 import type { ReplayPayload } from "@/lib/visionFuturaReplay";
 import type { ReplayDay } from "./VisionFuturaReplayBar";
 import type { VisionAlert } from "@/lib/visionFuturaAlerts";
@@ -81,6 +82,7 @@ interface VisionData extends VisionFuturaReport {
   alerts: AlertView[];
   watch: VisionAlert[];
   lottos?: LottoLive;
+  money?: MoneyLive;
 }
 
 const KIND_COLOR: Record<KeyLevelKind, string> = {
@@ -550,6 +552,7 @@ export default function VisionFuturaTab() {
     ? {
         ...tick,
         lottos: undefined, // los candidatos del paso van aparte (tick.lottos); este campo es el de "en vivo"
+        money: undefined, // idem: la lectura del paso es tick.money
         asOf: new Date(tickMs).toISOString(),
         marketOpen: true,
         expiration: replay.date,
@@ -816,6 +819,23 @@ export default function VisionFuturaTab() {
         </button>
         {showTable && view.rows.length > 0 && <Ladder rows={view.rows} spot={view.spot.spx} maxGex={maxGex} />}
       </div>
+
+      <VisionFuturaMoney
+        reading={tick ? tick.money ?? null : view.money?.reading ?? null}
+        trades={tick ? replay?.moneyTrades ?? [] : view.money?.trades ?? []}
+        replay={tick && replay ? { tickMs, spot: tick.spot.spx, isLastTick: replayIdx >= replay.ticks.length - 1, partial: replay.partial } : null}
+        spot={view.spot.spx}
+        marketOpen={view.marketOpen}
+        night={isNightInst}
+        main={labels.main}
+        instrumentos={labels.etf || labels.future
+          ? { largo: `calls de ${labels.main}${labels.etf ? `/${labels.etf}` : ""}${labels.future ? ` o comprar ${labels.future}` : ""}`, corto: `puts de ${labels.main}${labels.etf ? `/${labels.etf}` : ""}${labels.future ? ` o vender ${labels.future}` : ""}` }
+          : { largo: `comprar ${labels.main} (acciones o calls)`, corto: `vender ${labels.main} (acciones o puts)` }}
+        conv={(x) => ({ spy: spyRatio != null ? x * spyRatio : null, es: esBasis != null ? x + esBasis : null })}
+        etfLabel={labels.etf}
+        futLabel={labels.future}
+        mult={inst === "NQ" ? { big: 20, bigLabel: "$ por 1 /NQ" } : inst === "TSLA" ? { big: 100, bigLabel: "$ por 100 acciones" } : { big: 50, bigLabel: "$ por 1 /ES" }}
+      />
 
       <VisionFuturaAlerts alerts={view.alerts ?? []} watch={view.watch ?? []} marketOpen={view.marketOpen} />
 

@@ -22,6 +22,7 @@
 // y el mismo cooldown, en memoria — no tocan el estado de las alertas en vivo.
 // Resultado cacheado en data/vision-futura/replay-{fecha}.json.
 
+import { runMoneySession, type MoneyReading, type MoneyTrade } from "./visionFuturaMoneyFlow";
 import { evaluateLottos, lottoPnlAtExpiry, lottoTradeFrom, LOTTO_TUNING, nyHm, type LottoIdea, type LottoQuote, type LottoTrade } from "./visionFuturaLottos";
 import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
@@ -43,7 +44,7 @@ const FIVE_MIN = 5 * 60_000;
 const COOLDOWN_MS = 20 * 60_000;
 const RADIUS = 60;
 /** Subir cuando cambie el motor de alertas o el formato: invalida los caches viejos. */
-const REPLAY_VERSION = 9;
+const REPLAY_VERSION = 10;
 const DIR = join(process.cwd(), "data", "vision-futura");
 
 export interface ReplayAlert extends VisionAlert {
@@ -54,6 +55,8 @@ export interface ReplayAlert extends VisionAlert {
 export interface ReplayTick extends VisionFuturaReport {
   /** Lottos al cierre: mejores candidatos de este momento (desde las 15:00). */
   lottos?: LottoIdea[];
+  /** Señal del dinero: lectura de este momento (desde las 9:45). */
+  money?: MoneyReading;
   /** Hora del tick (segundos unix). */
   time: number;
   gexAsOf: string | null;
@@ -107,6 +110,8 @@ export interface ReplayPayload {
   spreadTrades: ReplaySpreadTrade[];
   /** Lottos "comprados" en las lecturas de 15:00/15:15/15:30/15:45 (solo con precio real). */
   lottoTrades?: LottoTrade[];
+  /** Señales del dinero (long/short con objetivo y stop) del día, ya simuladas. */
+  moneyTrades?: MoneyTrade[];
   notes: string[];
 }
 
@@ -451,6 +456,13 @@ export async function buildReplay(now: Date, opts: { force?: boolean; inst?: str
     }
   }
 
+  // Señal del dinero: lectura en cada paso y operaciones simuladas sobre el precio real de 5 min.
+  const moneyRun = runMoneySession(
+    ticks.map((tk) => ({ t: tk.time * 1000, spot: tk.spot.spx, keyLevels: tk.keyLevels, rows: tk.rows })),
+    spx.map((p) => ({ t: p.ms, v: p.v })), scale, !partial,
+  );
+  ticks.forEach((tk, i) => { const rd = moneyRun.readings[i]; if (rd) tk.money = rd; });
+
   const payload: ReplayPayload = {
     version: REPLAY_VERSION,
     instrument: cfg.id,
@@ -471,6 +483,7 @@ export async function buildReplay(now: Date, opts: { force?: boolean; inst?: str
     alerts: fired,
     spreadTrades,
     lottoTrades,
+    moneyTrades: moneyRun.trades,
     notes: [
       `Magneto, paredes, flip, max pain, VIX y flujo por strike: datos reales de MarketSnack de cada momento (${cfg.main}).`,
       cfg.chartFromEtf
@@ -483,6 +496,7 @@ export async function buildReplay(now: Date, opts: { force?: boolean; inst?: str
       ...(chainMissing ? [`MarketSnack ya no devuelve la cadena de ${cfg.main} de ${date} (venció): se usan sus contratos 0DTE con el flujo real, pero sin open interest — no hay imanes ±, resistencias/pisos secundarios ni charm; sí Magneto, paredes, flip y max pain.`] : []),
       "Spreads: solo se ejecutan si las DOS patas tuvieron operaciones reales en los últimos 15 min (precio = promedio real de llenado en MarketSnack); se mantienen hasta el vencimiento (o se valúan al cierre si no vencen ese día).",
       "Lottos al cierre: lecturas 15:00/15:15/15:30/15:45 con la regla de lib/visionFuturaLottos.ts; prima = promedio real de llenado al ask; se sostienen al vencimiento. 'Mejor venta' = el promedio de llenado al bid más alto después de la compra.",
+      "Señal del dinero: lib/visionFuturaMoneyFlow.ts (Magneto, apuestas del día, dinero nuevo de 15 min, barra más grande); una operación a la vez; stop/objetivo sobre el precio de 5 min (si caen en el mismo intervalo cuenta el stop).",
       "Resolución de 5 minutos.",
     ],
   };

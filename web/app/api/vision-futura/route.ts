@@ -20,8 +20,8 @@ export async function GET(req: Request) {
   const inst = params.get("inst") ?? "SPX";
   const exp = Math.max(0, Math.min(5, Number(params.get("exp")) || 0));
   try {
-    const { payload, alerts, watch, lottos } = await runVisionFuturaCycle(new Date(), radius, inst, exp);
-    return Response.json({ ...payload, alerts, watch, lottos });
+    const { payload, alerts, watch, lottos, money } = await runVisionFuturaCycle(new Date(), radius, inst, exp);
+    return Response.json({ ...payload, alerts, watch, lottos, money });
   } catch (err) {
     const message = err instanceof MarketSnackError || err instanceof VisionFuturaError
       ? err.message

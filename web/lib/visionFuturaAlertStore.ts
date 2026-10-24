@@ -7,6 +7,7 @@
 // de mercado. Las muestras solo se acumulan mientras alguien tiene la pestaña
 // abierta (cada refresco de 30 s es un ciclo) — sin Telegram por ahora.
 
+import { MONEY_TUNING, readMoney, stepAgo, type MoneyReading, type MoneyRow, type MoneyTrade } from "./visionFuturaMoneyFlow";
 import { evaluateLottos, lecturaAt, lottoPnlAtExpiry, lottoTradeFrom, minutesToClose, type LottoIdea, type LottoQuote, type LottoTrade } from "./visionFuturaLottos";
 import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
@@ -43,6 +44,9 @@ interface AlertState {
   /** Lecturas de lottos ya hechas hoy ("15:00"…) y los lottos comprados. */
   lottoDone?: string[];
   lottos?: LottoTrade[];
+  /** Fotos del flujo por strike cada minuto (señal del dinero: comparar contra hace 15 min). */
+  flowSnaps?: { t: number; r: number; rows: MoneyRow[] }[];
+  moneyTrades?: MoneyTrade[];
 }
 
 function emptyState(date: string): AlertState {
@@ -83,9 +87,17 @@ export interface AlertView extends FiredAlert {
   activa: boolean;
 }
 
+export interface MoneyLive {
+  /** Lectura de ahora (null antes de las 9:45, de noche o con el mercado cerrado). */
+  reading: MoneyReading | null;
+  /** Señales de hoy: abiertas (outcome null) y cerradas. */
+  trades: MoneyTrade[];
+}
+
 export interface VisionFuturaCycle {
   payload: VisionFuturaPayload;
   lottos: LottoLive;
+  money: MoneyLive;
   /** Alertas disparadas hoy, la más reciente primero. */
   alerts: AlertView[];
   /** Setups más cerca de cumplirse ahora (no disparados), para el "vigilando". */
@@ -201,6 +213,45 @@ export async function runVisionFuturaCycle(now: Date, radius: number, instrument
       tr.pnlUsd = lottoPnlAtExpiry(tr, payload.spot.spx);
     }
   }
+  // ── Señal del dinero (lib/visionFuturaMoneyFlow.ts): sesión de día, desde las 9:45 ──
+  state.flowSnaps ??= [];
+  state.moneyTrades ??= [];
+  let moneyReading: MoneyReading | null = null;
+  const spotNow = payload.spot.spx;
+  if (!instrumentOf(inst).night && payload.marketOpen) {
+    const rowsNow: MoneyRow[] = payload.rows.map((r) => ({ spx: r.spx, callFlow: r.callFlow, putFlow: r.putFlow }));
+    const lastS = state.flowSnaps.at(-1);
+    if (!lastS || t - lastS.t >= 60_000 || lastS.r !== payload.radius) state.flowSnaps.push({ t, r: payload.radius, rows: rowsNow });
+    state.flowSnaps = state.flowSnaps.filter((s) => s.t >= t - 25 * 60_000);
+    // Las abiertas se resuelven con el precio en vivo.
+    for (const tr of state.moneyTrades) {
+      if (tr.outcome != null) continue;
+      const up = tr.side === "largo";
+      if (up ? spotNow <= tr.stop : spotNow >= tr.stop) Object.assign(tr, { outcome: "stop", exit: tr.stop, exitAt: t });
+      else if (up ? spotNow >= tr.target : spotNow <= tr.target) Object.assign(tr, { outcome: "objetivo", exit: tr.target, exitAt: t });
+      if (tr.outcome != null) tr.points = Math.round((up ? tr.exit! - tr.entry : tr.entry - tr.exit!) * 100) / 100;
+    }
+    if (nyMin >= 9 * 60 + 45) {
+      const ago = stepAgo(state.flowSnaps.filter((s) => s.r === payload.radius), t);
+      moneyReading = readMoney({ spot: spotNow, keyLevels: payload.keyLevels, rows: rowsNow, rows15: ago?.rows ?? null, scale: payload.scale });
+      const sig = moneyReading.signal;
+      const open = state.moneyTrades.some((tr) => tr.outcome == null);
+      const lastSame = [...state.moneyTrades].reverse().find((tr) => sig && tr.side === sig.side);
+      if (sig && !open && nyMin <= 15 * 60 + 30 && (!lastSame || t - lastSame.openedAt >= MONEY_TUNING.cooldownMs)) {
+        state.moneyTrades.push({ ...sig, id: `${t}:${sig.side}`, openedAt: t, votes: moneyReading.votes, exit: null, exitAt: null, outcome: null, points: null });
+      }
+    }
+  }
+  // Después del cierre: las abiertas salen al último precio.
+  if (!payload.marketOpen && nyMin >= 16 * 60) {
+    for (const tr of state.moneyTrades) {
+      if (tr.outcome != null) continue;
+      const up = tr.side === "largo";
+      Object.assign(tr, { outcome: "cierre", exit: spotNow, exitAt: t, points: Math.round((up ? spotNow - tr.entry : tr.entry - spotNow) * 100) / 100 });
+    }
+  }
+  const money: MoneyLive = { reading: moneyReading, trades: state.moneyTrades };
+
   const lottos: LottoLive = {
     ideas: lottoIdeas,
     zeroDte,
@@ -217,5 +268,5 @@ export async function runVisionFuturaCycle(now: Date, radius: number, instrument
     .sort((a, b) => b.score - a.score || Math.abs(a.level.spx - a.price.spx) - Math.abs(b.level.spx - b.price.spx))
     .slice(0, 4);
 
-  return { payload, alerts, watch, lottos };
+  return { payload, alerts, watch, lottos, money };
 }
