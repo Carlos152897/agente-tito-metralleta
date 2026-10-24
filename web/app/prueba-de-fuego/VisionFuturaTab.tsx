@@ -18,6 +18,7 @@ import type { ReplayPayload } from "@/lib/visionFuturaReplay";
 import type { ReplayDay } from "./VisionFuturaReplayBar";
 import type { VisionAlert } from "@/lib/visionFuturaAlerts";
 import type { SpreadsReport } from "@/lib/visionFuturaSpreads";
+import { detectUnusual, mergeUnusual, snapshotOf, UNUSUAL_TUNING, type FlowSnapshot, type UnusualHit } from "@/lib/visionFuturaFlowChanges";
 import VisionFuturaChart, { DEFAULT_LAYERS, LAYERS, type HistoryPoint, type LayerKey } from "./VisionFuturaChart";
 import type { ConvertedLevel, DealerLevel, KeyLevel, KeyLevelKind, VisionFuturaReport, VisionStrikeRow } from "@/lib/visionFutura";
 
@@ -283,8 +284,10 @@ export default function VisionFuturaTab() {
   const [levelChanges, setLevelChanges] = useState<LevelChange[]>([]);
   const prevLevelsRef = useRef<Map<string, number> | null>(null);
   const [, setTick] = useState(0); // para que "hace Xs" avance solo
-  const prevAggRef = useRef<Map<number, { compras: number; ventas: number }> | null>(null);
-  const [prevAgg, setPrevAgg] = useState<Map<number, { compras: number; ventas: number }> | null>(null);
+  const prevAggRef = useRef<Map<number, FlowSnapshot> | null>(null);
+  const [prevAgg, setPrevAgg] = useState<Map<number, FlowSnapshot> | null>(null);
+  // Compras/ventas inusuales (salto grande en un strike): quedan encendidas 3 min.
+  const [unusual, setUnusual] = useState<UnusualHit[]>([]);
   // "Repetir sesión": la última sesión reconstruida cada 5 min.
   const [mode, setMode] = useState<"vivo" | "repeticion">("vivo");
   const [replay, setReplay] = useState<ReplayPayload | null>(null);
@@ -314,8 +317,11 @@ export default function VisionFuturaTab() {
       if (paramsRef.current !== key) return; // ya se eligió otra cosa
       if (!res.ok || json.error) throw new Error(json.error ?? `Error ${res.status}`);
       const next = json as VisionData;
+      const nowMs = Date.now();
+      const fresh = detectUnusual(next.rows, prevAggRef.current, nowMs, undefined, !NIGHT_IDS.includes(inst));
+      setUnusual((cur) => mergeUnusual(cur, fresh, nowMs));
       setPrevAgg(prevAggRef.current);
-      prevAggRef.current = new Map(next.rows.map((r) => [r.spx, { compras: r.compras, ventas: r.ventas }]));
+      prevAggRef.current = snapshotOf(next.rows);
       // ¿Se movió algún nivel desde el refresco anterior? (Magneto, imanes, paredes, flip…)
       const levelsNow = levelMap(next.keyLevels, next.vixMagnet);
       const before = prevLevelsRef.current;
@@ -349,6 +355,7 @@ export default function VisionFuturaTab() {
     prevLevelsRef.current = null;
     prevAggRef.current = null;
     setPrevAgg(null);
+    setUnusual([]);
     // La repetición es por instrumento: se descarta la anterior y, si se estaba viendo, se arma la nueva.
     setReplay(null);
     setReplayDays([]);
@@ -368,6 +375,7 @@ export default function VisionFuturaTab() {
     prevLevelsRef.current = null;
     prevAggRef.current = null;
     setPrevAgg(null);
+    setUnusual([]);
   };
 
   useEffect(() => {
@@ -552,9 +560,10 @@ export default function VisionFuturaTab() {
           .sort((a, b) => b.firedAt - a.firedAt),
       }
     : liveView;
-  const replayPrevAgg = tick && replay && replayIdx > 0
-    ? new Map(replay.ticks[replayIdx - 1].rows.map((r) => [r.spx, { compras: r.compras, ventas: r.ventas }]))
-    : null;
+  const replayPrevAgg = tick && replay && replayIdx > 0 ? snapshotOf(replay.ticks[replayIdx - 1].rows) : null;
+  // En la repetición cada paso son 5 min: se compara contra el paso anterior, sin retener.
+  const replayUnusual = tick && replayPrevAgg ? detectUnusual(tick.rows, replayPrevAgg, tick.time * 1000) : [];
+  const liveUnusual = unusual.filter((h) => Date.now() - h.at <= UNUSUAL_TUNING.holdMs);
   const replayChanges: LevelChange[] = [];
   if (tick && replay) {
     for (let i = 1; i <= replayIdx; i++) {
@@ -790,11 +799,13 @@ export default function VisionFuturaTab() {
             conversion={view.conversion}
             layers={layers}
             prevAggressor={tick ? replayPrevAgg : prevAgg}
+            unusual={tick ? replayUnusual : liveUnusual}
           />
         )}
         <div style={{ fontSize: 12, color: "var(--faint)" }}>
           Posicionamiento: verde → se posicionan para arriba (compra de calls + venta de puts); morado ← para abajo (venta de calls + compra de puts).
           Agresor: ← lo vendido pegando al bid, compras → lo comprado pegando al ask; ▲▼ = cambio contra el refresco anterior.
+          Posicionamiento: +$ en la orilla = cuánto creció ese lado desde el refresco anterior. Strike en amarillo = compra o venta inusual (salto grande de un refresco a otro; queda encendido 3 min).
         </div>
         <button onClick={() => setShowTable((v) => !v)} style={{ alignSelf: "flex-start", fontSize: 12, background: "none", border: "none", color: "var(--accent)", cursor: "pointer", padding: 0 }}>
           {showTable ? "Ocultar tabla detallada" : "Ver tabla detallada por strike"}

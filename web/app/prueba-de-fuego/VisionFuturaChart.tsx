@@ -9,6 +9,7 @@
 // (`layers`) para que la gráfica no se vea sobrecargada. SVG propio: la
 // escalera con filas por strike no encaja en lightweight-charts.
 
+import { positioningSides, type FlowSnapshot, type UnusualHit } from "@/lib/visionFuturaFlowChanges";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useVisionLabels } from "./visionLabels";
 import type { DealerLevel, KeyLevel, KeyLevelKind, VisionStrikeRow, ExpectedMove, Conversion } from "@/lib/visionFutura";
@@ -77,16 +78,23 @@ interface Props {
   expectedMove: ExpectedMove | null;
   conversion: Conversion;
   layers: Record<LayerKey, boolean>;
-  /** Compras/ventas del refresco anterior, por strike, para las flechas ▲▼. */
-  prevAggressor: Map<number, { compras: number; ventas: number }> | null;
+  /** Refresco anterior por strike: compras/ventas (flechas ▲▼) y lados del posicionamiento (crecimiento). */
+  prevAggressor: Map<number, FlowSnapshot> | null;
+  /** Compras/ventas inusuales vigentes: el strike se enciende en amarillo. */
+  unusual?: UnusualHit[];
 }
 
 const ROW_H = 20;
 const LABEL_W = 150;
 /** Columna propia del posicionamiento, a la izquierda del precio (pedido de
  *  Carlos: dentro del plot se mezclaba con el precio y las etiquetas). */
-const POS_COL_W = 180;
+const POS_COL_W = 230;
+/** Orilla de cada lado del posicionamiento para el "▲$" de crecimiento. */
+const POS_EDGE = 36;
 const RIGHT_W = 250;
+/** Columna extra del agresor para la etiqueta "Compra/Venta inusual". */
+const UNUSUAL_W = 128;
+const UNUSUAL = "#facc15";
 const TOP = 8;
 const BOTTOM = 26;
 
@@ -135,6 +143,11 @@ interface Chip { y: number; text: string; color: string; dashed?: boolean; key: 
 export default function VisionFuturaChart(props: Props) {
   const lb = useVisionLabels();
   const { rows, spot, priceSeries, history, keyLevels, dealerLevels, expectedMove, conversion, layers, prevAggressor } = props;
+  const unusualBy = new Map<number, UnusualHit>();
+  for (const h of props.unusual ?? []) {
+    const cur = unusualBy.get(h.strike);
+    if (!cur || h.delta > cur.delta) unusualBy.set(h.strike, h);
+  }
   const wrapRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(900);
 
@@ -156,7 +169,7 @@ export default function VisionFuturaChart(props: Props) {
 
   if (rows.length === 0) return null;
 
-  const rightW = layers.agresor ? RIGHT_W : 0;
+  const rightW = layers.agresor ? RIGHT_W + UNUSUAL_W : 0;
   const posColW = layers.posicionamiento ? POS_COL_W : 0;
   const plotL = LABEL_W + posColW;
   const plotR = width - rightW - 8;
@@ -177,15 +190,19 @@ export default function VisionFuturaChart(props: Props) {
 
   // ── Posicionamiento (guía de la escalera): arriba = compra calls + venta puts;
   // abajo = venta calls + compra puts. Barras en su propia columna. ──
+  // Los DOS lados por strike (Carlos: "quiero saber si están aumentando de ambos lados"),
+  // y cuánto creció cada uno contra el refresco anterior.
   const pos = rows.map((r) => {
-    const up = Math.max(r.callFlow, 0) + Math.max(-r.putFlow, 0);
-    const down = Math.max(-r.callFlow, 0) + Math.max(r.putFlow, 0);
-    return { strike: r.spx, net: up - down };
+    const { up, down } = positioningSides(r);
+    const prev = prevAggressor?.get(r.spx);
+    return { strike: r.spx, up, down, dUp: prev ? up - prev.up : 0, dDown: prev ? down - prev.down : 0 };
   });
-  const maxPos = Math.max(1, ...pos.map((p) => Math.abs(p.net)));
+  const maxPos = Math.max(1, ...pos.map((p) => Math.max(p.up, p.down)));
+  // Crecimientos menores al 1% de la barra mayor no se marcan (ruido).
+  const minGrowth = maxPos * 0.01;
   // Eje central de la columna: verde hacia la derecha, morado hacia la izquierda.
   const posX = LABEL_W + POS_COL_W / 2;
-  const POS_SPAN = POS_COL_W / 2 - 8;
+  const POS_SPAN = POS_COL_W / 2 - POS_EDGE - 4;
 
   const maxAgg = Math.max(1, ...rows.map((r) => Math.max(r.compras, r.ventas)));
 
@@ -264,7 +281,7 @@ export default function VisionFuturaChart(props: Props) {
   // Columnas del panel del agresor.
   const aggX = plotR + 8;
   const gexColW = 56;
-  const barW = (rightW - gexColW - 30) / 2;
+  const barW = (RIGHT_W - gexColW - 30) / 2; // la columna de "inusual" va aparte, a la derecha
   const ventasX = aggX + gexColW;
   const comprasX = ventasX + barW + 4;
   const arrowX = comprasX + barW + 4;
@@ -295,6 +312,11 @@ export default function VisionFuturaChart(props: Props) {
         })}
         <text x={6} y={height - 8} fontSize={10} fill="#6b7591">{[lb.main, conversion.spyRatio != null ? lb.etf : null, conversion.esBasis != null ? lb.future : null].filter(Boolean).join(" · ")}</text>
 
+        {/* Strikes con compra/venta inusual: franja amarilla en toda la fila */}
+        {layers.agresor && rows.map((r, i) => unusualBy.has(r.spx) && (
+          <rect key={`unu-${r.spx}`} x={0} y={TOP + i * ROW_H} width={width} height={ROW_H} fill={UNUSUAL} opacity={0.13} />
+        ))}
+
         {/* Columna de posicionamiento */}
         {layers.posicionamiento && (
           <g>
@@ -302,19 +324,24 @@ export default function VisionFuturaChart(props: Props) {
             <line x1={plotL - 1} x2={plotL - 1} y1={TOP} y2={plotBottom} stroke="#263049" />
             <line x1={posX} x2={posX} y1={TOP} y2={plotBottom} stroke="#263049" strokeDasharray="2 3" />
             {pos.map((p) => {
-              if (p.net === 0) return null;
-              const w = Math.max(1, (Math.abs(p.net) / maxPos) * POS_SPAN);
+              if (p.up === 0 && p.down === 0) return null;
               const ry = y(p.strike) - 6;
-              const up = p.net > 0;
-              const big = w >= 40;
+              const wu = p.up > 0 ? Math.max(1, (p.up / maxPos) * POS_SPAN) : 0;
+              const wd = p.down > 0 ? Math.max(1, (p.down / maxPos) * POS_SPAN) : 0;
+              // Tramo nuevo (lo que creció desde el refresco anterior), más claro en la punta de la barra.
+              const gu = p.dUp > minGrowth ? Math.min(wu, Math.max(2, (p.dUp / maxPos) * POS_SPAN)) : 0;
+              const gd = p.dDown > minGrowth ? Math.min(wd, Math.max(2, (p.dDown / maxPos) * POS_SPAN)) : 0;
               return (
                 <g key={`pos-${p.strike}`}>
-                  <rect x={up ? posX : posX - w} y={ry} width={w} height={12} rx={2} fill={up ? COLOR.posicionamiento : POS_DOWN} opacity={0.85} />
-                  {big && (
-                    <text x={up ? posX + w - 3 : posX - w + 3} y={ry + 10} fontSize={9} fill="#fff" textAnchor={up ? "end" : "start"}>
-                      {money(p.net)}
-                    </text>
-                  )}
+                  {wd > 0 && <rect x={posX - wd} y={ry} width={wd} height={12} rx={2} fill={POS_DOWN} opacity={0.85} />}
+                  {wu > 0 && <rect x={posX} y={ry} width={wu} height={12} rx={2} fill={COLOR.posicionamiento} opacity={0.85} />}
+                  {gd > 0 && <rect x={posX - wd} y={ry} width={gd} height={12} rx={2} fill="#fff" opacity={0.45} />}
+                  {gu > 0 && <rect x={posX + wu - gu} y={ry} width={gu} height={12} rx={2} fill="#fff" opacity={0.45} />}
+                  {wd >= 40 && <text x={posX - wd + 3} y={ry + 10} fontSize={9} fill="#fff">{money(p.down)}</text>}
+                  {wu >= 40 && <text x={posX + wu - 3} y={ry + 10} fontSize={9} fill="#fff" textAnchor="end">{money(p.up)}</text>}
+                  {/* "▲$" en la orilla: ese lado está aumentando. */}
+                  {p.dDown > minGrowth && <text x={LABEL_W + 3} y={ry + 10} fontSize={9} fontWeight={700} fill={POS_DOWN}>▲{money(p.dDown)}</text>}
+                  {p.dUp > minGrowth && <text x={plotL - 4} y={ry + 10} fontSize={9} fontWeight={700} fill={COLOR.posicionamiento} textAnchor="end">▲{money(p.dUp)}</text>}
                 </g>
               );
             })}
@@ -393,14 +420,21 @@ export default function VisionFuturaChart(props: Props) {
               const dv = prev ? (r.compras - r.ventas) - (prev.compras - prev.ventas) : 0;
               const vw = Math.max(0, (r.ventas / maxAgg) * barW);
               const cw = Math.max(0, (r.compras / maxAgg) * barW);
+              const hit = unusualBy.get(r.spx);
               return (
                 <g key={`agg-${r.spx}`}>
+                  {hit && <rect x={aggX} y={ry + 1} width={rightW - 4} height={ROW_H - 2} rx={3} fill="none" stroke={UNUSUAL} strokeWidth={1.2} />}
                   <text x={aggX + gexColW - 6} y={ry + 14} fontSize={10} textAnchor="end" fill={r.netGex > 0 ? "#12b76a" : r.netGex < 0 ? "#f97066" : "#6b7591"}>{gexM(r.netGex)}</text>
-                  <rect x={ventasX + barW - vw} y={ry + 5} width={vw} height={10} rx={2} fill="#f04438" opacity={0.75} />
-                  <rect x={comprasX} y={ry + 5} width={cw} height={10} rx={2} fill="#2f6bff" opacity={0.8} />
+                  <rect x={ventasX + barW - vw} y={ry + 5} width={vw} height={10} rx={2} fill={hit?.side === "venta" ? UNUSUAL : "#f04438"} opacity={hit?.side === "venta" ? 0.95 : 0.75} />
+                  <rect x={comprasX} y={ry + 5} width={cw} height={10} rx={2} fill={hit?.side === "compra" ? UNUSUAL : "#2f6bff"} opacity={hit?.side === "compra" ? 0.95 : 0.8} />
                   {/* Montos solo dentro de barras anchas, para no tapar la columna de GEX. */}
-                  {vw >= 34 && <text x={ventasX + barW - vw + 3} y={ry + 13} fontSize={9} fill="#fff">{money(r.ventas)}</text>}
-                  {cw >= 34 && <text x={comprasX + cw - 3} y={ry + 13} fontSize={9} textAnchor="end" fill="#fff">{money(r.compras)}</text>}
+                  {vw >= 34 && <text x={ventasX + barW - vw + 3} y={ry + 13} fontSize={9} fill={hit?.side === "venta" ? "#111" : "#fff"}>{money(r.ventas)}</text>}
+                  {cw >= 34 && <text x={comprasX + cw - 3} y={ry + 13} fontSize={9} textAnchor="end" fill={hit?.side === "compra" ? "#111" : "#fff"}>{money(r.compras)}</text>}
+                  {hit && (
+                    <text x={arrowX + 20} y={ry + 14} fontSize={10} fontWeight={700} fill={UNUSUAL}>
+                      {hit.side === "compra" ? "▲ Compra inusual" : "▼ Venta inusual"} +{money(hit.delta)}
+                    </text>
+                  )}
                   {dv !== 0 && <text x={arrowX + 8} y={ry + 14} fontSize={10} textAnchor="middle" fill={dv > 0 ? "#2f6bff" : "#f04438"}>{dv > 0 ? "▲" : "▼"}</text>}
                 </g>
               );
