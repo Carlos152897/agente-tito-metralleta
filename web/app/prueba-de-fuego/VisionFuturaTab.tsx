@@ -808,7 +808,7 @@ export default function VisionFuturaTab() {
         <div style={{ fontSize: 12, color: "var(--faint)" }}>
           Posicionamiento: verde → se posicionan para arriba (compra de calls + venta de puts); morado ← para abajo (venta de calls + compra de puts).
           Agresor: ← lo vendido pegando al bid, compras → lo comprado pegando al ask; ▲▼ = cambio contra el refresco anterior.
-          Cada barra de posicionamiento va partida: tono fuerte pegado al centro = CALLS (C), tono claro afuera = PUTS (P). Verde: C = calls compradas, P = puts vendidas. Morado: C = calls vendidas, P = puts compradas. Pasa el mouse por una barra para ver el detalle.
+          Cada barra de posicionamiento va partida: tono fuerte pegado al centro = CALLS (C), tono claro afuera = PUTS (P). Verde: C = calls compradas, P = puts vendidas. Morado: C = calls vendidas, P = puts compradas. Haz click en la fila de un strike (posicionamiento o agresor) para ver su detalle; otro click, Esc o click afuera la cierra.
           Posicionamiento: +$ en la orilla = cuánto creció ese lado desde el refresco anterior. Strike en amarillo = compra o venta inusual (salto grande de un refresco a otro; queda encendido 3 min).
         </div>
         <button onClick={() => setShowTable((v) => !v)} style={{ alignSelf: "flex-start", fontSize: 12, background: "none", border: "none", color: "var(--accent)", cursor: "pointer", padding: 0 }}>

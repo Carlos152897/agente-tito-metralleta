@@ -153,8 +153,27 @@ export default function VisionFuturaChart(props: Props) {
   }
   const wrapRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(900);
-  // Tarjeta de detalle al pasar el mouse por una fila (posicionamiento, strike o agresor).
+  // Tarjeta de detalle al hacer CLICK en una fila (posicionamiento, strike o agresor). Carlos: "solo cuando le dé click".
   const [hover, setHover] = useState<{ strike: number; cx: number; cy: number } | null>(null);
+  useEffect(() => {
+    if (!hover) return;
+    // Se cierra con un click fuera de las filas, con Esc o al desplazar la página.
+    const onDown = (e: MouseEvent) => {
+      const el = e.target as Element | null;
+      if (el?.closest?.("[data-vf-hit]") || el?.closest?.("[data-vf-card]")) return;
+      setHover(null);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setHover(null); };
+    const onScroll = () => setHover(null);
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+  }, [hover]);
 
   useEffect(() => {
     const el = wrapRef.current;
@@ -294,7 +313,7 @@ export default function VisionFuturaChart(props: Props) {
 
   return (
     <div ref={wrapRef} style={{ overflowX: "auto" }}>
-      <div style={{ position: "relative", width }} onMouseLeave={() => setHover(null)}>
+      <div style={{ position: "relative", width }}>
       <svg width={width} height={height} style={{ display: "block", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
         <defs>
           <clipPath id="vf-plot"><rect x={plotL} y={TOP} width={plotW} height={rows.length * ROW_H} /></clipPath>
@@ -467,17 +486,19 @@ export default function VisionFuturaChart(props: Props) {
           </g>
         )}
 
-        {/* Zonas invisibles para el detalle al pasar el mouse: columna del strike + posicionamiento, y el agresor. */}
+        {/* Zonas invisibles para el detalle con un click: columna del strike + posicionamiento, y el agresor. */}
         {rows.map((r, i) => {
           const ry = TOP + i * ROW_H;
-          const move = (e: React.MouseEvent<SVGRectElement>) => setHover({ strike: r.spx, cx: e.clientX, cy: e.clientY });
+          // Click: abre la tarjeta de ese strike; click otra vez en la misma fila: la cierra.
+          const click = (e: React.MouseEvent<SVGRectElement>) =>
+            setHover((h) => (h?.strike === r.spx ? null : { strike: r.spx, cx: e.clientX, cy: e.clientY }));
           const on = hover?.strike === r.spx;
           return (
             <g key={`hov-${r.spx}`}>
               {on && <rect x={0} y={ry} width={plotL} height={ROW_H} fill="#ffffff" opacity={0.05} style={{ pointerEvents: "none" }} />}
               {on && layers.agresor && <rect x={aggX} y={ry} width={rightW} height={ROW_H} fill="#ffffff" opacity={0.05} style={{ pointerEvents: "none" }} />}
-              <rect x={0} y={ry} width={plotL} height={ROW_H} fill="transparent" onMouseMove={move} />
-              {layers.agresor && <rect x={aggX} y={ry} width={rightW} height={ROW_H} fill="transparent" onMouseMove={move} />}
+              <rect data-vf-hit="" x={0} y={ry} width={plotL} height={ROW_H} fill="transparent" style={{ cursor: "pointer" }} onClick={click} />
+              {layers.agresor && <rect data-vf-hit="" x={aggX} y={ry} width={rightW} height={ROW_H} fill="transparent" style={{ cursor: "pointer" }} onClick={click} />}
             </g>
           );
         })}
@@ -514,11 +535,15 @@ export default function VisionFuturaChart(props: Props) {
           </div>
         );
         return (
-          <div style={{ position: "fixed", left, top, width: W, pointerEvents: "none", zIndex: 50, background: "#0f1522", border: `1px solid ${hit ? UNUSUAL : "#2b3756"}`, borderRadius: 10, padding: "10px 12px", boxShadow: "0 8px 24px rgba(0,0,0,0.45)", fontSize: 12, fontVariantNumeric: "tabular-nums", display: "flex", flexDirection: "column", gap: 4 }}>
+          <div data-vf-card="" style={{ position: "fixed", left, top, width: W, zIndex: 50, background: "#0f1522", border: `1px solid ${hit ? UNUSUAL : "#2b3756"}`, borderRadius: 10, padding: "10px 12px", boxShadow: "0 8px 24px rgba(0,0,0,0.45)", fontSize: 12, fontVariantNumeric: "tabular-nums", display: "flex", flexDirection: "column", gap: 4 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
               <b style={{ fontSize: 14, color: "#f5f7fb" }}>{n2(r.spx, 0)}</b>
-              <span style={{ color: r.spx > spot ? "#7aa2ff" : r.spx < spot ? "#f97066" : "#9aa5c0" }}>
-                {r.spx === spot ? "en el precio" : `${Math.abs(r.spx - spot).toFixed(1)} pts ${r.spx > spot ? "arriba" : "abajo"} del precio`}
+              <span style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
+                <span style={{ color: r.spx > spot ? "#7aa2ff" : r.spx < spot ? "#f97066" : "#9aa5c0" }}>
+                  {r.spx === spot ? "en el precio" : `${Math.abs(r.spx - spot).toFixed(1)} pts ${r.spx > spot ? "arriba" : "abajo"} del precio`}
+                </span>
+                <button type="button" aria-label="Cerrar" onClick={() => setHover(null)}
+                  style={{ background: "none", border: "none", color: "#9aa5c0", cursor: "pointer", fontSize: 14, padding: 0, lineHeight: 1 }}>✕</button>
               </span>
             </div>
             {hit && <div style={{ color: UNUSUAL, fontWeight: 700 }}>{hit.side === "compra" ? "▲ Compra inusual" : "▼ Venta inusual"} +{money(hit.delta)} ({money(hit.before)} → {money(hit.after)})</div>}
