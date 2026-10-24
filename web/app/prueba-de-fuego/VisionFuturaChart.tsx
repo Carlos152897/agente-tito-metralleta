@@ -153,6 +153,8 @@ export default function VisionFuturaChart(props: Props) {
   }
   const wrapRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(900);
+  // Tarjeta de detalle al pasar el mouse por una fila (posicionamiento, strike o agresor).
+  const [hover, setHover] = useState<{ strike: number; cx: number; cy: number } | null>(null);
 
   useEffect(() => {
     const el = wrapRef.current;
@@ -292,6 +294,7 @@ export default function VisionFuturaChart(props: Props) {
 
   return (
     <div ref={wrapRef} style={{ overflowX: "auto" }}>
+      <div style={{ position: "relative", width }} onMouseLeave={() => setHover(null)}>
       <svg width={width} height={height} style={{ display: "block", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
         <defs>
           <clipPath id="vf-plot"><rect x={plotL} y={TOP} width={plotW} height={rows.length * ROW_H} /></clipPath>
@@ -341,19 +344,18 @@ export default function VisionFuturaChart(props: Props) {
                   {(() => {
                     const wdC = p.down > 0 ? (p.callsSold / p.down) * wd : 0, wdP = wd - wdC;
                     const wuC = p.up > 0 ? (p.callsBought / p.up) * wu : 0, wuP = wu - wuC;
-                    const seg = (x0: number, w: number, fill: string, label: string, txt: string, tip: string, dark: boolean) => w <= 0 ? null : (
+                    const seg = (x0: number, w: number, fill: string, label: string, txt: string, dark: boolean) => w <= 0 ? null : (
                       <g>
-                        <rect x={x0} y={ry} width={Math.max(1, w)} height={12} fill={fill} opacity={0.9}><title>{tip}</title></rect>
+                        <rect x={x0} y={ry} width={Math.max(1, w)} height={12} fill={fill} opacity={0.9} />
                         {w >= 38 && <text x={x0 + w / 2} y={ry + 10} fontSize={9} textAnchor="middle" fill={dark ? "#14111f" : "#fff"} style={{ pointerEvents: "none" }}>{label} {txt}</text>}
                       </g>
                     );
-                    const tip = `${n2(p.strike, 0)} · arriba ${money(p.up)} (calls compradas ${money(p.callsBought)} + puts vendidas ${money(p.putsSold)}) · abajo ${money(p.down)} (calls vendidas ${money(p.callsSold)} + puts compradas ${money(p.putsBought)})`;
                     return (
                       <>
-                        {seg(posX - wdC, wdC, POS_DOWN, "C", money(p.callsSold), tip, false)}
-                        {seg(posX - wd, wdP, POS_DOWN_PUT, "P", money(p.putsBought), tip, true)}
-                        {seg(posX, wuC, COLOR.posicionamiento, "C", money(p.callsBought), tip, false)}
-                        {seg(posX + wuC, wuP, POS_UP_PUT, "P", money(p.putsSold), tip, true)}
+                        {seg(posX - wdC, wdC, POS_DOWN, "C", money(p.callsSold), false)}
+                        {seg(posX - wd, wdP, POS_DOWN_PUT, "P", money(p.putsBought), true)}
+                        {seg(posX, wuC, COLOR.posicionamiento, "C", money(p.callsBought), false)}
+                        {seg(posX + wuC, wuP, POS_UP_PUT, "P", money(p.putsSold), true)}
                       </>
                     );
                   })()}
@@ -464,7 +466,79 @@ export default function VisionFuturaChart(props: Props) {
             <text x={comprasX} y={height - 8} fontSize={10} fill="#7aa2ff">Compras →</text>
           </g>
         )}
+
+        {/* Zonas invisibles para el detalle al pasar el mouse: columna del strike + posicionamiento, y el agresor. */}
+        {rows.map((r, i) => {
+          const ry = TOP + i * ROW_H;
+          const move = (e: React.MouseEvent<SVGRectElement>) => setHover({ strike: r.spx, cx: e.clientX, cy: e.clientY });
+          const on = hover?.strike === r.spx;
+          return (
+            <g key={`hov-${r.spx}`}>
+              {on && <rect x={0} y={ry} width={plotL} height={ROW_H} fill="#ffffff" opacity={0.05} style={{ pointerEvents: "none" }} />}
+              {on && layers.agresor && <rect x={aggX} y={ry} width={rightW} height={ROW_H} fill="#ffffff" opacity={0.05} style={{ pointerEvents: "none" }} />}
+              <rect x={0} y={ry} width={plotL} height={ROW_H} fill="transparent" onMouseMove={move} />
+              {layers.agresor && <rect x={aggX} y={ry} width={rightW} height={ROW_H} fill="transparent" onMouseMove={move} />}
+            </g>
+          );
+        })}
       </svg>
+      {hover && (() => {
+        const r = rows.find((x) => x.spx === hover.strike);
+        const p = pos.find((x) => x.strike === hover.strike);
+        if (!r || !p || !Number.isFinite(hover.cx) || !Number.isFinite(hover.cy)) return null;
+        const prev = prevAggressor?.get(r.spx);
+        const dC = prev ? r.compras - prev.compras : null, dV = prev ? r.ventas - prev.ventas : null;
+        const hit = unusualBy.get(r.spx);
+        const sm = (v: number) => `${v < 0 ? "−" : ""}$${money(v)}`;
+        const plus = (v: number | null) => (v == null ? "" : v > 0 ? ` (▲${money(v)})` : v < 0 ? ` (▼${money(-v)})` : "");
+        const role: Record<string, string> = {
+          resistencia: "Resistencia: dealers largos en calls, venden las subidas",
+          piso: "Piso: dealers largos en puts, compran las caídas",
+          acelera_arriba: "Acelera ↑: dealers cortos en calls, compran si sube",
+          acelera_abajo: "Acelera ↓: dealers cortos en puts, venden si baja",
+        };
+        const net = p.up - p.down;
+        const lean = p.up === 0 && p.down === 0 ? "sin posicionamiento hoy"
+          : Math.abs(net) < 0.15 * Math.max(p.up, p.down) ? "parejo: strike en disputa"
+          : net > 0 ? `domina ARRIBA por ${money(net)}` : `domina ABAJO por ${money(-net)}`;
+        // Fija a la pantalla, junto al cursor, siempre visible (debajo del encabezado de la página, ~80 px).
+        const W = 300;
+        const CARD_H = hit ? 350 : 330;
+        const vw = typeof window !== "undefined" ? window.innerWidth : 1200;
+        const vh = typeof window !== "undefined" ? window.innerHeight : 800;
+        const left = hover.cx + 16 + W > vw - 8 ? Math.max(8, hover.cx - W - 16) : hover.cx + 16;
+        const top = Math.min(Math.max(84, hover.cy - CARD_H / 2), Math.max(84, vh - CARD_H - 8));
+        const line = (label: string, value: string, color?: string) => (
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+            <span style={{ color: "#9aa5c0" }}>{label}</span><span style={{ color: color ?? "#f5f7fb", fontWeight: 600 }}>{value}</span>
+          </div>
+        );
+        return (
+          <div style={{ position: "fixed", left, top, width: W, pointerEvents: "none", zIndex: 50, background: "#0f1522", border: `1px solid ${hit ? UNUSUAL : "#2b3756"}`, borderRadius: 10, padding: "10px 12px", boxShadow: "0 8px 24px rgba(0,0,0,0.45)", fontSize: 12, fontVariantNumeric: "tabular-nums", display: "flex", flexDirection: "column", gap: 4 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+              <b style={{ fontSize: 14, color: "#f5f7fb" }}>{n2(r.spx, 0)}</b>
+              <span style={{ color: r.spx > spot ? "#7aa2ff" : r.spx < spot ? "#f97066" : "#9aa5c0" }}>
+                {r.spx === spot ? "en el precio" : `${Math.abs(r.spx - spot).toFixed(1)} pts ${r.spx > spot ? "arriba" : "abajo"} del precio`}
+              </span>
+            </div>
+            {hit && <div style={{ color: UNUSUAL, fontWeight: 700 }}>{hit.side === "compra" ? "▲ Compra inusual" : "▼ Venta inusual"} +{money(hit.delta)} ({money(hit.before)} → {money(hit.after)})</div>}
+            <div style={{ marginTop: 4, color: COLOR.posicionamiento, fontWeight: 700 }}>🟢 Arriba {money(p.up)}{p.dUp > minGrowth ? ` (▲${money(p.dUp)})` : ""}</div>
+            {line("  C · calls compradas", money(p.callsBought), COLOR.posicionamiento)}
+            {line("  P · puts vendidas", money(p.putsSold), POS_UP_PUT)}
+            <div style={{ marginTop: 4, color: POS_DOWN, fontWeight: 700 }}>🟣 Abajo {money(p.down)}{p.dDown > minGrowth ? ` (▲${money(p.dDown)})` : ""}</div>
+            {line("  C · calls vendidas", money(p.callsSold), POS_DOWN)}
+            {line("  P · puts compradas", money(p.putsBought), POS_DOWN_PUT)}
+            <div style={{ color: "#c7cede" }}>→ {lean}</div>
+            <div style={{ borderTop: "1px solid #263049", margin: "4px 0 2px" }} />
+            {line("Compras al ask", `${money(r.compras)}${plus(dC)}`, "#7aa2ff")}
+            {line("Ventas al bid", `${money(r.ventas)}${plus(dV)}`, "#f97066")}
+            {line("GEX neto", `${gexM(r.netGex)} M`, r.netGex > 0 ? "#12b76a" : r.netGex < 0 ? "#f97066" : "#9aa5c0")}
+            {r.dealerRole && <div style={{ color: "#c7cede" }}>Dealers: {role[r.dealerRole]}</div>}
+            <div style={{ color: "#6b7591", fontSize: 11 }}>Flujo neto: calls {sm(r.callFlow)} · puts {sm(r.putFlow)}{prev ? " · ▲▼ vs refresco anterior" : ""}</div>
+          </div>
+        );
+      })()}
+      </div>
     </div>
   );
 }
