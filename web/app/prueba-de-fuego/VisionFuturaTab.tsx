@@ -13,6 +13,7 @@ import VisionFuturaAmiga from "./VisionFuturaAmiga";
 import VisionFuturaLottos from "./VisionFuturaLottos";
 import VisionFuturaMoney from "./VisionFuturaMoney";
 import VisionFuturaReplayBar from "./VisionFuturaReplayBar";
+import VisionFuturaPremarket from "./VisionFuturaPremarket";
 import { DEFAULT_LABELS, VisionLabelsContext, useVisionLabels } from "./visionLabels";
 import type { InstrumentId, InstrumentLabels } from "@/lib/visionFuturaInstruments";
 import type { AlertView, LottoLive, MoneyLive } from "@/lib/visionFuturaAlertStore";
@@ -21,13 +22,14 @@ import type { ReplayDay } from "./VisionFuturaReplayBar";
 import type { VisionAlert } from "@/lib/visionFuturaAlerts";
 import type { SpreadsReport } from "@/lib/visionFuturaSpreads";
 import { detectUnusual, mergeUnusual, snapshotOf, UNUSUAL_TUNING, type FlowSnapshot, type UnusualHit } from "@/lib/visionFuturaFlowChanges";
-import VisionFuturaChart, { DEFAULT_LAYERS, LAYERS, type HistoryPoint, type LayerKey } from "./VisionFuturaChart";
+import VisionFuturaChart, { DEFAULT_LAYERS, LAYERS, type CandleBar, type HistoryPoint, type LayerKey, type VixStrip } from "./VisionFuturaChart";
 import type { ConvertedLevel, DealerLevel, KeyLevel, KeyLevelKind, VisionFuturaReport, VisionStrikeRow } from "@/lib/visionFutura";
 
 /** Niveles (MarketSnack, pesado). */
 const REFRESH_MS = 15_000;
 /** Precio en vivo (tastytrade, liviano): rápido con el mercado abierto; de noche solo se mueve el /ES. */
 const LIVE_MS_OPEN = 3_000;
+const CANDLES_MS = 15_000;
 const LIVE_MS_CLOSED = 15_000;
 /** Niveles que se vigilan para el aviso de "niveles que se movieron". */
 const TRACKED_LEVELS = ["Magneto", "Imán positivo", "Imán negativo", "Resistencia (Call Wall)", "Piso (Put Wall)", "Gamma flip", "Max pain", "Charm +", "Charm −"];
@@ -39,6 +41,8 @@ interface LiveQuote {
   es: number | null;
   esSymbol: string | null;
   vix: { last: number; prevClose: number | null } | null;
+  /** VIX real para la mini gráfica (aunque el instrumento sea NQ/TSLA). */
+  vixMarket?: { last: number; prevClose: number | null } | null;
 }
 
 interface LevelChange { at: number; label: string; from: number; to: number }
@@ -60,6 +64,14 @@ function levelMap(keyLevels: { label: string; spx: number }[], vixMagnet: number
 const RADII = [30, 60, 120] as const;
 const KEY_RADIUS = "visionary.visionFutura.radius";
 const KEY_LAYERS = "visionary.visionFutura.layers";
+const KEY_ZOOM = "visionary.visionFutura.zoom";
+const KEY_FIT = "visionary.visionFutura.fitHeight";
+/** Zoom de la gráfica: minutos visibles (null = todo el día / toda la noche). */
+const ZOOMS: { min: number | null; label: string }[] = [
+  { min: 60, label: "Última hora" },
+  { min: 120, label: "2 horas" },
+  { min: null, label: "Todo el día" },
+];
 
 interface VisionData extends VisionFuturaReport {
   instrument?: InstrumentId;
@@ -77,6 +89,9 @@ interface VisionData extends VisionFuturaReport {
   priceSeries: { time: number; value: number }[];
   history: HistoryPoint[];
   vixMagnet: number | null;
+  vixSeries?: { time: number; value: number }[];
+  vixPrevClose?: number | null;
+  vixMagnetSeries?: { time: number; value: number }[];
   spreads?: SpreadsReport | null;
   spreadsError?: string | null;
   alerts: AlertView[];
@@ -282,9 +297,13 @@ export default function VisionFuturaTab() {
   const [loading, setLoading] = useState(true);
   const [layers, setLayers] = useState<Record<LayerKey, boolean>>(DEFAULT_LAYERS);
   const [showTable, setShowTable] = useState(false);
+  const [zoom, setZoom] = useState<number | null>(null);
+  const [fitHeight, setFitHeight] = useState(false);
   // Compras/ventas del refresco anterior → flechas ▲▼ del panel del agresor.
   const [live, setLive] = useState<LiveQuote | null>(null);
   const [livePoints, setLivePoints] = useState<{ time: number; value: number }[]>([]);
+  // Velas de 1 min (tastytrade): se piden cada CANDLES_MS y la última se mueve con el precio en vivo.
+  const [candles, setCandles] = useState<{ key: string; bars: CandleBar[] } | null>(null);
   const [levelChanges, setLevelChanges] = useState<LevelChange[]>([]);
   const prevLevelsRef = useRef<Map<string, number> | null>(null);
   const [, setTick] = useState(0); // para que "hace Xs" avance solo
@@ -310,6 +329,9 @@ export default function VisionFuturaTab() {
       if (savedInst && INSTRUMENT_OPTIONS.some((o) => o.id === savedInst)) setInst(savedInst as InstrumentId);
       const savedLayers = JSON.parse(window.localStorage.getItem(KEY_LAYERS) ?? "null");
       if (savedLayers && typeof savedLayers === "object") setLayers({ ...DEFAULT_LAYERS, ...savedLayers });
+      const savedZoom = Number(window.localStorage.getItem(KEY_ZOOM));
+      if (ZOOMS.some((z) => z.min === savedZoom)) setZoom(savedZoom);
+      if (window.localStorage.getItem(KEY_FIT) === "1") setFitHeight(true);
     } catch { /* sin storage: queda el default */ }
   }, []);
 
@@ -355,6 +377,7 @@ export default function VisionFuturaTab() {
     setData(null);
     setLive(null);
     setLivePoints([]);
+    setCandles(null);
     setLevelChanges([]);
     prevLevelsRef.current = null;
     prevAggRef.current = null;
@@ -466,6 +489,30 @@ export default function VisionFuturaTab() {
     return () => { stop = true; window.clearInterval(id); window.clearInterval(tick); };
   }, [marketOpen, mode, inst]);
 
+  // Velas japonesas de 1 min. En vivo: cada 15 s (la última vela además se mueve con cada precio
+  // en vivo, ver liveCandles). En la repetición: las del día repetido, una sola vez.
+  const replayDate = mode === "repeticion" ? replay?.date ?? null : null;
+  useEffect(() => {
+    if (mode === "repeticion" && !replayDate) return;
+    const key = `${inst}|${replayDate ?? "vivo"}`;
+    let stop = false;
+    const pull = async (first = false) => {
+      if (document.hidden && !first) return;
+      try {
+        const qs = new URLSearchParams({ inst });
+        if (replayDate) qs.set("date", replayDate);
+        const res = await fetch(`/api/vision-futura/candles?${qs}`, { cache: "no-store" });
+        const json = await res.json();
+        if (stop || !res.ok || json.error || !Array.isArray(json.candles)) return;
+        setCandles({ key, bars: json.candles });
+      } catch { /* el próximo intento lo reintenta */ }
+    };
+    pull(true);
+    if (replayDate) return () => { stop = true; };
+    const id = window.setInterval(pull, CANDLES_MS);
+    return () => { stop = true; window.clearInterval(id); };
+  }, [inst, mode, replayDate]);
+
   const pickRadius = (r: number) => {
     setRadius(r);
     try { window.localStorage.setItem(KEY_RADIUS, String(r)); } catch { /* ignorar */ }
@@ -474,6 +521,14 @@ export default function VisionFuturaTab() {
   const saveLayers = (next: Record<LayerKey, boolean>) => {
     setLayers(next);
     try { window.localStorage.setItem(KEY_LAYERS, JSON.stringify(next)); } catch { /* ignorar */ }
+  };
+  const pickZoom = (z: number | null) => {
+    setZoom(z);
+    try { window.localStorage.setItem(KEY_ZOOM, z == null ? "" : String(z)); } catch { /* ignorar */ }
+  };
+  const pickFit = (on: boolean) => {
+    setFitHeight(on);
+    try { window.localStorage.setItem(KEY_FIT, on ? "1" : "0"); } catch { /* ignorar */ }
   };
   const toggleLayer = (k: LayerKey) => saveLayers({ ...layers, [k]: !layers[k] });
   const setAllLayers = (on: boolean) =>
@@ -582,6 +637,31 @@ export default function VisionFuturaTab() {
     }
   }
   const changesToShow = tick ? replayChanges : levelChanges;
+
+  // Mini VIX bajo el precio. Repetición: el VIX de cada paso de 5 min (sirve también con repeticiones viejas).
+  let vixStrip: VixStrip | null = null;
+  if (tick && replay) {
+    const upTo = replay.ticks.slice(0, replayIdx + 1);
+    vixStrip = {
+      series: upTo.filter((t) => t.vix && t.vix.last > 0).map((t) => ({ time: t.time, value: t.vix!.last })),
+      // En días viejos la repetición usa la apertura como "cierre anterior": así se marca como apertura.
+      prevClose: tick.vix && Math.abs(tick.vix.prevClose - (replay.ticks[0].vix?.last ?? NaN)) > 0.001 ? tick.vix.prevClose : null,
+      magnet: tick.vixMagnet,
+      magnetSeries: upTo.filter((t) => t.vixMagnet != null).map((t) => ({ time: t.time, value: t.vixMagnet! })),
+    };
+  } else if (data.vixSeries) {
+    const vm = live?.vixMarket;
+    const liveSec = live ? Math.floor(Date.parse(live.asOf) / 1000) : 0;
+    const base = data.vixSeries;
+    vixStrip = {
+      series: data.marketOpen && vm && vm.last > 0 && liveSec > (base.at(-1)?.time ?? 0)
+        ? [...base, { time: liveSec, value: vm.last }]
+        : base,
+      prevClose: data.marketOpen ? vm?.prevClose ?? data.vixPrevClose ?? null : data.vixPrevClose ?? null,
+      magnet: data.vixMagnet,
+      magnetSeries: data.vixMagnetSeries ?? [],
+    };
+  }
   const liveAgo = live ? Math.max(0, Math.round((Date.now() - Date.parse(live.asOf)) / 1000)) : null;
 
   const maxGex = Math.max(1, ...view.rows.map((r) => Math.max(r.callGex, r.putGex)));
@@ -591,6 +671,25 @@ export default function VisionFuturaTab() {
   const scale = (tick ? replay?.scale : data.scale) ?? 1;
   const isSpx = labels.main === "SPX";
   const isNightInst = NIGHT_IDS.includes(inst);
+
+  // Velas para la gráfica. Repetición: hasta el paso elegido. En vivo: las de tastytrade + la
+  // vela del minuto actual armada con cada precio en vivo (cada 3 s), sin esperar al próximo pedido.
+  const candleKey = `${inst}|${tick && replay ? replay.date : "vivo"}`;
+  const baseBars = candles?.key === candleKey ? candles.bars : [];
+  let chartCandles: CandleBar[] = baseBars;
+  if (tick) {
+    chartCandles = baseBars.filter((b) => b.time <= tick.time);
+  } else if (baseBars.length > 0 && (data.marketOpen || isNightInst)) {
+    const out = baseBars.slice();
+    for (const p of livePoints) {
+      const last = out[out.length - 1];
+      const m = Math.floor(p.time / 60) * 60;
+      if (m < last.time) continue;
+      if (m === last.time) out[out.length - 1] = { ...last, high: Math.max(last.high, p.value), low: Math.min(last.low, p.value), close: p.value };
+      else out.push({ time: m, open: last.close, high: Math.max(last.close, p.value), low: Math.min(last.close, p.value), close: p.value });
+    }
+    chartCandles = out;
+  }
   const levelsSrc = isNightInst ? "opciones de CME en tastytrade" : "MarketSnack";
   // Ventana real de cada botón (misma regla que el servidor: 10/20/30 strikes por lado fuera de SPX).
   const step = (tick ? replay?.strikeStep : data.strikeStep) ?? 5;
@@ -606,7 +705,8 @@ export default function VisionFuturaTab() {
           <div style={{ color: "var(--muted)" }}>
             Niveles calculados con gamma × OI de las opciones de CME sobre el futuro (tastytrade), no con MarketSnack. De noche el OI es el del
             cierre anterior y hay poco volumen: <b style={{ color: "var(--amber-text)" }}>tómalos como referencia, menos confiables que de día</b>.
-            Las alertas de scalp funcionan igual (en puntos del futuro; 1 pt = ${inst === "ESN" ? "50 en /ES · $5 en /MES" : "20 en /NQ · $2 en /MNQ"}).
+            Alertas de scalp (en puntos del futuro; 1 pt = ${inst === "ESN" ? "50 en /ES · $5 en /MES" : "20 en /NQ · $2 en /MNQ"}): como de noche no hay flujo de opciones ni VIX, las
+            confirmaciones son <b>nivel con peso de opciones</b> (GEX grande por OI de CME), <b>agresor del futuro</b> (compras al ask vs ventas al bid en velas de 1 min, últimos 5 min) y <b>/VX</b> (VIX en futuros, 1 tick en 15 min).
             Mejor horario: apertura de Asia (8–10 pm NY) y Europa (3–5 am NY); evita la pausa de 5–6 pm.
           </div>
           <div style={{ color: "var(--faint)", fontSize: 12 }}>Gráfica: velas reales de 5 min del futuro desde la apertura de la sesión (6 pm NY, tastytrade) + el precio en vivo cada 3 s. Sin repetición ni backtest en este modo.</div>
@@ -676,6 +776,11 @@ export default function VisionFuturaTab() {
           </ul>
         )}
       </div>
+
+      {/* Pre-mercado: rango probable del día y posiciones importantes (no en repetición ni de noche). */}
+      {!tick && (inst === "SPX" || inst === "NQ" || inst === "TSLA") && (
+        <VisionFuturaPremarket inst={inst} livePrice={view.spot.spx} marketOpen={view.marketOpen} futLabel={labels.future} />
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 460px), 1fr))", gap: "var(--space-md)" }}>
         <div className="card" style={{ gap: 10 }}>
@@ -776,6 +881,46 @@ export default function VisionFuturaTab() {
           <button onClick={() => setAllLayers(false)} style={{ fontSize: 12, background: "none", border: "none", color: "var(--accent)", cursor: "pointer" }}>Nada</button>
           <button onClick={() => saveLayers(DEFAULT_LAYERS)} style={{ fontSize: 12, background: "none", border: "none", color: "var(--accent)", cursor: "pointer" }}>Restablecer</button>
         </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+          <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600, letterSpacing: 0.5 }}>ZOOM</span>
+          {ZOOMS.map((z) => {
+            const on = zoom === z.min;
+            const label = z.min == null && isNightInst && !tick ? "Toda la noche" : z.label;
+            return (
+              <button
+                key={z.label}
+                onClick={() => pickZoom(z.min)}
+                aria-pressed={on}
+                style={{
+                  padding: "4px 12px", borderRadius: 999, fontSize: 12, cursor: "pointer",
+                  border: `1px solid ${on ? "var(--accent)" : "var(--border)"}`,
+                  background: on ? "var(--accent-dim)" : "transparent", color: on ? "var(--text)" : "var(--muted)", fontWeight: on ? 700 : 500,
+                }}
+              >
+                {label}
+              </button>
+            );
+          })}
+          <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600, letterSpacing: 0.5, marginLeft: 14 }}>ALTURA</span>
+          {([[false, "Normal"], [true, "Ajustada al precio"]] as const).map(([v, label]) => {
+            const on = fitHeight === v;
+            return (
+              <button
+                key={label}
+                onClick={() => pickFit(v)}
+                aria-pressed={on}
+                title={v ? "Solo los strikes por donde anduvo el precio en el tiempo visible, con filas más altas" : "Todos los strikes del radio elegido"}
+                style={{
+                  padding: "4px 12px", borderRadius: 999, fontSize: 12, cursor: "pointer",
+                  border: `1px solid ${on ? "var(--accent)" : "var(--border)"}`,
+                  background: on ? "var(--accent-dim)" : "transparent", color: on ? "var(--text)" : "var(--muted)", fontWeight: on ? 700 : 500,
+                }}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
         {changesToShow.length > 0 && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", fontSize: 12 }}>
             <span style={{ color: "var(--muted)", fontWeight: 600 }}>Niveles que se movieron:</span>
@@ -787,7 +932,7 @@ export default function VisionFuturaTab() {
             ))}
           </div>
         )}
-        {!tick && data.priceSeriesApprox && (
+        {!tick && data.priceSeriesApprox && chartCandles.length === 0 && (
           <div style={{ fontSize: 12, color: "var(--amber-text)" }}>La línea de precio de hoy sale de {labels.etf} convertido a {labels.main} (MarketSnack no tiene la gráfica intradía del índice); el punto en vivo es el {labels.main} real.</div>
         )}
         {view.rows.length === 0 ? (
@@ -797,6 +942,9 @@ export default function VisionFuturaTab() {
             rows={view.rows}
             spot={view.spot.spx}
             priceSeries={view.priceSeries}
+            candles={chartCandles}
+            zoomMinutes={zoom}
+            fitHeight={fitHeight}
             nightSession={isNightInst && !tick}
             history={view.history}
             keyLevels={view.keyLevels}
@@ -806,6 +954,7 @@ export default function VisionFuturaTab() {
             layers={layers}
             prevAggressor={tick ? replayPrevAgg : prevAgg}
             unusual={tick ? replayUnusual : liveUnusual}
+            vix={vixStrip}
           />
         )}
         <div style={{ fontSize: 12, color: "var(--faint)" }}>

@@ -25,7 +25,8 @@ import { maxPainStrike, zeroDteGex } from "./zerodte";
 import { loadNativeFuture, nativeFresh } from "./futuresNative";
 import type { ExtendedChainContract, GexStatsBucket } from "./spxLevels";
 import type { ZRow } from "./zerodteTypes";
-import { fetchFutureCandles } from "./futuresCandles";
+import { fetchFutureCandles, fetchFutureFlowCandles } from "./futuresCandles";
+import { NIGHT_TUNING, type NightConfirm } from "./visionFuturaAlerts";
 import type { ExpirationChip, VisionFuturaPayload } from "./visionFuturaData";
 
 /** Cuánto se mira alrededor del precio (6%): de sobra para ±30 strikes de /ES y /NQ. */
@@ -99,15 +100,49 @@ async function activeFuture(product: string) {
   }
   return c ?? null;
 }
+/** Futuro activo con su símbolo de streaming (para las velas de DXLink). */
+export async function activeFutureInfo(product: string): Promise<{ symbol: string; streamer: string | null } | null> {
+  const f = await activeFuture(product);
+  return f ? { symbol: f.symbol, streamer: f.streamer } : null;
+}
 export async function activeFutureSymbol(product: string): Promise<string | null> {
   return (await activeFuture(product))?.symbol ?? null;
 }
-async function activeStreamerSymbol(product: string): Promise<string | null> {
+export async function activeStreamerSymbol(product: string): Promise<string | null> {
   return (await activeFuture(product))?.streamer ?? null;
 }
 
 const num = (v: string | number | undefined | null) => (v != null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null);
 const pos = (v: string | number | undefined | null) => { const n = num(v); return n != null && n > 0 ? n : null; };
+
+/**
+ * Confirmaciones de las alertas de noche: agresor del propio futuro (velas de 1 min con volumen al
+ * bid/ask de DXLink) y el /VX (VIX en futuros, opera de noche; precio en vivo vs vela de hace 15 min).
+ */
+async function nightConfirmFor(product: string, now: Date): Promise<{ confirm: NightConfirm; bars: { time: number; high: number; low: number; close: number }[] }> {
+  const t = now.getTime();
+  const [fut, vx] = await Promise.all([activeFuture(product), activeFuture("VX")]);
+  const [flow, vxBars, vxNow] = await Promise.all([
+    fut?.streamer ? fetchFutureFlowCandles(fut.streamer, 20) : Promise.resolve([]),
+    vx?.streamer ? fetchFutureCandles(vx.streamer, t - 45 * 60_000, "5m") : Promise.resolve([]),
+    vx ? fetchFuturesQuote(vx.symbol).catch(() => null) : Promise.resolve(null),
+  ]);
+  const recent = flow.filter((b) => b.time * 1000 >= t - NIGHT_TUNING.flowMinutes * 60_000);
+  const hasVol = recent.some((b) => b.askVolume != null || b.bidVolume != null);
+  const futFlow = fut && hasVol
+    ? {
+      symbol: fut.symbol,
+      buy: recent.reduce((a, b) => a + (b.askVolume ?? 0), 0),
+      sell: recent.reduce((a, b) => a + (b.bidVolume ?? 0), 0),
+      minutes: NIGHT_TUNING.flowMinutes,
+    }
+    : null;
+  // /VX: cierre de la vela de 5 min que termina hace ~15 min vs el precio de ahora.
+  const ref = vxBars.filter((b) => b.time * 1000 + 5 * 60_000 <= t - 15 * 60_000 + 60_000).at(-1);
+  const to = vxNow && vxNow > 0 ? vxNow : vxBars.at(-1)?.close ?? null;
+  const vxRead = vx && ref && to ? { symbol: vx.symbol, from: ref.close, to } : null;
+  return { confirm: { futFlow, vx: vxRead }, bars: flow.map((b) => ({ time: b.time, high: b.high, low: b.low, close: b.close })) };
+}
 
 /** Niveles propios con gamma × OI (lo que de día da MarketSnack). PURA. */
 export function nightGexStats(rows: ZRow[], spot: number, now: Date): GexStatsBucket | null {
@@ -216,6 +251,7 @@ export async function loadNightVisionFutura(cfg: InstrumentConfig, now: Date, ra
   recordNightPrice(cfg.id, now.getTime(), spot);
   // Gráfica: cierres de las velas de 5 min + las muestras propias posteriores a la última vela.
   const candles = await candlesP;
+  const { confirm: nightConfirm, bars: nightBars } = await nightConfirmFor(night.product, now).catch(() => ({ confirm: null, bars: [] }));
   const lastCandle = candles.at(-1)?.time ?? 0;
   const priceSeries = [
     ...candles.map((b) => ({ time: b.time, value: b.close })),
@@ -266,5 +302,10 @@ export async function loadNightVisionFutura(cfg: InstrumentConfig, now: Date, ra
     priceSeriesApprox: false,
     history: [],
     vixMagnet: null,
+    vixSeries: [],
+    vixPrevClose: null,
+    vixMagnetSeries: [],
+    nightConfirm,
+    nightBars,
   };
 }

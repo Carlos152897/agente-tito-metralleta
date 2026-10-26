@@ -15,6 +15,7 @@ import { loadVisionFutura, type VisionFuturaPayload } from "./visionFuturaData";
 import { evaluateVisionAlerts, ALERT_TUNING, type Sample, type VisionAlert } from "./visionFuturaAlerts";
 import { marketDateStr } from "./occ";
 import { instrumentOf } from "./visionFuturaInstruments";
+import { sessionStartMs } from "./visionFuturaNight";
 
 const STATE_DIR = join(process.cwd(), "data", "vision-futura");
 /** Un archivo de estado por instrumento (SPX conserva el nombre original). */
@@ -119,7 +120,10 @@ export async function runVisionFuturaCycle(now: Date, radius: number, instrument
   const payload = await loadVisionFutura(now, radius, instrument, expIndex);
   const inst = payload.instrument;
   const t = now.getTime();
-  const state = loadState(marketDateStr(now), inst);
+  // De noche la sesión cruza la medianoche: el estado se identifica por el día en que abrió (6 pm),
+  // para no borrar las alertas a las 12.
+  const isNightInst = !!instrumentOf(inst).night;
+  const state = loadState(isNightInst ? `noche-${marketDateStr(new Date(sessionStartMs(now)))}` : marketDateStr(now), inst);
 
   if (payload.marketOpen) {
     const lastP = state.prices.at(-1);
@@ -143,9 +147,12 @@ export async function runVisionFuturaCycle(now: Date, radius: number, instrument
     // (más finas) de la ventana, para no depender de tener la pestaña abierta
     // desde hace 15 min.
     const fromChart = payload.priceSeries.map((p) => ({ t: p.time * 1000, v: p.value }));
-    const prices = [...fromChart, ...state.prices]
-      .filter((s) => s.t >= t - ALERT_TUNING.windowMs)
-      .sort((a, b) => a.t - b.t);
+    // De noche: máximos y mínimos reales de las velas de 1 min (los cierres de 5 min esconden las mechas).
+    const fromBars = isNightInst
+      ? (payload.nightBars ?? []).flatMap((b) => [{ t: b.time * 1000 + 1, v: b.low }, { t: b.time * 1000 + 2, v: b.high }, { t: b.time * 1000 + 3, v: b.close }])
+      : [];
+    const priceHistory = [...fromChart, ...fromBars, ...state.prices].sort((a, b) => a.t - b.t);
+    const prices = priceHistory.filter((s) => s.t >= t - ALERT_TUNING.windowMs);
     evaluated = evaluateVisionAlerts({
       now: t,
       spot: payload.spot.spx,
@@ -161,6 +168,9 @@ export async function runVisionFuturaCycle(now: Date, radius: number, instrument
       aggressorPrev: state.aggPrev ? toMap(state.aggPrev.map) : null,
       scale: payload.scale,
       instrumentos: instrumentosDe(payload),
+      night: isNightInst ? payload.nightConfirm ?? { futFlow: null, vx: null } : null,
+      recentFired: state.fired,
+      priceHistory,
     });
   }
 

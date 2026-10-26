@@ -28,7 +28,8 @@ export type LayerKey =
   | "dealers"
   | "rango_vix"
   | "historial"
-  | "agresor";
+  | "agresor"
+  | "vix";
 
 export const LAYERS: { key: LayerKey; label: string; color: string }[] = [
   { key: "precio", label: "Precio", color: "#2dd4bf" },
@@ -45,12 +46,13 @@ export const LAYERS: { key: LayerKey; label: string; color: string }[] = [
   { key: "rango_vix", label: "Rango VIX", color: "#94a3b8" },
   { key: "historial", label: "Historial de niveles", color: "#a78bfa" },
   { key: "agresor", label: "Agresor", color: "#2f6bff" },
+  { key: "vix", label: "Mini VIX", color: "#f97066" },
 ];
 
 export const DEFAULT_LAYERS: Record<LayerKey, boolean> = {
   precio: true, posicionamiento: true, magneto: true, iman_positivo: true, iman_negativo: true,
   resistencia: true, piso: true, gamma_flip: false, max_pain: false, charm: false,
-  dealers: false, rango_vix: false, historial: false, agresor: true,
+  dealers: false, rango_vix: false, historial: false, agresor: true, vix: true,
 };
 
 const COLOR = Object.fromEntries(LAYERS.map((l) => [l.key, l.color])) as Record<LayerKey, string>;
@@ -73,6 +75,22 @@ interface Props {
   rows: VisionStrikeRow[];
   spot: number;
   priceSeries: { time: number; value: number }[];
+  /**
+   * Velas japonesas de 1 min (tastytrade). Si vienen, el precio se dibuja con velas en vez de
+   * la línea (Carlos, 26-oct: "que la gráfica salga en velas japonesas… minuto a minuto").
+   */
+  candles?: CandleBar[] | null;
+  /**
+   * Zoom de horas: solo los últimos N minutos (60 = última hora, 120 = 2 horas); null = todo el
+   * día. Con menos minutos en el eje las velas salen más anchas (Carlos, 26-oct).
+   */
+  zoomMinutes?: number | null;
+  /**
+   * Zoom vertical: solo los strikes por donde anduvo el precio en la ventana visible (+ margen),
+   * con filas más altas para que la gráfica mida lo mismo — velas más altas cuando el precio se
+   * mueve poco (Carlos, 26-oct). Los niveles que quedan fuera se marcan en la orilla con flecha.
+   */
+  fitHeight?: boolean;
   /** 🌙 Modo noche: eje X desde la apertura de futuros (6 pm NY) hasta ahora, no 9:30–16:00. */
   nightSession?: boolean;
   history: HistoryPoint[];
@@ -85,9 +103,26 @@ interface Props {
   prevAggressor: Map<number, FlowSnapshot> | null;
   /** Compras/ventas inusuales vigentes: el strike se enciende en amarillo. */
   unusual?: UnusualHit[];
+  /** Mini gráfica del VIX en una franja bajo el precio, con el mismo eje de hora. */
+  vix?: VixStrip | null;
 }
 
-const ROW_H = 20;
+export interface CandleBar { time: number; open: number; high: number; low: number; close: number }
+
+const CANDLE_UP = "#22c55e";
+const CANDLE_DOWN = "#ef4444";
+
+export interface VixStrip {
+  series: { time: number; value: number }[];
+  prevClose: number | null;
+  /** Magneto VIX actual y su historial (solo SPX). */
+  magnet: number | null;
+  magnetSeries: { time: number; value: number }[];
+}
+
+/** Alto normal de cada fila (strike). Con `fitHeight` la fila crece (ver rowH en el componente). */
+const ROW_H_BASE = 20;
+const ROW_H_MAX = 80;
 const LABEL_W = 150;
 /** Columna propia del posicionamiento, a la izquierda del precio (pedido de
  *  Carlos: dentro del plot se mezclaba con el precio y las etiquetas). */
@@ -100,6 +135,12 @@ const UNUSUAL_W = 128;
 const UNUSUAL = "#facc15";
 const TOP = 8;
 const BOTTOM = 26;
+/** Franja del mini VIX (Carlos: "cerca de la gráfica del activo, pero pequeña"). */
+const VIX_H = 72;
+const VIX_GAP = 10;
+const VIX_UP = "#f97066"; // VIX sube = miedo sube
+const VIX_DOWN = "#12b76a";
+const VIX_MAG = "#a78bfa";
 
 /** Offset de Nueva York (ej. "-04:00") para una fecha dada. */
 function nyOffset(dateStr: string): string {
@@ -145,7 +186,7 @@ interface Chip { y: number; text: string; color: string; dashed?: boolean; key: 
 
 export default function VisionFuturaChart(props: Props) {
   const lb = useVisionLabels();
-  const { rows, spot, priceSeries, history, keyLevels, dealerLevels, expectedMove, conversion, layers, prevAggressor } = props;
+  const { rows: allRows, spot, priceSeries, history, keyLevels, dealerLevels, expectedMove, conversion, layers, prevAggressor } = props;
   const unusualBy = new Map<number, UnusualHit>();
   for (const h of props.unusual ?? []) {
     const cur = unusualBy.get(h.strike);
@@ -155,6 +196,8 @@ export default function VisionFuturaChart(props: Props) {
   const [width, setWidth] = useState(900);
   // Tarjeta de detalle al hacer CLICK en una fila (posicionamiento, strike o agresor). Carlos: "solo cuando le dé click".
   const [hover, setHover] = useState<{ strike: number; cx: number; cy: number } | null>(null);
+  // Cruz de lectura (pasar el mouse por el precio o el VIX): hora + precio + VIX en ese momento.
+  const [cross, setCross] = useState<number | null>(null);
   useEffect(() => {
     if (!hover) return;
     // Se cierra con un click fuera de las filas, con Esc o al desplazar la página.
@@ -184,6 +227,41 @@ export default function VisionFuturaChart(props: Props) {
     return () => ro.disconnect();
   }, []);
 
+  const refSec = priceSeries.at(-1)?.time ?? history.at(-1)?.time ?? Date.now() / 1000;
+  const session = props.nightSession ? nightBounds(refSec) : sessionBounds(refSec);
+  // Zoom: ventana de N min que termina un poco después del último precio (margen ~8% a la derecha
+  // para que la vela actual no quede pegada a la orilla), sin salirse de la sesión.
+  const zoomSec = props.zoomMinutes ? props.zoomMinutes * 60 : null;
+  const close = zoomSec
+    ? Math.min(session.close, Math.max(session.open + zoomSec, refSec + zoomSec * 0.08))
+    : session.close;
+  const open = zoomSec ? Math.max(session.open, close - zoomSec) : session.open;
+
+  // ── Zoom vertical: recorta los strikes al rango del precio visible y agranda las filas ──
+  let rows = allRows;
+  let ROW_H = ROW_H_BASE;
+  if (props.fitHeight && allRows.length > 0) {
+    const inWin = (props.candles ?? []).filter((c) => c.time >= open && c.time < close);
+    const vals = inWin.length > 0
+      ? inWin.flatMap((c) => [c.high, c.low])
+      : priceSeries.filter((p) => p.time >= open && p.time <= close).map((p) => p.value);
+    vals.push(spot);
+    const hi = Math.max(...vals), lo = Math.min(...vals);
+    const st = allRows.length > 1 ? Math.abs(allRows[0].spx - allRows[1].spx) || 5 : 5;
+    const pad = Math.max(2 * st, (hi - lo) * 0.15);
+    let cut = allRows.filter((r) => r.spx <= hi + pad && r.spx >= lo - pad);
+    if (cut.length < 6) {
+      // Muy pocos strikes: los 6 más cercanos al precio, en el orden original (de mayor a menor).
+      const near = new Set([...allRows].sort((a, b) => Math.abs(a.spx - spot) - Math.abs(b.spx - spot)).slice(0, 6).map((r) => r.spx));
+      cut = allRows.filter((r) => near.has(r.spx));
+    }
+    rows = cut;
+    const totalH = Math.max(allRows.length * ROW_H_BASE, 400);
+    ROW_H = Math.max(ROW_H_BASE, Math.min(ROW_H_MAX, Math.floor(totalH / rows.length)));
+  }
+
+  /** Desplazamiento para centrar en la fila el contenido pensado para filas de 20 px. */
+  const rowMid = (ROW_H - ROW_H_BASE) / 2;
   const strikes = useMemo(() => rows.map((r) => r.spx), [rows]); // de mayor a menor
   const step = useMemo(() => {
     let m = Infinity;
@@ -198,7 +276,6 @@ export default function VisionFuturaChart(props: Props) {
   const plotL = LABEL_W + posColW;
   const plotR = width - rightW - 8;
   const plotW = Math.max(200, plotR - plotL);
-  const height = TOP + rows.length * ROW_H + BOTTOM;
   const plotBottom = TOP + rows.length * ROW_H;
   const maxStrike = strikes[0];
   const minStrike = strikes[strikes.length - 1];
@@ -206,11 +283,50 @@ export default function VisionFuturaChart(props: Props) {
   const y = (price: number) => TOP + ((maxStrike - price) / step) * ROW_H + ROW_H / 2;
   const inView = (price: number) => price <= maxStrike + step / 2 && price >= minStrike - step / 2;
 
-  const refSec = priceSeries.at(-1)?.time ?? history.at(-1)?.time ?? Date.now() / 1000;
-  const { open, close } = props.nightSession ? nightBounds(refSec) : sessionBounds(refSec);
   const x = (sec: number) => plotL + ((Math.min(Math.max(sec, open), close) - open) / (close - open)) * plotW;
   const nowSec = Math.min(Math.max(refSec, open), close);
   const nowX = x(nowSec);
+
+  // ── Mini VIX: franja bajo el precio, misma hora en X; escala propia en Y ──
+  const vixPts = (props.vix?.series ?? []).filter((p) => p.time >= open && p.time <= close);
+  const vixOn = layers.vix && !props.nightSession && vixPts.length > 0;
+  const vixTop = plotBottom + VIX_GAP;
+  const vixBottom = vixTop + VIX_H;
+  const height = (vixOn ? vixBottom : plotBottom) + BOTTOM;
+  const gridBottom = vixOn ? vixBottom : plotBottom;
+  const vixLast = vixPts.at(-1)?.value ?? null;
+  // Referencia del día: cierre anterior; si no hay (fin de semana / repetición vieja), la apertura.
+  const vixPrevClose = props.vix?.prevClose ?? null;
+  const vixPrev = vixPrevClose ?? vixPts[0]?.value ?? null;
+  const vixRefLabel = vixPrevClose != null ? "cierre ant." : "apertura";
+  const vixMag = props.vix?.magnet ?? null;
+  const vixVals = vixPts.map((p) => p.value);
+  const vixHi = vixVals.length ? Math.max(...vixVals) : 0;
+  const vixLo = vixVals.length ? Math.min(...vixVals) : 0;
+  // La escala incluye el cierre anterior y el Magneto solo si están cerca (no aplastan la línea).
+  const near = (v: number | null): v is number => v != null && v >= vixLo - 1.5 && v <= vixHi + 1.5;
+  // El Magneto VIX solo entra a la escala si está muy cerca; si no, su etiqueta va al borde con flecha.
+  const magNear = (v: number | null): v is number => v != null && v >= vixLo - 0.5 && v <= vixHi + 0.5;
+  const scaleVals = [...vixVals, ...(near(vixPrev) ? [vixPrev] : []), ...(magNear(vixMag) ? [vixMag] : [])];
+  let vLo = scaleVals.length ? Math.min(...scaleVals) : 0;
+  let vHi = scaleVals.length ? Math.max(...scaleVals) : 1;
+  if (vHi - vLo < 0.4) { const m = (vHi + vLo) / 2; vLo = m - 0.2; vHi = m + 0.2; }
+  const pad = (vHi - vLo) * 0.1;
+  vLo -= pad; vHi += pad;
+  const vy = (v: number) => vixBottom - 5 - ((Math.min(Math.max(v, vLo), vHi) - vLo) / (vHi - vLo)) * (VIX_H - 10);
+  const vixUp = vixLast != null && vixPrev != null ? vixLast >= vixPrev : true;
+  const vixColor = vixUp ? VIX_UP : VIX_DOWN;
+  const vixChg = vixLast != null && vixPrev ? ((vixLast - vixPrev) / vixPrev) * 100 : null;
+  const vixPath = vixPts.map((p, i) => `${i === 0 ? "M" : "L"}${x(p.time).toFixed(1)},${vy(p.value).toFixed(1)}`).join("");
+  const vixArea = vixPts.length > 1
+    ? `${vixPath}L${x(vixPts[vixPts.length - 1].time).toFixed(1)},${vixBottom}L${x(vixPts[0].time).toFixed(1)},${vixBottom}Z`
+    : "";
+  // Valor más reciente <= t de una serie ordenada (para la cruz de lectura).
+  const at = (arr: { time: number; value: number }[], t: number) => {
+    let r: number | null = null;
+    for (const p of arr) { if (p.time <= t) r = p.value; else break; }
+    return r;
+  };
 
   // ── Posicionamiento (guía de la escalera): arriba = compra calls + venta puts;
   // abajo = venta calls + compra puts. Barras en su propia columna. ──
@@ -288,14 +404,27 @@ export default function VisionFuturaChart(props: Props) {
     return d;
   };
 
-  const pricePath = priceSeries
+  // Velas: cada una ocupa su minuto en el eje (ancho del cuerpo ~70% del espacio).
+  const bars = (props.candles ?? []).filter((c) => c.time >= open && c.time < close);
+  const useCandles = bars.length > 0;
+  const barSec = bars.length > 1 ? Math.max(60, Math.min(...bars.slice(1).map((b, i) => b.time - bars[i].time))) : 60;
+  const slotPx = (barSec / (close - open)) * plotW;
+  const bodyW = Math.max(1, Math.min(14, slotPx * 0.7));
+  const candleAt = (t: number) => {
+    let r: CandleBar | null = null;
+    for (const b of bars) { if (b.time <= t) r = b; else break; }
+    return r && t - r.time < barSec ? r : null;
+  };
+
+  const pricePath = useCandles ? "" : priceSeries
     .filter((p) => p.time >= open && p.time <= close)
     .map((p, i) => `${i === 0 ? "M" : "L"}${x(p.time).toFixed(1)},${y(p.value).toFixed(1)}`)
     .join("");
 
   const ticks: number[] = [];
-  const tickStep = close - open > 12 * 3600 ? 7200 : 3600;
-  for (let t = open; t <= close; t += tickStep) ticks.push(t);
+  const span = close - open;
+  const tickStep = span > 12 * 3600 ? 7200 : span > 3 * 3600 ? 3600 : span > 3600 ? 1800 : 900;
+  for (let t = Math.ceil(open / tickStep) * tickStep; t <= close; t += tickStep) ticks.push(t);
 
   const spotRowIdx = rows.reduce((best, r, i) => (Math.abs(r.spx - spot) < Math.abs(rows[best].spx - spot) ? i : best), 0);
   const conv = (s: number) => ({
@@ -317,6 +446,11 @@ export default function VisionFuturaChart(props: Props) {
       <svg width={width} height={height} style={{ display: "block", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
         <defs>
           <clipPath id="vf-plot"><rect x={plotL} y={TOP} width={plotW} height={rows.length * ROW_H} /></clipPath>
+          <clipPath id="vf-vix"><rect x={plotL} y={vixTop} width={plotW} height={VIX_H} /></clipPath>
+          <linearGradient id="vf-vix-fill" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor={vixColor} stopOpacity={0.28} />
+            <stop offset="100%" stopColor={vixColor} stopOpacity={0.02} />
+          </linearGradient>
         </defs>
 
         {/* Filas */}
@@ -327,7 +461,7 @@ export default function VisionFuturaChart(props: Props) {
           return (
             <g key={r.spx}>
               <rect x={0} y={ry} width={width} height={ROW_H} fill={isSpot ? "rgba(47,107,255,0.14)" : i % 2 ? "rgba(255,255,255,0.015)" : "transparent"} />
-              <text x={6} y={ry + 14} fontSize={11} fill={isSpot ? "#f5f7fb" : "#9aa5c0"} fontWeight={isSpot ? 700 : 400}>
+              <text x={6} y={ry + rowMid + 14} fontSize={11} fill={isSpot ? "#f5f7fb" : "#9aa5c0"} fontWeight={isSpot ? 700 : 400}>
                 {n2(r.spx, 0)}
                 {(c.spy != null || c.es != null) && (
                   <tspan fill="#6b7591">{c.spy != null ? ` · ${n2(c.spy, 1)}` : ""}{c.es != null ? ` · ${n2(c.es, 0)}` : ""}</tspan>
@@ -394,12 +528,12 @@ export default function VisionFuturaChart(props: Props) {
         {/* Eje de tiempo */}
         {ticks.map((t) => (
           <g key={t}>
-            <line x1={x(t)} x2={x(t)} y1={TOP} y2={plotBottom} stroke="#263049" strokeWidth={0.6} />
+            <line x1={x(t)} x2={x(t)} y1={TOP} y2={gridBottom} stroke="#263049" strokeWidth={0.6} />
             {/* La etiqueta "ahora" manda: se ocultan las horas que se le enciman. */}
             {Math.abs(x(t) - nowX) > 52 && x(t) < plotR - 22 && <text x={x(t)} y={height - 8} fontSize={10} fill="#6b7591" textAnchor="middle">{hm(t)}</text>}
           </g>
         ))}
-        <line x1={nowX} x2={nowX} y1={TOP} y2={plotBottom} stroke="#9aa5c0" strokeDasharray="3 3" strokeWidth={1} />
+        <line x1={nowX} x2={nowX} y1={TOP} y2={gridBottom} stroke="#9aa5c0" strokeDasharray="3 3" strokeWidth={1} />
         <text x={nowX} y={height - 8} fontSize={10} fill="#f5f7fb" textAnchor="middle" fontWeight={600}>ahora {hm(refSec, true)}</text>
 
         <g clipPath="url(#vf-plot)">
@@ -430,6 +564,25 @@ export default function VisionFuturaChart(props: Props) {
               <circle cx={x(refSec)} cy={y(spot)} r={3.5} fill={COLOR.precio} />
             </>
           )}
+          {layers.precio && useCandles && (
+            <g>
+              {bars.map((b) => {
+                const cx = x(b.time) + slotPx / 2;
+                const up = b.close >= b.open;
+                const col = up ? CANDLE_UP : CANDLE_DOWN;
+                const yo = y(b.open), yc = y(b.close);
+                const top = Math.min(yo, yc);
+                return (
+                  <g key={b.time}>
+                    <line x1={cx} x2={cx} y1={y(b.high)} y2={y(b.low)} stroke={col} strokeWidth={1} />
+                    <rect x={cx - bodyW / 2} y={top} width={bodyW} height={Math.max(1, Math.abs(yc - yo))} fill={col} />
+                  </g>
+                );
+              })}
+              {/* Precio actual: línea punteada a lo ancho */}
+              <line x1={plotL} x2={plotR} y1={y(spot)} y2={y(spot)} stroke={COLOR.precio} strokeWidth={0.8} strokeDasharray="2 3" opacity={0.7} />
+            </g>
+          )}
         </g>
 
         {/* Chips de etiquetas */}
@@ -452,11 +605,103 @@ export default function VisionFuturaChart(props: Props) {
           </g>
         )}
 
+        {/* Mini VIX */}
+        {vixOn && (
+          <g>
+            <rect x={0} y={vixTop} width={width} height={VIX_H} fill="rgba(255,255,255,0.02)" />
+            <line x1={0} x2={width} y1={vixTop} y2={vixTop} stroke="#263049" />
+            <line x1={0} x2={width} y1={vixBottom} y2={vixBottom} stroke="#263049" />
+            {/* Lectura a la izquierda: valor, cambio del día y qué significa */}
+            <text x={6} y={vixTop + 15} fontSize={10} fill="#9aa5c0" fontWeight={600} letterSpacing={0.5}>VIX</text>
+            <text x={6} y={vixTop + 36} fontSize={20} fontWeight={700} fill={vixColor}>{n2(vixLast, 2)}</text>
+            {vixChg != null && (
+              <text x={72} y={vixTop + 36} fontSize={11} fontWeight={600} fill={vixColor}>{vixChg >= 0 ? "▲ +" : "▼ "}{vixChg.toFixed(2)}%{vixPrevClose == null ? " vs apertura" : ""}</text>
+            )}
+            <text x={6} y={vixTop + 52} fontSize={10} fill={vixColor}>{vixUp ? "miedo sube → presión ↓" : "miedo baja → apoya ↑"}</text>
+            <text x={6} y={vixTop + 65} fontSize={9.5} fill="#6b7591">máx {n2(vixHi, 2)} · mín {n2(vixLo, 2)}</text>
+            {plotL >= 300 && vixMag != null && (
+              <text x={plotL - 8} y={vixTop + 15} fontSize={10} textAnchor="end" fill={VIX_MAG} fontWeight={600}>
+                Magneto VIX {n2(vixMag, 2)}
+                {vixLast != null && <tspan fill="#6b7591" fontWeight={400}> · {Math.abs(vixMag - vixLast).toFixed(2)} {vixMag >= vixLast ? "arriba" : "abajo"}</tspan>}
+              </text>
+            )}
+            <g clipPath="url(#vf-vix)">
+              {vixArea && <path d={vixArea} fill="url(#vf-vix-fill)" />}
+              {near(vixPrev) && (
+                <>
+                  <line x1={plotL} x2={plotR} y1={vy(vixPrev)} y2={vy(vixPrev)} stroke="#6b7591" strokeDasharray="3 3" strokeWidth={1} />
+                  <text x={plotL + 4} y={vy(vixPrev) - 3} fontSize={9} fill="#6b7591">{vixRefLabel} {n2(vixPrev, 2)}</text>
+                </>
+              )}
+              {magNear(vixMag) && (
+                <line x1={plotL} x2={plotR} y1={vy(vixMag)} y2={vy(vixMag)} stroke={VIX_MAG} strokeDasharray="5 4" strokeWidth={1.2} opacity={0.9} />
+              )}
+              <path d={vixPath} fill="none" stroke={vixColor} strokeWidth={1.6} />
+              {vixLast != null && <circle cx={x(vixPts[vixPts.length - 1].time)} cy={vy(vixLast)} r={3} fill={vixColor} />}
+            </g>
+            {vixMag != null && (() => {
+              // Lejos de la escala: pegado al borde con flecha (como los niveles fuera de la escalera).
+              const off = !magNear(vixMag);
+              const t = `${off ? (vixMag > vHi ? "↑ " : "↓ ") : ""}Mag ${n2(vixMag, 2)}`;
+              const w = t.length * 6 + 10;
+              const cy = off ? (vixMag > vHi ? vixTop + 9 : vixBottom - 9) : Math.min(Math.max(vy(vixMag), vixTop + 8), vixBottom - 8);
+              return (
+                <g>
+                  <rect x={plotR - w - 2} y={cy - 7} width={w} height={14} rx={4} fill="#0f1522" stroke={VIX_MAG} />
+                  <text x={plotR - w + 3} y={cy + 4} fontSize={10} fill={VIX_MAG}>{t}</text>
+                </g>
+              );
+            })()}
+            {/* Cómo leerlo, a la derecha (zona del agresor) */}
+            {rightW > 0 && (
+              <g>
+                <text x={plotR + 14} y={vixTop + 22} fontSize={10} fill="#9aa5c0">Normal: {lb.main} ↑ con VIX ↓ (y al revés).</text>
+                <text x={plotR + 14} y={vixTop + 38} fontSize={10} fill="#9aa5c0"><tspan fill={UNUSUAL} fontWeight={600}>Ojo</tspan> si suben juntos: la subida</text>
+                <text x={plotR + 14} y={vixTop + 52} fontSize={10} fill="#9aa5c0">no tiene confianza (piden cobertura).</text>
+              </g>
+            )}
+          </g>
+        )}
+
+        {/* Cruz de lectura: hora + precio + VIX */}
+        {cross != null && (() => {
+          const cx = x(cross);
+          const cb = useCandles ? candleAt(cross) : null;
+          const px = cb ? cb.close : at(priceSeries, cross);
+          const vx = vixOn ? at(vixPts, cross) : null;
+          const priceTxt = cb
+            ? `A ${n2(cb.open, 2)} · Máx ${n2(cb.high, 2)} · Mín ${n2(cb.low, 2)} · C ${n2(cb.close, 2)}`
+            : n2(px, 2);
+          const label = `${hm(cross)} · ${lb.main} ${priceTxt}${vx != null ? ` · VIX ${n2(vx, 2)}` : ""}`;
+          const w = label.length * 6 + 12;
+          const lx = Math.min(Math.max(cx - w / 2, plotL), plotR - w);
+          const ly = vixOn ? vixTop + 2 : plotBottom - 18;
+          return (
+            <g style={{ pointerEvents: "none" }}>
+              <line x1={cx} x2={cx} y1={TOP} y2={gridBottom} stroke="#f5f7fb" strokeWidth={0.8} opacity={0.6} />
+              {px != null && layers.precio && inView(px) && <circle cx={cx} cy={y(px)} r={3.5} fill="none" stroke={COLOR.precio} strokeWidth={1.5} />}
+              {vx != null && <circle cx={cx} cy={vy(vx)} r={3.5} fill="none" stroke={vixColor} strokeWidth={1.5} />}
+              <rect x={lx} y={ly} width={w} height={16} rx={4} fill="#0f1522" stroke="#2b3756" />
+              <text x={lx + 6} y={ly + 12} fontSize={10.5} fill="#f5f7fb">{label}</text>
+            </g>
+          );
+        })()}
+        <rect
+          x={plotL} y={TOP} width={plotW} height={gridBottom - TOP} fill="transparent"
+          onMouseMove={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            const t = open + ((e.clientX - r.left) / r.width) * (close - open);
+            setCross(Math.min(Math.max(t, open), nowSec));
+          }}
+          onMouseLeave={() => setCross(null)}
+        />
+
         {/* Panel del agresor */}
         {layers.agresor && (
           <g>
             {rows.map((r, i) => {
-              const ry = TOP + i * ROW_H;
+              const ry0 = TOP + i * ROW_H;
+              const ry = ry0 + rowMid; // contenido centrado en la fila (filas altas con el zoom vertical)
               const prev = prevAggressor?.get(r.spx);
               const dv = prev ? (r.compras - r.ventas) - (prev.compras - prev.ventas) : 0;
               const vw = Math.max(0, (r.ventas / maxAgg) * barW);
@@ -464,7 +709,7 @@ export default function VisionFuturaChart(props: Props) {
               const hit = unusualBy.get(r.spx);
               return (
                 <g key={`agg-${r.spx}`}>
-                  {hit && <rect x={aggX} y={ry + 1} width={rightW - 4} height={ROW_H - 2} rx={3} fill="none" stroke={UNUSUAL} strokeWidth={1.2} />}
+                  {hit && <rect x={aggX} y={ry0 + 1} width={rightW - 4} height={ROW_H - 2} rx={3} fill="none" stroke={UNUSUAL} strokeWidth={1.2} />}
                   <text x={aggX + gexColW - 6} y={ry + 14} fontSize={10} textAnchor="end" fill={r.netGex > 0 ? "#12b76a" : r.netGex < 0 ? "#f97066" : "#6b7591"}>{gexM(r.netGex)}</text>
                   <rect x={ventasX + barW - vw} y={ry + 5} width={vw} height={10} rx={2} fill={hit?.side === "venta" ? UNUSUAL : "#f04438"} opacity={hit?.side === "venta" ? 0.95 : 0.75} />
                   <rect x={comprasX} y={ry + 5} width={cw} height={10} rx={2} fill={hit?.side === "compra" ? UNUSUAL : "#2f6bff"} opacity={hit?.side === "compra" ? 0.95 : 0.8} />

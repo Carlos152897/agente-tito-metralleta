@@ -17,6 +17,15 @@
 //
 // El régimen de GEX no es condición: solo se informa (positivo favorece
 // rechazos/defensas, negativo favorece rupturas).
+//
+// MODO NOCHE (🌙 /ES y /NQ, Carlos 25-oct-2026: "de noche no se ve el agresor, solo cumpliría 3
+// de 5 y nunca me daría una alerta"). Con `night`, las condiciones 3–5 usan datos que SÍ existen
+// de noche (las de día quedan igual):
+//   3. Nivel con peso: el strike tiene |GEX| en el 30% más grande de la pantalla (OI de CME),
+//      o el flujo de opciones de día si el streamer está corriendo.
+//   4. Agresor del FUTURO: contratos comprados al ask vs vendidos al bid en las velas de 1 min
+//      de los últimos minutos (≥ `minContracts` y desbalance ≥ `minImbalance`).
+//   5. /VX (VIX en futuros, opera de noche): se movió ≥ 1 tick (0.05) en 15 min a favor.
 
 import type { ConvertedLevel, Conversion, KeyLevel, DealerLevel, VisionStrikeRow } from "./visionFutura";
 import { convertLevel } from "./visionFutura";
@@ -74,6 +83,25 @@ export interface VisionAlert {
   regimeNote: string | null;
 }
 
+/** Confirmaciones del modo noche (ver arriba). */
+export interface NightConfirm {
+  /** Agresor del futuro en la ventana corta (contratos). */
+  futFlow: { symbol: string; buy: number; sell: number; minutes: number } | null;
+  /** /VX hace ~15 min y ahora. */
+  vx: { symbol: string; from: number; to: number } | null;
+}
+
+export const NIGHT_TUNING = {
+  /** Minutos de velas de 1 min que suma el agresor del futuro. */
+  flowMinutes: 5,
+  /** Contratos mínimos en esa ventana (de noche hay poco volumen: menos que esto es ruido). */
+  minContracts: 30,
+  /** (compras − ventas) ÷ total mínimo para decir que un lado domina. */
+  minImbalance: 0.15,
+  /** Movimiento mínimo del /VX en 15 min (1 tick = 0.05). */
+  vxMinMove: 0.05,
+};
+
 export const ALERT_TUNING = {
   /** Distancia en pts de SPX para considerar que el precio "llegó" al nivel. */
   touchPts: 3,
@@ -114,6 +142,15 @@ export const ALERT_TUNING = {
   trapPercentile: 0.7,
   /** Trampa "fuerte" = el GEX del strike es al menos esta fracción del más negativo de la pantalla. */
   trapStrongRatio: 0.7,
+  /**
+   * Sin alertas en sentido contrario encimadas (Carlos, 26-oct: "casi a la misma hora pero en
+   * sentido contrario, evitemos eso" — 15:02 rechazo techo 7680 CORTO y 15:04 defensa piso 7670
+   * LARGO, las dos activas). Mientras la orden de una alerta siga abierta (no tocó ni stop ni
+   * objetivo) no se dispara una del lado contrario. Se probó bloquear 15 min fijos y salía peor:
+   * el 23-oct bloqueaba solo ganadoras (la primera ya había tocado su stop y la contraria era la
+   * buena). Tope: pasado este tiempo la orden vieja ya no bloquea aunque siga abierta.
+   */
+  oppositeMaxMs: 30 * 60_000,
 };
 
 interface LevelCandidate { spx: number; sources: string[] }
@@ -194,6 +231,33 @@ export interface EvaluateInput {
   scale?: number;
   /** Cómo operar cada lado en el instrumento (texto de la orden). */
   instrumentos?: { largo: string; corto: string };
+  /** Modo noche: confirmaciones con el agresor del futuro y el /VX (ver NightConfirm). */
+  night?: NightConfirm | null;
+  /**
+   * Alertas que ya dispararon antes, con su orden. Si la de un lado sigue abierta (según
+   * `priceHistory`), no se dispara una del lado contrario (`oppositeMaxMs`).
+   */
+  recentFired?: FiredRef[];
+  /** Precio de todo el día hasta `now` (para saber si la orden de una alerta anterior sigue abierta). Por defecto `prices`. */
+  priceHistory?: Sample[];
+}
+
+export interface FiredRef {
+  direction: "alcista" | "bajista";
+  firedAt: number;
+  title: string;
+  order: { side: "largo" | "corto"; stop: { spx: number }; target: { spx: number } | null };
+}
+
+/** ¿La orden de esta alerta sigue abierta en `now`? (ningún precio posterior tocó su stop ni su objetivo) */
+export function orderStillOpen(f: FiredRef, prices: Sample[], now: number): boolean {
+  const stop = f.order.stop.spx;
+  const target = f.order.target?.spx ?? null;
+  for (const p of prices) {
+    if (p.t <= f.firedAt || p.t > now) continue;
+    if (f.order.side === "corto" ? p.v >= stop || (target != null && p.v <= target) : p.v <= stop || (target != null && p.v >= target)) return false;
+  }
+  return true;
 }
 
 /** Evalúa todos los setups posibles. Devuelve también los que NO disparan (para el "vigilando" de la pantalla). */
@@ -285,11 +349,55 @@ export function evaluateVisionAlerts(input: EvaluateInput): VisionAlert[] {
       : `Techo con trampa ${grade}: GEX ${fmtB(r.netGex)} en ${fmt(spx, 0)} (${pct}% del más negativo). Frena mientras aguante, pero si se rompe la subida puede ser rápida — respeta el stop.`;
   };
   const aggMissing = aggressorPrev ? "sin operaciones nuevas en la zona del nivel" : "esperando el siguiente refresco para comparar";
+
+  // ── Modo noche: reemplaza las condiciones 3–5 por datos que existen de noche ──
+  const N = input.night ?? null;
+  const nightize = (c: AlertCondition, kind: AlertKind, direction: "alcista" | "bajista", L: number): AlertCondition => {
+    if (!N) return c;
+    const wantBuy = direction === "alcista";
+    if (c.key === "firme") {
+      const r = nearestRow(rows, L);
+      const strong = r != null && trapThreshold > 0 && Math.abs(r.netGex) >= trapThreshold;
+      const reaction = kind === "rechazo_techo" || kind === "defensa_piso";
+      const gexTxt = r ? `GEX ${fmtB(r.netGex)} en ${fmt(L, 0)}` : "sin datos del strike";
+      return {
+        key: "firme",
+        label: c.ok ? c.label : reaction ? "Nivel con peso de opciones" : "Rompió un nivel con peso de opciones",
+        ok: c.ok || strong,
+        detail: c.ok ? c.detail : strong ? `${gexTxt} · de los más grandes de la pantalla (OI de CME)` : `${gexTxt} · chico (se pide ≥ ${fmtB(trapThreshold)})`,
+      };
+    }
+    if (c.key === "agresor") {
+      const f = N.futFlow;
+      const label = `Agresor del futuro ${wantBuy ? "comprando" : "vendiendo"}`;
+      if (!f) return { key: "agresor", label, ok: c.ok, detail: c.ok ? c.detail : "sin velas de 1 min del futuro todavía" };
+      const total = f.buy + f.sell;
+      const net = f.buy - f.sell;
+      const imb = total > 0 ? net / total : 0;
+      const ok = total >= NIGHT_TUNING.minContracts && Math.abs(imb) >= NIGHT_TUNING.minImbalance && (wantBuy ? net > 0 : net < 0);
+      const why = total < NIGHT_TUNING.minContracts ? ` · poco volumen (se piden ≥ ${NIGHT_TUNING.minContracts})` : "";
+      return {
+        key: "agresor", label, ok: c.ok || ok,
+        detail: `${f.symbol} últimos ${f.minutes} min: ${f.buy} comprados al ask · ${f.sell} vendidos al bid (neto ${net >= 0 ? "+" : ""}${net}, ${Math.round(imb * 100)}%)${why}`,
+      };
+    }
+    if (c.key === "vix") {
+      const v = N.vx;
+      const label = `/VX ${wantBuy ? "bajando" : "subiendo"}`;
+      if (!v) return { key: "vix", label, ok: false, detail: "sin datos del /VX" };
+      const d = Math.round((v.to - v.from) * 100) / 100;
+      const ok = wantBuy ? d <= -NIGHT_TUNING.vxMinMove + 1e-9 : d >= NIGHT_TUNING.vxMinMove - 1e-9;
+      return { key: "vix", label, ok, detail: `${v.symbol} ${fmt(v.from)} → ${fmt(v.to)} en 15 min (${d >= 0 ? "+" : ""}${d.toFixed(2)}) · de noche cuenta 1 tick (0.05)` };
+    }
+    return c;
+  };
+
   const out: VisionAlert[] = [];
   const build = (
     kind: AlertKind, lvl: LevelCandidate, conditions: AlertCondition[], title: string,
     direction: "alcista" | "bajista", note: string | null,
   ) => {
+    conditions = conditions.map((c) => nightize(c, kind, direction, lvl.spx));
     const [a, b, ...rest] = conditions;
     const score = conditions.filter((c) => c.ok).length;
     const conditionsOk = a.ok && b.ok && rest.filter((c) => c.ok).length >= 2;
@@ -401,6 +509,33 @@ export function evaluateVisionAlerts(input: EvaluateInput): VisionAlert[] {
     for (const dup of firing.slice(1)) {
       dup.fires = false;
       dup.blocked = `misma entrada que ${firing[0].title.split(" — ")[0]}`;
+    }
+  }
+
+  // Nunca dos lados opuestos seguidos: el mismo momento o una alerta contraria activa hace poco.
+  const up = out.find((x) => x.fires && x.direction === "alcista");
+  const down = out.find((x) => x.fires && x.direction === "bajista");
+  if (up && down) {
+    // Las dos en el mismo momento: gana la de más condiciones; empatadas, ninguna.
+    const short = (a: VisionAlert) => a.title.split(" — ")[0];
+    if (up.score === down.score) {
+      up.fires = false; up.blocked = `señales encontradas: también se cumple ${short(down)}`;
+      down.fires = false; down.blocked = `señales encontradas: también se cumple ${short(up)}`;
+    } else {
+      const [win, lose] = up.score > down.score ? [up, down] : [down, up];
+      lose.fires = false;
+      lose.blocked = `contraria a ${short(win)}, que cumple más condiciones`;
+    }
+  }
+  const history = input.priceHistory ?? input.prices;
+  for (const a of out.filter((x) => x.fires)) {
+    const contra = (input.recentFired ?? [])
+      .filter((f) => f.direction !== a.direction && f.firedAt < now && now - f.firedAt < T.oppositeMaxMs && orderStillOpen(f, history, now))
+      .sort((x, y) => y.firedAt - x.firedAt)[0];
+    if (contra) {
+      const min = Math.max(0, Math.round((now - contra.firedAt) / 60_000));
+      a.fires = false;
+      a.blocked = `sentido contrario a ${contra.title.split(" — ")[0]} (de hace ${min} min), que sigue abierta: espera a que toque su stop u objetivo`;
     }
   }
   return out;

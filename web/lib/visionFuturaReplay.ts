@@ -1,4 +1,4 @@
-// "Repetir sesión" de VisionFutura (Carlos, oct 2026: "reconstruir todo el
+﻿// "Repetir sesión" de VisionFutura (Carlos, oct 2026: "reconstruir todo el
 // día de hoy... como si el mercado hubiese abierto y poder ir viendo los
 // cambios de imán, Magneto, todo eso, así sea en intervalos de 5 minutos").
 //
@@ -44,7 +44,7 @@ const FIVE_MIN = 5 * 60_000;
 const COOLDOWN_MS = 20 * 60_000;
 const RADIUS = 60;
 /** Subir cuando cambie el motor de alertas o el formato: invalida los caches viejos. */
-const REPLAY_VERSION = 10;
+const REPLAY_VERSION = 12;
 const DIR = join(process.cwd(), "data", "vision-futura");
 
 export interface ReplayAlert extends VisionAlert {
@@ -364,6 +364,7 @@ export async function buildReplay(now: Date, opts: { force?: boolean; inst?: str
       instrumentos: cfg.etf || cfg.future
         ? { largo: `Calls de ${cfg.main}${cfg.etf ? `/${cfg.etf}` : ""}`, corto: `Puts de ${cfg.main}${cfg.etf ? `/${cfg.etf}` : ""}` }
         : { largo: `Comprar ${cfg.main} (acciones o calls)`, corto: `Vender ${cfg.main} (acciones o puts)` },
+      recentFired: fired,
     });
     const activeIds: string[] = [];
     for (const a of ev.filter((x) => x.fires)) {

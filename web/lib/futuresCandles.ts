@@ -16,19 +16,43 @@ export interface Candle {
   high: number;
   low: number;
   close: number;
+  /** Contratos operados en la vela (si DXLink los trae). */
+  volume?: number;
+  /** Contratos operados pegándole al bid (vendedor agresivo) y al ask (comprador agresivo). */
+  bidVolume?: number;
+  askVolume?: number;
 }
 
 const CACHE_MS = 60_000;
 const cache = new Map<string, { at: number; bars: Candle[] }>();
 
 /** Velas de `period` ("5m") de un símbolo de DXLink (ej. "/ESZ26:XCME") desde `fromMs`. Nunca lanza: [] si falla. */
-export async function fetchFutureCandles(streamerSymbol: string, fromMs: number, period = "5m", timeoutMs = 8000): Promise<Candle[]> {
+export async function fetchFutureCandles(streamerSymbol: string, fromMs: number, period = "5m", timeoutMs = 8000, cacheMs = CACHE_MS): Promise<Candle[]> {
   const key = `${streamerSymbol}|${period}|${Math.floor(fromMs / 3_600_000)}`;
   const c = cache.get(key);
-  if (c && Date.now() - c.at < CACHE_MS) return c.bars;
+  if (c && Date.now() - c.at < cacheMs) return c.bars;
   try {
     const bars = await pull(streamerSymbol, fromMs, period, timeoutMs);
     if (bars.length > 0) cache.set(key, { at: Date.now(), bars });
+    return bars.length > 0 ? bars : c?.bars ?? [];
+  } catch {
+    return c?.bars ?? [];
+  }
+}
+
+const FLOW_CACHE_MS = 20_000;
+const flowCache = new Map<string, { at: number; bars: Candle[] }>();
+
+/**
+ * Velas de 1 min de los últimos `minutes` minutos con volumen al bid/ask (agresor del propio
+ * futuro, para las alertas del modo noche). Caché corta (20 s). Nunca lanza: [] si falla.
+ */
+export async function fetchFutureFlowCandles(streamerSymbol: string, minutes = 20, timeoutMs = 8000): Promise<Candle[]> {
+  const c = flowCache.get(streamerSymbol);
+  if (c && Date.now() - c.at < FLOW_CACHE_MS) return c.bars;
+  try {
+    const bars = await pull(streamerSymbol, Date.now() - minutes * 60_000, "1m", timeoutMs);
+    if (bars.length > 0) flowCache.set(streamerSymbol, { at: Date.now(), bars });
     return bars.length > 0 ? bars : c?.bars ?? [];
   } catch {
     return c?.bars ?? [];
@@ -56,12 +80,16 @@ async function pull(streamerSymbol: string, fromMs: number, period: string, time
     client.addAuthStateChangeListener((state) => {
       if (state !== "AUTHORIZED") return;
       const feed = new DXLinkFeed(client, FeedContract.HISTORY);
-      feed.configure({ acceptEventFields: { Candle: ["eventSymbol", "time", "open", "high", "low", "close"] } });
+      feed.configure({ acceptEventFields: { Candle: ["eventSymbol", "time", "open", "high", "low", "close", "volume", "bidVolume", "askVolume"] } });
       feed.addEventListener((events) => {
         for (const ev of events as unknown as Record<string, unknown>[]) {
           const t = Number(ev.time), o = Number(ev.open), h = Number(ev.high), l = Number(ev.low), cl = Number(ev.close);
           if (![t, o, h, l, cl].every(Number.isFinite) || t < fromMs || cl <= 0) continue;
-          byTime.set(Math.floor(t / 1000), { time: Math.floor(t / 1000), open: o, high: h, low: l, close: cl });
+          const opt = (v: unknown) => (Number.isFinite(Number(v)) && Number(v) >= 0 ? Number(v) : undefined);
+          byTime.set(Math.floor(t / 1000), {
+            time: Math.floor(t / 1000), open: o, high: h, low: l, close: cl,
+            volume: opt(ev.volume), bidVolume: opt(ev.bidVolume), askVolume: opt(ev.askVolume),
+          });
         }
         // El historial llega en ráfagas: cuando pasan 1.2 s sin nada nuevo, ya está.
         if (quiet) clearTimeout(quiet);
