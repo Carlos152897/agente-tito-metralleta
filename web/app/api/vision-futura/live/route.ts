@@ -33,11 +33,12 @@ export async function GET(req: Request) {
       recordNightPrice(cfg.id, Date.now(), q.price);
       return Response.json({
         asOf: new Date().toISOString(), source: "tastytrade", instrument: cfg.id,
-        spx: q.price, spxUpdatedAt: q.updatedAt, spy: null, es: null, esSymbol: sym, vix: null,
+        spx: q.price, spxUpdatedAt: q.updatedAt, spy: null, es: null, esSymbol: sym, vix: null, vixMarket: null,
       });
     }
     const futSymbol = cfg.future ? await activeFuture(cfg.future) : null;
-    const index = [cfg.tastyMain.index, cfg.volIndex].filter((x): x is string => !!x);
+    // VIX siempre (mini gráfica bajo el precio), aunque el instrumento no lo use como volatilidad.
+    const index = [...new Set([cfg.tastyMain.index, cfg.volIndex, "VIX"].filter((x): x is string => !!x))];
     const equity = [cfg.tastyMain.equity, cfg.etf].filter((x): x is string => !!x);
     const q = await fetchLiveQuotes({ index, equity, future: futSymbol ? [futSymbol] : [] });
     const main = q.get(cfg.main);
@@ -53,6 +54,7 @@ export async function GET(req: Request) {
       es: futSymbol ? q.get(futSymbol)?.price ?? null : null,
       esSymbol: futSymbol,
       vix: vol ? { last: vol.price, prevClose: vol.prevClose } : null,
+      vixMarket: q.get("VIX") ? { last: q.get("VIX")!.price, prevClose: q.get("VIX")!.prevClose } : null,
     });
   } catch (err) {
     const message = err instanceof TastytradeError ? err.message : "Error leyendo precios en vivo.";

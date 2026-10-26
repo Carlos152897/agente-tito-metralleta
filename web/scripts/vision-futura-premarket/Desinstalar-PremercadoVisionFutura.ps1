@@ -1,0 +1,7 @@
+# Quita la tarea "VisionaryTrades-VisionFuturaPremercado" (lectura del pre-mercado de VisionFutura).
+# No borra nada de lo ya guardado en data/vision-futura/premarket.
+param([switch]$NoPause)
+$TaskName = "VisionaryTrades-VisionFuturaPremercado"
+Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+Write-Host "Tarea '$TaskName' desinstalada (si existia)." -ForegroundColor Yellow
+if (-not $NoPause) { Read-Host "Presiona Enter para cerrar" }

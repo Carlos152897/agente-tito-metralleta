@@ -41,6 +41,7 @@ async function main() {
   const { simulateDay, spreadsForBacktest } = await import("../../lib/visionFuturaBacktest");
   const { saveBacktestDay } = await import("../../lib/visionFuturaBacktestStore");
   const { processAmigaDay } = await import("../../lib/amigaStore");
+  const { gradePremarketDay } = await import("../../lib/visionFuturaPremarketData");
 
   const now = new Date();
   let fallas = 0;
@@ -62,6 +63,9 @@ async function main() {
       if (replay.instrument === "SPX") await processAmigaDay(replay.date, now).catch((e) => log(`SPX amiga: ${e instanceof Error ? e.message : e}`));
       const money = (replay.moneyTrades ?? []).filter((t) => t.points != null);
       const strikesConGex = replay.ticks.at(-1)?.rows.filter((r) => r.netGex !== 0).length ?? 0;
+      // Pre-mercado: compara el rango pronosticado con lo que hizo el día (si hubo lectura).
+      const pg = await gradePremarketDay(inst, replay.date).catch(() => null);
+      if (pg) log(`${inst} ${replay.date}: pre-mercado ${pg.insideRange ? "DENTRO del rango" : "salió del rango"} · real ${pg.low.toFixed(2)}–${pg.high.toFixed(2)} · ${pg.notes.join("; ")}`);
       log(`${inst} ${replay.date}: OK v${replay.version} · ${replay.ticks.length} pasos · entradas ${bt.trades.length} (${bt.points} pts) · señales del dinero ${money.length} (${money.reduce((a, t) => a + (t.points ?? 0), 0).toFixed(2)} pts) · lottos ${(replay.lottoTrades ?? []).length} · strikes con GEX ${strikesConGex}`);
     } catch (e) {
       fallas++;

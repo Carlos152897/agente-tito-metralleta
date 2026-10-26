@@ -11,6 +11,7 @@ import {
   type NestedChainExpiration,
 } from "./tastytrade";
 import { buildSpreads, type SpreadQuoteRow, type SpreadsReport } from "./visionFuturaSpreads";
+import type { NightConfirm } from "./visionFuturaAlerts";
 import {
   instrumentOf, labelsOf, scaleFor, strikeStepNear,
   type InstrumentConfig, type InstrumentId, type InstrumentLabels,
@@ -51,6 +52,16 @@ export interface VisionFuturaPayload extends VisionFuturaReport {
   priceSeriesApprox: boolean;
   history: { time: number; magnet: number; callWall: number; putWall: number; gammaFlip: number | null; maxPain: number }[];
   vixMagnet: number | null;
+  /** Mini gráfica del VIX bajo el precio: VIX real del día (5 min de MarketSnack + último en vivo), siempre VIX aunque el instrumento sea NQ/TSLA. */
+  vixSeries: { time: number; value: number }[];
+  /** Cierre anterior del VIX (línea de referencia de la mini gráfica). */
+  vixPrevClose: number | null;
+  /** Historial del Magneto VIX (buckets de 5 min, solo SPX). */
+  vixMagnetSeries: { time: number; value: number }[];
+  /** 🌙 Modo noche: agresor del futuro (velas de 1 min) y /VX para las alertas. */
+  nightConfirm?: NightConfirm | null;
+  /** 🌙 Modo noche: velas de 1 min recientes (máx/mín reales para la ventana de 15 min de las alertas). */
+  nightBars?: { time: number; high: number; low: number; close: number }[];
   /** Sección "Spreads": ideas de crédito/débito/iron condor con cotización real de tastytrade. */
   spreads: SpreadsReport | null;
   spreadsError: string | null;
@@ -67,7 +78,7 @@ export async function nestedFor(symbol: string): Promise<NestedChainExpiration[]
 }
 
 /** Cotizaciones reales (bid/ask/delta/IV) de un vencimiento, a ±`range` pts del precio. */
-async function spreadQuotes(chainSymbol: string, expiration: string, spot: number, range: number): Promise<SpreadQuoteRow[]> {
+export async function spreadQuotes(chainSymbol: string, expiration: string, spot: number, range: number): Promise<SpreadQuoteRow[]> {
   const exp = (await nestedFor(chainSymbol)).find((e) => e["expiration-date"] === expiration);
   if (!exp) return [];
   const strikes = exp.strikes.filter((s) => Math.abs(Number(s["strike-price"]) - spot) <= range);
@@ -147,7 +158,7 @@ export async function loadVisionFutura(
   const expirations = await expirationsFor(cfg, now).catch(() => [] as ExpirationChip[]);
   const expiration = expirations[Math.min(Math.max(0, expIndex), Math.max(0, expirations.length - 1))]?.date ?? marketDateStr(now);
 
-  const [spotMs, gexBuckets, contracts, etfPx, fut, vixQuote, chartMain, chartEtf, vixGexBuckets, mainTasty, spxRef, vixRef] = await Promise.all([
+  const [spotMs, gexBuckets, contracts, etfPx, fut, vixQuote, chartMain, chartEtf, vixGexBuckets, mainTasty, spxRef, vixRef, chartVix] = await Promise.all([
     fetchAssetPrice(cfg.msTicker).catch(() => null),
     fetchGexStats(cfg.msTicker, { period: "1d" }),
     fetchOptionChainExtended(cfg.msTicker, expiration).catch(() => [] as ExtendedChainContract[]),
@@ -161,6 +172,8 @@ export async function loadVisionFutura(
     // Referencias para la escala (solo fuera de SPX).
     cfg.id === "SPX" ? Promise.resolve(null) : fetchUnderlyingQuote("SPX", true).catch(() => null),
     cfg.id === "SPX" ? Promise.resolve(null) : fetchMacroQuote({ index: "VIX" }).catch(() => null),
+    // Mini gráfica del VIX (siempre el VIX, para cualquier instrumento de día).
+    fetchAssetPriceChart("VIX").catch(() => []),
   ]);
 
   // MarketSnack a veces deja `gamma_flip` en null en el bucket más reciente — se usa el último real.
@@ -212,6 +225,21 @@ export async function loadVisionFutura(
   const nowSec = Math.floor(now.getTime() / 1000);
   const last = priceSeries.at(-1);
   if (isMarketOpen(now) && (!last || nowSec - last.time > 30)) priceSeries.push({ time: nowSec, value: spot });
+  // Mini VIX: misma sesión que el precio + el último VIX en vivo con mercado abierto.
+  const vixLast = cfg.volIndex === "VIX" ? vixQuote : vixRef;
+  const vixSeries = chartVix
+    .map((p) => ({ time: toSec(p.t), value: p.v }))
+    .filter((p) => Number.isFinite(p.time) && Number.isFinite(p.value) && p.value > 0 && marketDateStr(new Date(p.time * 1000)) === lastDay)
+    .sort((a, b) => a.time - b.time);
+  if (isMarketOpen(now) && vixLast && vixLast.last > 0 && (!vixSeries.at(-1) || nowSec - vixSeries.at(-1)!.time > 30)) {
+    vixSeries.push({ time: nowSec, value: vixLast.last });
+  }
+  const vixMagnetSeries = cfg.volIndex === "VIX"
+    ? vixGexBuckets
+      .map((b) => ({ time: toSec(b.t), value: b.magnet }))
+      .filter((h) => Number.isFinite(h.time) && Number.isFinite(h.value) && h.value > 0)
+      .sort((a, b) => a.time - b.time)
+    : [];
   const history = gexBuckets
     .map((b) => ({
       time: toSec(b.t),
@@ -261,6 +289,10 @@ export async function loadVisionFutura(
     history,
     // Magneto del VIX (gex_stats_chart de MarketSnack, ticker VIX) — solo SPX.
     vixMagnet: vixGexBuckets.at(-1)?.magnet ?? null,
+    vixSeries,
+    // Fuera de horario tastytrade ya "rueda" el cierre anterior (= cierre de hoy): no sirve de referencia.
+    vixPrevClose: vixLast && (isMarketOpen(now) || Math.abs(vixLast.prevClose - vixLast.last) > 0.001) ? vixLast.prevClose : null,
+    vixMagnetSeries,
     ...report,
   };
 }
