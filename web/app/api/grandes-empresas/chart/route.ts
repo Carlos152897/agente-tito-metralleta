@@ -8,7 +8,8 @@
 // ya calculados ahí, con la vela sintética de HOY pegada al final) — este
 // endpoint solo entra en juego cuando Carlos elige una temporalidad distinta.
 
-import { fetchBars, MassiveError } from "@/lib/massive";
+import { MassiveError } from "@/lib/massive";
+import { fetchBarsWithFallback as fetchBars } from "@/lib/equityBars";
 import { aggregateHourlyBars, chartTimeframeConfig } from "@/lib/timeframeBars";
 import { GRANDES_EMPRESAS_V1_TICKERS, DEFAULT_GRANDES_EMPRESA } from "@/lib/grandesEmpresas";
 import { SP500_TICKERS } from "@/lib/sp500";

@@ -13,6 +13,8 @@ import {
 } from "./tastytrade";
 import { INDEX_UNDERLYINGS } from "./zerodteTickers";
 import type { ContractType, ZContractGreeks, ZRow } from "./zerodteTypes";
+import type { NearTermChainResult, NearTermContract } from "./massive";
+import { marketDateStr } from "./occ";
 
 function num(v: string | number | undefined | null): number | null {
   if (v == null) return null;
@@ -78,4 +80,40 @@ export async function fetchZeroDteChain(
   }
 
   return { rows, underlyingPrice, delayed: false };
+}
+
+/**
+ * Cadena de vencimientos cercanos (calls y puts) desde la cadena anidada de
+ * tastytrade — reemplaza a `fetchNearTermChain` de Massive en Grandes empresas
+ * (1.0 y 2.0): el plan de Massive dejó de incluir opciones (403 "not entitled",
+ * visto 2026-10-27). Mismo shape de salida (`NearTermChainResult`) para que el
+ * cambio en las rutas sea de una línea. Solo trae la ESTRUCTURA (strike,
+ * vencimiento, tipo, símbolo OCC sin espacios, igual al de MarketSnack); las
+ * cotizaciones las piden las rutas aparte. `spot` = null: las rutas ya lo sacan
+ * de MarketSnack o de las velas.
+ */
+export async function fetchNearTermChainTasty(
+  ticker: string,
+  opts: { dteMin?: number; dteMax: number; now?: Date },
+  preloadedExpirations?: NestedChainExpiration[],
+): Promise<NearTermChainResult> {
+  const clean = ticker.trim().toUpperCase();
+  const now = opts.now ?? new Date();
+  const day = 24 * 60 * 60 * 1000;
+  const todayMs = Date.parse(`${marketDateStr(now)}T00:00:00Z`);
+  const from = new Date(todayMs + (opts.dteMin ?? 0) * day).toISOString().slice(0, 10);
+  const to = new Date(todayMs + opts.dteMax * day).toISOString().slice(0, 10);
+  const expirations = preloadedExpirations ?? (await fetchNestedOptionChain(clean));
+  const contracts: NearTermContract[] = [];
+  for (const e of expirations) {
+    const exp = e["expiration-date"];
+    if (exp < from || exp > to) continue;
+    for (const s of e.strikes) {
+      const strike = num(s["strike-price"]);
+      if (strike == null) continue;
+      if (s.call) contracts.push({ strike, expiration: exp, contractType: "call", optionTicker: s.call.replace(/\s+/g, "") });
+      if (s.put) contracts.push({ strike, expiration: exp, contractType: "put", optionTicker: s.put.replace(/\s+/g, "") });
+    }
+  }
+  return { spot: null, contracts };
 }

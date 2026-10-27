@@ -25,7 +25,9 @@
 //     disco de zerodteFlow.ts (pensado para el polling continuo de 0DTE, no
 //     para 13 tickers a la vez).
 
-import { fetchNearTermChain, fetchBars, MassiveError } from "@/lib/massive";
+import { MassiveError } from "@/lib/massive";
+import { fetchBarsWithFallback as fetchBars } from "@/lib/equityBars";
+import { fetchNearTermChainTasty } from "@/lib/tastytradeChain";
 import {
   fetchAssetPrice,
   fetchAssetPriceChart,
@@ -68,15 +70,19 @@ export async function GET(request: Request) {
     // en paralelo con todo lo demás, no después — es la llamada más pesada
     // de las siete (cientos de strikes/vencimientos) y esperarla en serie
     // duplicaba el tiempo total de la respuesta (~30s medido en vivo).
+    // Cadena de opciones: tastytrade (2026-10-27 — el plan de Massive ya no
+    // incluye opciones). La cadena anidada se pide UNA vez y sirve para el
+    // vecindario y para "Sugerencias de spreads".
+    const nested = fetchNestedOptionChain(TICKER);
     const [chain, msPrice, gexStats, bars15m, dailyBars, todayChart, tastyExpirations, tastyCandles] =
       await Promise.all([
-        fetchNearTermChain(TICKER, { dteMax: NEAR_TERM_DTE_MAX, now }),
+        nested.then((exps) => fetchNearTermChainTasty(TICKER, { dteMax: NEAR_TERM_DTE_MAX, now }, exps)),
         fetchAssetPrice(TICKER).catch(() => null),
         fetchGexStats(TICKER, { period: "1d" }).catch(() => []),
         fetchBars(TICKER, 15, "minute", 20),
         fetchBars(TICKER, 1, "day", 5),
         fetchAssetPriceChart(TICKER).catch(() => []),
-        fetchNestedOptionChain(TICKER).catch(() => []),
+        nested.catch(() => []),
         fetchTastytradeCandles(TICKER),
       ]);
 

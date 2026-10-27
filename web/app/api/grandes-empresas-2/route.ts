@@ -20,7 +20,10 @@
 // superior sigue siendo el en vivo de MarketSnack (para pre-market/order
 // book), pueden no coincidir al centavo.
 
-import { fetchNearTermChain, fetchBars, MassiveError } from "@/lib/massive";
+import { MassiveError } from "@/lib/massive";
+import { fetchBarsWithFallback as fetchBars } from "@/lib/equityBars";
+import { fetchNearTermChainTasty } from "@/lib/tastytradeChain";
+import { TastytradeError } from "@/lib/tastytrade";
 import {
   fetchAssetPrice,
   fetchAssetPriceChart,
@@ -58,7 +61,8 @@ export async function GET(request: Request) {
     // problema ya documentado en la v1 con la cadena de tastytrade).
     const [chain, msPrice, bars15m, dailyBars, todayChart, tastyCandles, gex] =
       await Promise.all([
-        fetchNearTermChain(TICKER, { dteMax: NEAR_TERM_DTE_MAX, now }),
+        // tastytrade (2026-10-27): el plan de Massive ya no incluye opciones.
+        fetchNearTermChainTasty(TICKER, { dteMax: NEAR_TERM_DTE_MAX, now }),
         fetchAssetPrice(TICKER).catch(() => null),
         fetchBars(TICKER, 15, "minute", 20),
         fetchBars(TICKER, 1, "day", 5),
@@ -197,7 +201,7 @@ export async function GET(request: Request) {
     });
   } catch (err) {
     const message =
-      err instanceof MassiveError || err instanceof MarketSnackError || err instanceof SchwabError
+      err instanceof MassiveError || err instanceof MarketSnackError || err instanceof SchwabError || err instanceof TastytradeError
         ? err.message
         : "Error inesperado analizando la empresa.";
     return Response.json({ error: message }, { status: 502 });

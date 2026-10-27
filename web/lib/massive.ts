@@ -697,6 +697,12 @@ function describeStatus(status: number, ticker: string, body: string): string {
   switch (status) {
     case 401:
     case 403:
+      // Massive responde 403 NOT_AUTHORIZED ("You are not entitled to this data")
+      // cuando la llave es válida pero el PLAN no incluye ese dato (ej. opciones en
+      // el plan gratis). No es lo mismo que una llave mala: decirlo claro.
+      if (/NOT_AUTHORIZED|not entitled|upgrade your plan/i.test(body)) {
+        return "Tu plan de Massive no incluye estos datos (la llave sí funciona). Sube el plan en massive.com/pricing o usa otra fuente.";
+      }
       return "Autenticación rechazada por Massive. Revisa la API key.";
     case 404:
       return `Massive no encontró datos para "${ticker}".`;
