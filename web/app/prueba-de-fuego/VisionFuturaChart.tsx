@@ -130,6 +130,21 @@ const POS_COL_W = 230;
 /** Orilla de cada lado del posicionamiento para el "▲$" de crecimiento. */
 const POS_EDGE = 36;
 const RIGHT_W = 250;
+/** Columna propia de las etiquetas de niveles, a la derecha del precio (Carlos, 27-oct: las
+ *  etiquetas dentro del plot tapaban las velas — "se ve todo amontonado"). */
+const LEVEL_W = 168;
+const SPOT_KEY = "__spot";
+/** Ancho mínimo del plot del precio: si no cabe, la gráfica se desliza de lado en vez de aplastarse. */
+const MIN_PLOT = 360;
+/** Nombres cortos para las etiquetas (los largos siguen en la tarjeta y en la lista de niveles). */
+const SHORT_LABEL: Record<string, string> = {
+  "Resistencia (Call Wall)": "Call Wall",
+  "Piso (Put Wall)": "Put Wall",
+  "Imán positivo": "Imán +",
+  "Imán negativo": "Imán −",
+  "Resistencia": "Resist.",
+  "Gamma flip": "Flip",
+};
 /** Columna extra del agresor para la etiqueta "Compra/Venta inusual". */
 const UNUSUAL_W = 128;
 const UNUSUAL = "#facc15";
@@ -193,7 +208,7 @@ export default function VisionFuturaChart(props: Props) {
     if (!cur || h.delta > cur.delta) unusualBy.set(h.strike, h);
   }
   const wrapRef = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(900);
+  const [boxW, setWidth] = useState(900);
   // Tarjeta de detalle al hacer CLICK en una fila (posicionamiento, strike o agresor). Carlos: "solo cuando le dé click".
   const [hover, setHover] = useState<{ strike: number; cx: number; cy: number } | null>(null);
   // Cruz de lectura (pasar el mouse por el precio o el VIX): hora + precio + VIX en ese momento.
@@ -274,7 +289,10 @@ export default function VisionFuturaChart(props: Props) {
   const rightW = layers.agresor ? RIGHT_W + UNUSUAL_W : 0;
   const posColW = layers.posicionamiento ? POS_COL_W : 0;
   const plotL = LABEL_W + posColW;
-  const plotR = width - rightW - 8;
+  const width = Math.max(boxW, plotL + MIN_PLOT + LEVEL_W + 12 + rightW);
+  const plotR = width - rightW - LEVEL_W - 12;
+  /** Columna de etiquetas de niveles: entre el precio y el agresor. */
+  const levL = plotR + 6;
   const plotW = Math.max(200, plotR - plotL);
   const plotBottom = TOP + rows.length * ROW_H;
   const maxStrike = strikes[0];
@@ -365,7 +383,8 @@ export default function VisionFuturaChart(props: Props) {
     if (!layers[layer]) continue;
     // Charm − con su propio color para distinguirlo de Charm + (mismo interruptor).
     const color = k.label === "Charm −" ? CHARM_NEG : COLOR[layer];
-    addChip({ key: `${k.label}-${k.spx}`, text: `${k.label} ${n2(k.spx, 2)}`, color, dashed: k.kind === "gamma_flip" || k.kind === "max_pain" }, k.spx);
+    const lvl = Math.abs(k.spx % 1) < 0.005 ? n2(k.spx, 0) : n2(k.spx, 2);
+    addChip({ key: `${k.label}-${k.spx}`, text: `${SHORT_LABEL[k.label] ?? k.label} ${lvl}`, color, dashed: k.kind === "gamma_flip" || k.kind === "max_pain" }, k.spx);
   }
   if (layers.dealers) {
     for (const d of dealerLevels) {
@@ -378,14 +397,34 @@ export default function VisionFuturaChart(props: Props) {
       addChip({ key: `vix-${t}`, text: `${t} ${n2(lvl, 0)}`, color: COLOR.rango_vix, dashed: true }, lvl);
     }
   }
+  // Niveles en el mismo strike van en UNA etiqueta ("Magneto · Call Wall 7,680"), con el color
+  // del primero (el orden de keyLevels ya pone Magneto e imanes antes que paredes).
+  const merged: Chip[] = [];
+  for (const c of chips) {
+    const same = merged.find((m) => !!m.offscreen === !!c.offscreen && Math.abs(m.y - c.y) < 0.5);
+    if (!same) { merged.push({ ...c }); continue; }
+    const name = (t: string) => t.replace(/^[↑↓] /, "").replace(/ [\d,.]+$/, "");
+    const num = same.text.match(/ ([\d,.]+)$/)?.[1] ?? "";
+    const arrow = same.text.match(/^[↑↓] /)?.[0] ?? "";
+    // Fuera de la escala con distinto precio: se muestran los dos precios.
+    const cNum = c.text.match(/ ([\d,.]+)$/)?.[1] ?? "";
+    same.text = cNum === num
+      ? `${arrow}${name(same.text)} · ${name(c.text)} ${num}`
+      : `${same.text} · ${name(c.text)} ${cNum}`;
+    same.key += `|${c.key}`;
+    same.dashed = same.dashed && c.dashed;
+  }
   // Empaque vertical simple: ordenados por y, mínimo 14px entre chips.
-  const placed = [...chips].sort((a, b) => a.y - b.y).map((c) => ({ ...c, labelY: c.y }));
+  // El precio actual entra al mismo acomodo (etiqueta rellena) para no taparse con los niveles.
+  if (layers.precio && inView(spot)) merged.push({ key: SPOT_KEY, y: y(spot), text: n2(spot, 2), color: COLOR.precio });
+  const GAP = 16;
+  const placed = [...merged].sort((a, b) => a.y - b.y).map((c) => ({ ...c, labelY: c.y }));
   for (let i = 1; i < placed.length; i++) {
-    if (placed[i].labelY - placed[i - 1].labelY < 14) placed[i].labelY = placed[i - 1].labelY + 14;
+    if (placed[i].labelY - placed[i - 1].labelY < GAP) placed[i].labelY = placed[i - 1].labelY + GAP;
   }
   // Si el empuje sacó chips por abajo, se reacomodan hacia arriba desde el borde.
   for (let i = placed.length - 1; i >= 0; i--) {
-    const limit = i === placed.length - 1 ? plotBottom - 8 : placed[i + 1].labelY - 14;
+    const limit = i === placed.length - 1 ? plotBottom - 8 : placed[i + 1].labelY - GAP;
     if (placed[i].labelY > limit) placed[i].labelY = limit;
   }
 
@@ -433,7 +472,7 @@ export default function VisionFuturaChart(props: Props) {
   });
 
   // Columnas del panel del agresor.
-  const aggX = plotR + 8;
+  const aggX = width - rightW;
   const gexColW = 56;
   const barW = (RIGHT_W - gexColW - 30) / 2; // la columna de "inusual" va aparte, a la derecha
   const ventasX = aggX + gexColW;
@@ -543,7 +582,7 @@ export default function VisionFuturaChart(props: Props) {
           )}
 
           {/* Líneas de niveles */}
-          {placed.filter((c) => !c.offscreen).map((c) => (
+          {placed.filter((c) => !c.offscreen && c.key !== SPOT_KEY).map((c) => (
             <line key={`ln-${c.key}`} x1={plotL} x2={plotR} y1={c.y} y2={c.y} stroke={c.color} strokeWidth={c.dashed ? 1 : 1.6} strokeDasharray={c.dashed ? "5 4" : undefined} opacity={0.85} />
           ))}
 
@@ -586,24 +625,37 @@ export default function VisionFuturaChart(props: Props) {
         </g>
 
         {/* Chips de etiquetas */}
+        {/* Etiquetas de niveles en su propia columna (no tapan las velas) */}
+        <line x1={plotR} x2={plotR} y1={TOP} y2={plotBottom} stroke="#263049" />
         {placed.map((c) => {
-          const w = c.text.length * 6 + 10;
-          const cx = plotR - w - 2;
+          if (c.key === SPOT_KEY) {
+            // Precio actual: etiqueta rellena con punta hacia el plot (estilo plataforma).
+            const ly = c.labelY;
+            return (
+              <g key="chip-spot">
+                <polyline points={`${plotR},${c.y} ${levL + 4},${c.y} ${levL + 10},${ly}`} fill="none" stroke={COLOR.precio} strokeWidth={1.2} />
+                <polygon points={`${levL + 4},${ly} ${levL + 11},${ly - 8} ${levL + 11},${ly + 8}`} fill={COLOR.precio} />
+                <rect x={levL + 10} y={ly - 8} width={96} height={16} rx={3} fill={COLOR.precio} />
+                <text x={levL + 58} y={ly + 4} fontSize={10.5} fontWeight={700} textAnchor="middle" fill="#0b1020">{lb.main} {c.text}</text>
+              </g>
+            );
+          }
+          const maxW = LEVEL_W - 14;
+          const natural = c.text.length * 5.9 + 10;
+          const w = Math.min(maxW, natural);
+          const cx = levL + 10;
           return (
             <g key={`chip-${c.key}`}>
-              {!c.offscreen && Math.abs(c.labelY - c.y) > 1 && <line x1={cx + w} x2={plotR} y1={c.labelY} y2={c.y} stroke={c.color} strokeWidth={0.8} />}
-              <rect x={cx} y={c.labelY - 7} width={w} height={14} rx={4} fill="#0f1522" stroke={c.color} strokeWidth={1} />
-              <text x={cx + 5} y={c.labelY + 4} fontSize={10} fill={c.color}>{c.text}</text>
+              {/* Conector: de la línea del nivel (orilla del plot) a su etiqueta */}
+              {!c.offscreen && <polyline points={`${plotR},${c.y} ${levL + 4},${c.y} ${cx},${c.labelY}`} fill="none" stroke={c.color} strokeWidth={c.dashed ? 0.8 : 1.2} opacity={0.85} />}
+              <rect x={cx} y={c.labelY - 7.5} width={w} height={15} rx={4} fill="#0f1522" stroke={c.color} strokeWidth={1} />
+              <text x={cx + 5} y={c.labelY + 3.5} fontSize={10} fill={c.color} fontWeight={c.dashed ? 400 : 600}
+                {...(natural > maxW ? { textLength: w - 10, lengthAdjust: "spacingAndGlyphs" as const } : {})}>
+                {c.text}
+              </text>
             </g>
           );
         })}
-        {layers.precio && inView(spot) && (
-          <g>
-            {/* A la izquierda de la franja de etiquetas de niveles, para no encimarse. */}
-            <rect x={Math.min(x(refSec) - 92, plotR - 290)} y={y(spot) - 22} width={84} height={15} rx={4} fill="#0f1522" stroke={COLOR.precio} />
-            <text x={Math.min(x(refSec) - 92, plotR - 290) + 5} y={y(spot) - 11} fontSize={10} fill={COLOR.precio}>spot {n2(spot, 2)}</text>
-          </g>
-        )}
 
         {/* Mini VIX */}
         {vixOn && (
