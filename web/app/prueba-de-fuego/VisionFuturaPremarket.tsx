@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { PremarketHistoryRow, PremarketPayload, PremarketSnapshot } from "@/lib/visionFuturaPremarketData";
 import type { PremarketMark, PremarketPosition, PremarketReport } from "@/lib/visionFuturaPremarket";
+import VisionFuturaPremarketChart from "./VisionFuturaPremarketChart";
 
 const UP = "var(--green)";
 const DOWN = "var(--red-soft)";
@@ -117,6 +118,8 @@ export default function VisionFuturaPremarket({ inst, livePrice, marketOpen, fut
                   color={r.regime === "negativo" ? DOWN : r.regime === "positivo" ? UP : undefined}
                 />
               </div>
+
+              <VisionFuturaPremarketChart inst={inst} futLabel={futLabel} />
 
               <RangeBar r={r} price={price} fmt={fmt} fut={fut} inSession={inSession && marketOpen} />
 
