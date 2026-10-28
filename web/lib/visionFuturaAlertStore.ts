@@ -4,11 +4,11 @@
 // dispararon hoy, y evalúa los setups (visionFuturaAlerts.ts). Estado en
 // disco, en data/vision-futura/alert-state.json (gitignored), así el
 // historial del día sobrevive a recargar la página. Se reinicia solo cada día
-// de mercado. Las muestras solo se acumulan mientras alguien tiene la pestaña
-// abierta (cada refresco de 30 s es un ciclo) — sin Telegram por ahora.
+// de mercado. Las muestras se acumulan con cada ciclo: la pestaña abierta (refresco de 30 s) o la
+// tarea de fondo scripts/vision-futura-live/poll.ts (todo el día, sin la página) — sin Telegram.
 
 import { MONEY_TUNING, readMoney, stepAgo, type MoneyReading, type MoneyRow, type MoneyTrade } from "./visionFuturaMoneyFlow";
-import { evaluateLottos, lecturaAt, lottoPnlAtExpiry, lottoTradeFrom, minutesToClose, type LottoIdea, type LottoQuote, type LottoTrade } from "./visionFuturaLottos";
+import { evaluateLottos, lecturaAt, lottoExitsFrom, lottoTradeFrom, minutesToClose, settleLottoWithRule, type LottoIdea, type LottoQuote, type LottoTrade } from "./visionFuturaLottos";
 import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { loadVisionFutura, type VisionFuturaPayload } from "./visionFuturaData";
@@ -16,6 +16,8 @@ import { evaluateVisionAlerts, ALERT_TUNING, type Sample, type VisionAlert } fro
 import { marketDateStr } from "./occ";
 import { instrumentOf } from "./visionFuturaInstruments";
 import { sessionStartMs } from "./visionFuturaNight";
+import { emptyPosHistory, pressureMarks, stepPositions, type PosHistory, type PosRow } from "./visionFuturaPositioning";
+import { detectUnusual, snapshotOf as snapshotOfRows, type FlowSnapshot } from "./visionFuturaFlowChanges";
 
 const STATE_DIR = join(process.cwd(), "data", "vision-futura");
 /** Un archivo de estado por instrumento (SPX conserva el nombre original). */
@@ -33,7 +35,7 @@ export interface FiredAlert extends VisionAlert {
   lastSeenAt: number;
 }
 
-interface AlertState {
+export interface AlertState {
   date: string;
   prices: Sample[];
   vix: Sample[];
@@ -48,6 +50,13 @@ interface AlertState {
   /** Fotos del flujo por strike cada minuto (señal del dinero: comparar contra hace 15 min). */
   flowSnaps?: { t: number; r: number; rows: MoneyRow[] }[];
   moneyTrades?: MoneyTrade[];
+  /** Hora (ms) de cada ciclo con el mercado abierto: cuánto del día se vigiló en vivo (backtest "En vivo"). */
+  cycles?: number[];
+  /** Posicionamiento Long/Short por strike: historial del día (lib/visionFuturaPositioning.ts). */
+  positions?: PosHistory;
+  /** Lectura anterior para las marcas de presión y foto del agresor para los saltos inusuales. */
+  posPrev?: { t: number; rows: PosRow[] } | null;
+  posAgg?: { t: number; snap: [number, FlowSnapshot][] } | null;
 }
 
 function emptyState(date: string): AlertState {
@@ -69,6 +78,16 @@ function loadState(date: string, inst: string): AlertState {
     return s.date === date ? { ...emptyState(date), ...s } : emptyState(date);
   } catch {
     return emptyState(date);
+  }
+}
+
+/** Estado en vivo guardado de un día (null si el archivo ya es de otro día). Para el backtest "En vivo". */
+export function loadAlertStateFor(date: string, inst: string): AlertState | null {
+  try {
+    const s = JSON.parse(readFileSync(stateFile(inst), "utf8")) as AlertState;
+    return s.date === date ? s : null;
+  } catch {
+    return null;
   }
 }
 
@@ -103,6 +122,8 @@ export interface VisionFuturaCycle {
   alerts: AlertView[];
   /** Setups más cerca de cumplirse ahora (no disparados), para el "vigilando". */
   watch: VisionAlert[];
+  /** Historial Long/Short del día (franjas y cambios). */
+  positions: Pick<PosHistory, "segments" | "events">;
 }
 
 /** Cómo se opera cada lado según el instrumento (texto de la orden de las alertas). */
@@ -126,6 +147,8 @@ export async function runVisionFuturaCycle(now: Date, radius: number, instrument
   const state = loadState(isNightInst ? `noche-${marketDateStr(new Date(sessionStartMs(now)))}` : marketDateStr(now), inst);
 
   if (payload.marketOpen) {
+    state.cycles ??= [];
+    state.cycles.push(t);
     const lastP = state.prices.at(-1);
     if (!lastP || t - lastP.t >= 20_000) state.prices.push({ t, v: payload.spot.spx });
     if (payload.vix) {
@@ -174,6 +197,18 @@ export async function runVisionFuturaCycle(now: Date, radius: number, instrument
     });
   }
 
+  // ── Posicionamiento Long/Short por strike (lib/visionFuturaPositioning.ts) ──
+  if (payload.marketOpen && payload.rows.length > 0) {
+    const rowsNow: PosRow[] = payload.rows.map((r) => ({ spx: r.spx, callFlow: r.callFlow, putFlow: r.putFlow }));
+    const step = payload.rows.length > 1 ? Math.abs(payload.rows[1].spx - payload.rows[0].spx) : 5;
+    const prevAgg = state.posAgg ? new Map(state.posAgg.snap) : null;
+    const unusual = detectUnusual(payload.rows, prevAgg, t, undefined, !isNightInst).map((u) => ({ strike: u.strike, side: u.side, delta: u.delta }));
+    const marks = state.posPrev && t - state.posPrev.t >= 10_000 ? pressureMarks(rowsNow, state.posPrev.rows, payload.spot.spx, step, t) : [];
+    state.positions = stepPositions(state.positions ?? emptyPosHistory(), rowsNow, t, unusual, marks);
+    if (!state.posPrev || t - state.posPrev.t >= 10_000) state.posPrev = { t, rows: rowsNow };
+    state.posAgg = { t, snap: [...snapshotOfRows(payload.rows)] };
+  }
+
   const activeIds = new Set<string>();
   for (const a of evaluated.filter((x) => x.fires)) {
     activeIds.add(a.id);
@@ -215,12 +250,23 @@ export async function runVisionFuturaCycle(now: Date, radius: number, instrument
       }
     }
   }
-  // Después del cierre: valor intrínseco con el último precio del día.
-  if (!payload.marketOpen && nyMin >= 16 * 60) {
+  // Regla de salida: con el bid de este refresco se vende el tramo de 1.5× y el de 3× (una vez cada uno).
+  if (payload.marketOpen) {
     for (const tr of state.lottos) {
-      if (tr.pnlUsd != null) continue;
-      tr.settle = payload.spot.spx;
-      tr.pnlUsd = lottoPnlAtExpiry(tr, payload.spot.spx);
+      if (tr.settle != null) continue;
+      const bid = quotes.find((q) => q.type === tr.side && q.strike === tr.strike)?.bid ?? null;
+      if (bid == null || bid <= 0) continue;
+      const done = new Set((tr.exits ?? []).map((e) => e.mult));
+      const fresh = lottoExitsFrom(tr, [{ at: t, bid }]).filter((e) => !done.has(e.mult));
+      if (fresh.length) tr.exits = [...(tr.exits ?? []), ...fresh];
+    }
+  }
+  // Después del cierre: lo vendido + lo que quedó al valor intrínseco del último precio del día.
+  if (!payload.marketOpen && nyMin >= 16 * 60) {
+    for (let i = 0; i < state.lottos.length; i++) {
+      const tr = state.lottos[i];
+      if (tr.settle != null) continue;
+      state.lottos[i] = settleLottoWithRule({ ...tr, settle: payload.spot.spx }, tr.exits ?? []);
     }
   }
   // ── Señal del dinero (lib/visionFuturaMoneyFlow.ts): sesión de día, desde las 9:45 ──
@@ -278,5 +324,6 @@ export async function runVisionFuturaCycle(now: Date, radius: number, instrument
     .sort((a, b) => b.score - a.score || Math.abs(a.level.spx - a.price.spx) - Math.abs(b.level.spx - b.price.spx))
     .slice(0, 4);
 
-  return { payload, alerts, watch, lottos, money };
+  const positions = { segments: state.positions?.segments ?? [], events: state.positions?.events ?? [] };
+  return { payload, alerts, watch, lottos, money, positions };
 }

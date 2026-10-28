@@ -8,7 +8,13 @@
 // (movimiento diario = precio × IV ATM / √252; referencia SPX = 80 pts). SPX usa
 // escala 1 fija para no cambiar nada de lo ya calibrado y backtesteado.
 
-export type InstrumentId = "SPX" | "NQ" | "TSLA" | "ESN" | "NQN";
+/** Instrumentos con botón propio. */
+export type FixedInstrumentId = "SPX" | "NQ" | "TSLA" | "ESN" | "NQN";
+/**
+ * Un instrumento fijo o el ticker de cualquier acción/ETF con opciones abierta con el buscador
+ * (AAPL, NVDA…): se trata igual que TSLA (solo la acción, umbrales escalados por su IV).
+ */
+export type InstrumentId = FixedInstrumentId | (string & {});
 
 export interface InstrumentConfig {
   id: InstrumentId;
@@ -42,7 +48,7 @@ export interface InstrumentConfig {
   night?: { product: "ES" | "NQ"; mult: number; micro: string };
 }
 
-export const INSTRUMENTS: Record<InstrumentId, InstrumentConfig> = {
+export const INSTRUMENTS: Record<FixedInstrumentId, InstrumentConfig> = {
   SPX: {
     id: "SPX", label: "SPX", main: "SPX", msTicker: "SPX", occRoot: "SPXW", tastyChain: "SPX",
     tastyMain: { index: "SPX" }, etf: "SPY", future: "ES", volIndex: "VIX", chartFromEtf: false, dailyExpirations: true,
@@ -70,8 +76,20 @@ export const INSTRUMENTS: Record<InstrumentId, InstrumentConfig> = {
 export const isNight = (cfg: InstrumentConfig | InstrumentId | string | null | undefined): boolean =>
   !!(typeof cfg === "object" && cfg ? cfg.night : instrumentOf(cfg as string).night);
 
+/** Ticker válido para el buscador: letras, números y punto, hasta 6 (sin "/", sin espacios). */
+export const isEquityTicker = (x: string | null | undefined): x is string => !!x && /^[A-Z][A-Z0-9.]{0,5}$/.test(x);
+
+/** Configuración de una acción cualquiera: igual que TSLA con su propio ticker. */
+export function equityInstrument(ticker: string): InstrumentConfig {
+  const t = ticker.toUpperCase();
+  return { ...INSTRUMENTS.TSLA, id: t, label: t, main: t, msTicker: t, occRoot: t, tastyChain: t, tastyMain: { equity: t } };
+}
+
 export function instrumentOf(id: string | null | undefined): InstrumentConfig {
-  return INSTRUMENTS[(id ?? "SPX").toUpperCase() as InstrumentId] ?? INSTRUMENTS.SPX;
+  const key = (id ?? "SPX").toUpperCase();
+  const fixed = INSTRUMENTS[key as FixedInstrumentId];
+  if (fixed) return fixed;
+  return isEquityTicker(key) ? equityInstrument(key) : INSTRUMENTS.SPX;
 }
 
 /** Nombres que muestra la pantalla para cada instrumento. */

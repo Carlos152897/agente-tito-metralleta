@@ -25,7 +25,20 @@ const sheetName = (d: { date: string; instrument?: string }) => (!d.instrument |
 
 export function saveBacktestDay(day: BacktestDay) {
   mkdirSync(BT_DIR, { recursive: true });
+  // Rearmar la repetición no borra el bloque "En vivo" ya guardado (viene de otra fuente).
+  if (!day.live) {
+    const prev = loadBacktestDay(day.date, day.instrument);
+    if (prev?.live) day = { ...day, live: prev.live };
+  }
   writeFileSync(join(BT_DIR, btFile(day)), JSON.stringify(day, null, 2), "utf8");
+}
+
+export function loadBacktestDay(date: string, instrument?: string): BacktestDay | null {
+  try {
+    return JSON.parse(readFileSync(join(BT_DIR, btFile({ date, instrument })), "utf8")) as BacktestDay;
+  } catch {
+    return null;
+  }
 }
 
 export function listBacktestDays(): BacktestDay[] {

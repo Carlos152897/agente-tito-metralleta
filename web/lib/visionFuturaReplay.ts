@@ -23,7 +23,7 @@
 // Resultado cacheado en data/vision-futura/replay-{fecha}.json.
 
 import { runMoneySession, type MoneyReading, type MoneyTrade } from "./visionFuturaMoneyFlow";
-import { evaluateLottos, lottoPnlAtExpiry, lottoTradeFrom, LOTTO_TUNING, nyHm, type LottoIdea, type LottoQuote, type LottoTrade } from "./visionFuturaLottos";
+import { evaluateLottos, lottoPnlAtExpiry, lottoTradeFrom, LOTTO_TUNING, nyHm, type LottoIdea, type LottoQuote, type LottoTrade, lottoExitsFrom, settleLottoWithRule } from "./visionFuturaLottos";
 import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { buildVisionFutura, yearsToExpiry, type VisionFuturaReport, type VixReading } from "./visionFutura";
@@ -465,6 +465,11 @@ export async function buildReplay(now: Date, opts: { force?: boolean; inst?: str
         if (!best || px > best.price) best = { price: px, at: b.ms };
       }
       t.bestExit = best;
+      // Regla de salida (mitad a 1.5×, mitad a 3×) con la serie real de llenados al bid.
+      const path = (flow.get(`${t.side}:${t.strike}`) ?? [])
+        .filter((b) => b.ms >= t.openedAt && b.bidVol > 0)
+        .map((b) => ({ at: b.ms, bid: Math.round((b.bid / (b.bidVol * 100)) * 100) / 100 }));
+      Object.assign(t, settleLottoWithRule(t, lottoExitsFrom(t, path)));
     }
   }
 

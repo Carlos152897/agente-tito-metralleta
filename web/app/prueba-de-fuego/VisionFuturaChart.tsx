@@ -9,6 +9,7 @@
 // (`layers`) para que la gráfica no se vea sobrecargada. SVG propio: la
 // escalera con filas por strike no encaja en lightweight-charts.
 
+import type { PosHistory } from "@/lib/visionFuturaPositioning";
 import { positioningParts, positioningSides, type FlowSnapshot, type UnusualHit } from "@/lib/visionFuturaFlowChanges";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useVisionLabels } from "./visionLabels";
@@ -28,6 +29,7 @@ export type LayerKey =
   | "dealers"
   | "rango_vix"
   | "historial"
+  | "historial_ls"
   | "agresor"
   | "vix";
 
@@ -45,6 +47,7 @@ export const LAYERS: { key: LayerKey; label: string; color: string }[] = [
   { key: "dealers", label: "Dealers", color: "#e879f9" },
   { key: "rango_vix", label: "Rango VIX", color: "#94a3b8" },
   { key: "historial", label: "Historial de niveles", color: "#a78bfa" },
+  { key: "historial_ls", label: "Historial Long/Short", color: "#12b76a" },
   { key: "agresor", label: "Agresor", color: "#2f6bff" },
   { key: "vix", label: "Mini VIX", color: "#f97066" },
 ];
@@ -52,7 +55,7 @@ export const LAYERS: { key: LayerKey; label: string; color: string }[] = [
 export const DEFAULT_LAYERS: Record<LayerKey, boolean> = {
   precio: true, posicionamiento: true, magneto: true, iman_positivo: true, iman_negativo: true,
   resistencia: true, piso: true, gamma_flip: false, max_pain: false, charm: false,
-  dealers: false, rango_vix: false, historial: false, agresor: true, vix: true,
+  dealers: false, rango_vix: false, historial: false, historial_ls: true, agresor: true, vix: true,
 };
 
 const COLOR = Object.fromEntries(LAYERS.map((l) => [l.key, l.color])) as Record<LayerKey, string>;
@@ -105,6 +108,8 @@ interface Props {
   unusual?: UnusualHit[];
   /** Mini gráfica del VIX en una franja bajo el precio, con el mismo eje de hora. */
   vix?: VixStrip | null;
+  /** Historial Long/Short del día (lib/visionFuturaPositioning.ts): franjas por strike y marcas de presión. */
+  positions?: Pick<PosHistory, "segments" | "events"> | null;
 }
 
 export interface CandleBar { time: number; open: number; high: number; low: number; close: number }
@@ -129,7 +134,15 @@ const LABEL_W = 150;
 const POS_COL_W = 230;
 /** Orilla de cada lado del posicionamiento para el "▲$" de crecimiento. */
 const POS_EDGE = 36;
-const RIGHT_W = 250;
+/** Panel del agresor (Carlos, 27-oct, captura de referencia del zip): GEX · barra NETA compra−venta
+ *  centrada con su monto y ▲▼ afuera · strike. La columna de "inusual"/presión va aparte (UNUSUAL_W). */
+const RIGHT_W = 330;
+const AGG_GEX_W = 56;
+const AGG_TXT_W = 62;
+const AGG_HALF = 48;
+const AGG_STRIKE_W = 52;
+/** Cuánto se queda marcada en la fila una marca de presión Long/Short. */
+const PRESSURE_LIT_MS = 15 * 60_000;
 /** Columna propia de las etiquetas de niveles, a la derecha del precio (Carlos, 27-oct: las
  *  etiquetas dentro del plot tapaban las velas — "se ve todo amontonado"). */
 const LEVEL_W = 168;
@@ -190,6 +203,12 @@ const n2 = (v: number | null, d = 2) => (v == null ? "—" : v.toLocaleString("e
 const money = (v: number) => {
   const a = Math.abs(v);
   return a >= 1e6 ? `${(a / 1e6).toFixed(1)}M` : a >= 1e3 ? `${(a / 1e3).toFixed(0)}K` : a > 0 ? a.toFixed(0) : "0";
+};
+
+/** Montos con un decimal (490.3K, 2.18M), como en la captura de referencia. */
+const money1 = (v: number) => {
+  const a = Math.abs(v);
+  return a >= 1e6 ? `${(a / 1e6).toFixed(2)}M` : a >= 1e3 ? `${(a / 1e3).toFixed(1)}K` : a.toFixed(0);
 };
 
 const gexM = (v: number) => {
@@ -363,7 +382,6 @@ export default function VisionFuturaChart(props: Props) {
   const posX = LABEL_W + POS_COL_W / 2;
   const POS_SPAN = POS_COL_W / 2 - POS_EDGE - 4;
 
-  const maxAgg = Math.max(1, ...rows.map((r) => Math.max(r.compras, r.ventas)));
 
   // ── Chips de niveles (franja derecha del plot, sin taparse) ──
   const chips: Chip[] = [];
@@ -473,11 +491,17 @@ export default function VisionFuturaChart(props: Props) {
 
   // Columnas del panel del agresor.
   const aggX = width - rightW;
-  const gexColW = 56;
-  const barW = (RIGHT_W - gexColW - 30) / 2; // la columna de "inusual" va aparte, a la derecha
-  const ventasX = aggX + gexColW;
-  const comprasX = ventasX + barW + 4;
-  const arrowX = comprasX + barW + 4;
+  /** Centro de la barra neta compra − venta. */
+  const aggC = aggX + AGG_GEX_W + AGG_TXT_W + AGG_HALF;
+  const strikeX = aggX + RIGHT_W - AGG_STRIKE_W + 4;
+  const unusX = aggX + RIGHT_W + 4;
+  const maxNetAgg = Math.max(1, ...rows.map((r) => Math.abs(r.compras - r.ventas)));
+  const spotStrike = rows.reduce((a, b) => (Math.abs(b.spx - spot) < Math.abs(a.spx - spot) ? b : a), rows[0]).spx;
+  const pressureLit = new Map(
+    (props.positions?.events ?? [])
+      .filter((e) => e.kind === "presion" && e.t >= refSec * 1000 - PRESSURE_LIT_MS && e.t <= refSec * 1000)
+      .map((e) => [e.strike, e]),
+  );
 
   return (
     <div ref={wrapRef} style={{ overflowX: "auto" }}>
@@ -594,6 +618,26 @@ export default function VisionFuturaChart(props: Props) {
               <path d={stepPath((h) => h.putWall)} fill="none" stroke={COLOR.piso} strokeWidth={2.5} opacity={0.45} />
               <path d={stepPath((h) => h.gammaFlip)} fill="none" stroke={COLOR.gamma_flip} strokeWidth={1.5} strokeDasharray="4 3" opacity={0.6} />
             </>
+          )}
+
+          {/* Historial Long/Short: desde cuándo cada strike está Long (verde) o Short (morado);
+              ● = presión Long (verde) / Short (morada) */}
+          {layers.historial_ls && props.positions && (
+            <g style={{ pointerEvents: "none" }}>
+              {props.positions.segments.filter((sg) => inView(sg.strike)).map((sg, i) => {
+                const x0 = x(sg.start / 1000);
+                const x1 = sg.end != null ? x(sg.end / 1000) : nowX;
+                return x1 > x0 ? (
+                  <rect key={`ls-${i}`} x={x0} width={x1 - x0} y={y(sg.strike) - ROW_H / 2 + 1} height={ROW_H - 2}
+                    fill={sg.side === "L" ? COLOR.posicionamiento : POS_DOWN} opacity={0.1} />
+                ) : null;
+              })}
+              {/* Bola rellena (Carlos, 27-oct: "esa flecha hazla bola"): presión Short = morada, Long = verde. */}
+              {props.positions.events.filter((e) => e.kind === "presion" && inView(e.strike)).map((e, i) => (
+                <circle key={`pr-${i}`} cx={x(e.t / 1000)} cy={y(e.strike)} r={4.5} fill={e.side === "L" ? COLOR.posicionamiento : POS_DOWN}
+                  stroke="#0b1020" strokeWidth={1}><title>{`${hm(e.t / 1000)} · ${e.text}`}</title></circle>
+              ))}
+            </g>
           )}
 
           {/* Precio */}
@@ -748,38 +792,67 @@ export default function VisionFuturaChart(props: Props) {
           onMouseLeave={() => setCross(null)}
         />
 
-        {/* Panel del agresor */}
+        {/* Panel del agresor: GEX · barra NETA (compras − ventas) centrada · strike · inusual/presión */}
         {layers.agresor && (
           <g>
+            <line x1={aggC} x2={aggC} y1={TOP} y2={plotBottom} stroke="#263049" />
             {rows.map((r, i) => {
               const ry0 = TOP + i * ROW_H;
               const ry = ry0 + rowMid; // contenido centrado en la fila (filas altas con el zoom vertical)
+              const net = r.compras - r.ventas;
+              const show = Math.abs(net) >= 0.01 * maxNetAgg;
+              const buy = net > 0;
+              const w = show ? Math.max(3, (Math.abs(net) / maxNetAgg) * AGG_HALF) : 0;
               const prev = prevAggressor?.get(r.spx);
-              const dv = prev ? (r.compras - r.ventas) - (prev.compras - prev.ventas) : 0;
-              const vw = Math.max(0, (r.ventas / maxAgg) * barW);
-              const cw = Math.max(0, (r.compras / maxAgg) * barW);
+              const prevNet = prev ? prev.compras - prev.ventas : null;
+              const grew = prevNet == null ? 0 : Math.sign(net) !== Math.sign(prevNet) ? 1 : Math.sign(Math.abs(net) - Math.abs(prevNet));
+              const arrow = !show || prevNet == null || grew === 0 ? "" : grew > 0 ? "▲" : "▼";
               const hit = unusualBy.get(r.spx);
+              const pr = pressureLit.get(r.spx);
+              const col = hit ? UNUSUAL : buy ? "#2f6bff" : "#f04438";
+              const sideCol = buy ? "#7aa2ff" : "#f97066";
+              const isSpot = r.spx === spotStrike;
               return (
                 <g key={`agg-${r.spx}`}>
-                  {hit && <rect x={aggX} y={ry0 + 1} width={rightW - 4} height={ROW_H - 2} rx={3} fill="none" stroke={UNUSUAL} strokeWidth={1.2} />}
-                  <text x={aggX + gexColW - 6} y={ry + 14} fontSize={10} textAnchor="end" fill={r.netGex > 0 ? "#12b76a" : r.netGex < 0 ? "#f97066" : "#6b7591"}>{gexM(r.netGex)}</text>
-                  <rect x={ventasX + barW - vw} y={ry + 5} width={vw} height={10} rx={2} fill={hit?.side === "venta" ? UNUSUAL : "#f04438"} opacity={hit?.side === "venta" ? 0.95 : 0.75} />
-                  <rect x={comprasX} y={ry + 5} width={cw} height={10} rx={2} fill={hit?.side === "compra" ? UNUSUAL : "#2f6bff"} opacity={hit?.side === "compra" ? 0.95 : 0.8} />
-                  {/* Montos solo dentro de barras anchas, para no tapar la columna de GEX. */}
-                  {vw >= 34 && <text x={ventasX + barW - vw + 3} y={ry + 13} fontSize={9} fill={hit?.side === "venta" ? "#111" : "#fff"}>{money(r.ventas)}</text>}
-                  {cw >= 34 && <text x={comprasX + cw - 3} y={ry + 13} fontSize={9} textAnchor="end" fill={hit?.side === "compra" ? "#111" : "#fff"}>{money(r.compras)}</text>}
+                  {hit && <rect x={aggX + AGG_GEX_W} y={ry0 + 1} width={rightW - AGG_GEX_W - 4} height={ROW_H - 2} rx={4} fill="rgba(250,204,21,0.10)" stroke={UNUSUAL} strokeWidth={1.2} />}
+                  {!hit && pr && (
+                    <rect x={aggX + AGG_GEX_W} y={ry0 + 1} width={rightW - AGG_GEX_W - 4} height={ROW_H - 2} rx={4}
+                      fill={pr.side === "S" ? "rgba(168,85,247,0.12)" : "rgba(18,183,106,0.12)"} stroke={pr.side === "S" ? POS_DOWN : COLOR.posicionamiento} strokeDasharray="4 3" />
+                  )}
+                  <text x={aggX + AGG_GEX_W - 6} y={ry + 14} fontSize={10} textAnchor="end" fill={r.netGex > 0 ? "#12b76a" : r.netGex < 0 ? "#f97066" : "#6b7591"}>{gexM(r.netGex)}</text>
+                  {show && !buy && (
+                    <>
+                      <text x={aggC - AGG_HALF - 4} y={ry + 14} fontSize={10} textAnchor="end" fill={arrow === "▼" ? "#9aa5c0" : sideCol}>{arrow}</text>
+                      <text x={aggC - AGG_HALF - 16} y={ry + 14} fontSize={10} fontWeight={700} textAnchor="end" fill={hit ? UNUSUAL : "#f5f7fb"}>{money1(-net)}</text>
+                      <rect x={aggC - w} y={ry + 4} width={w} height={12} rx={2} fill={col} opacity={0.85} />
+                    </>
+                  )}
+                  {show && buy && (
+                    <>
+                      <rect x={aggC} y={ry + 4} width={w} height={12} rx={2} fill={col} opacity={0.85} />
+                      <text x={aggC + AGG_HALF + 4} y={ry + 14} fontSize={10} fill={arrow === "▼" ? "#9aa5c0" : sideCol}>{arrow}</text>
+                      <text x={aggC + AGG_HALF + 16} y={ry + 14} fontSize={10} fontWeight={700} fill={hit ? UNUSUAL : "#f5f7fb"}>{money1(net)}</text>
+                    </>
+                  )}
+                  <text x={strikeX} y={ry + 14} fontSize={10.5} fill={isSpot || hit ? "#f5f7fb" : "#9aa5c0"} fontWeight={isSpot || hit ? 700 : 400}>{n2(r.spx, Number.isInteger(r.spx) ? 0 : 1)}</text>
                   {hit && (
-                    <text x={arrowX + 20} y={ry + 14} fontSize={10} fontWeight={700} fill={UNUSUAL}>
+                    <text x={unusX} y={ry + 14} fontSize={10} fontWeight={700} fill={UNUSUAL}>
                       {hit.side === "compra" ? "▲ Compra inusual" : "▼ Venta inusual"} +{money(hit.delta)}
                     </text>
                   )}
-                  {dv !== 0 && <text x={arrowX + 8} y={ry + 14} fontSize={10} textAnchor="middle" fill={dv > 0 ? "#2f6bff" : "#f04438"}>{dv > 0 ? "▲" : "▼"}</text>}
+                  {!hit && pr && (
+                    <text x={unusX} y={ry + 14} fontSize={10} fontWeight={700} fill={pr.side === "S" ? POS_DOWN : COLOR.posicionamiento}>
+                      <title>{pr.text}</title>
+                      {pr.side === "S" ? "● presión ↓" : "● presión ↑"} <tspan fill="#9aa5c0" fontWeight={400}>{hm(pr.t / 1000)}</tspan>
+                    </text>
+                  )}
                 </g>
               );
             })}
-            <text x={aggX + gexColW - 6} y={height - 8} fontSize={10} textAnchor="end" fill="#6b7591">GEX $M</text>
-            <text x={ventasX + barW} y={height - 8} fontSize={10} textAnchor="end" fill="#f97066">← Ventas</text>
-            <text x={comprasX} y={height - 8} fontSize={10} fill="#7aa2ff">Compras →</text>
+            <text x={aggX + AGG_GEX_W - 6} y={height - 8} fontSize={10} textAnchor="end" fill="#6b7591">GEX $M</text>
+            <text x={aggC} y={height - 16} fontSize={10} textAnchor="middle"><tspan fill="#f97066">← venta</tspan><tspan fill="#6b7591"> | </tspan><tspan fill="#7aa2ff">compra →</tspan><tspan fill="#6b7591"> ($ neto)</tspan></text>
+            <text x={aggC} y={height - 4} fontSize={9} textAnchor="middle" fill="#6b7591">▲▼ vs refresco anterior</text>
+            <text x={strikeX} y={height - 8} fontSize={10} fill="#6b7591">Strike</text>
           </g>
         )}
 

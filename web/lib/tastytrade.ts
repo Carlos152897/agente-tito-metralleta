@@ -314,3 +314,29 @@ export async function fetchLiveQuotes(params: { index?: string[]; equity?: strin
   }
   return out;
 }
+
+export interface SymbolMatch {
+  symbol: string;
+  description: string;
+  etf: boolean;
+}
+const symbolSearchCache = new Map<string, { at: number; items: SymbolMatch[] }>();
+
+/**
+ * Busca acciones y ETFs CON OPCIONES por ticker o nombre (cache 10 min). Para el buscador de
+ * VisionFutura (traído del zip "visionfutura-main", oct-2026).
+ */
+export async function searchOptionSymbols(query: string): Promise<SymbolMatch[]> {
+  const q = query.trim();
+  if (!q) return [];
+  const key = q.toUpperCase();
+  const c = symbolSearchCache.get(key);
+  if (c && Date.now() - c.at < 10 * 60_000) return c.items;
+  type Item = { symbol: string; description?: string; etf?: boolean; options?: boolean; "instrument-type"?: string };
+  const data = await tastyGet<{ items: Item[] }>(`/symbols/search/${encodeURIComponent(q)}`);
+  const items = (data.items ?? [])
+    .filter((i) => i.options && i["instrument-type"] === "Equity")
+    .map((i) => ({ symbol: i.symbol, description: i.description ?? "", etf: !!i.etf }));
+  symbolSearchCache.set(key, { at: Date.now(), items });
+  return items;
+}

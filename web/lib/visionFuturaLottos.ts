@@ -12,7 +12,11 @@
 //   el objetivo (≥ 3 pts) · flujo de 15 min hacia el objetivo (calls − puts, net premium ≥ $250K).
 //   Contrato: call (objetivo arriba) o put (abajo) fuera del dinero, con el strike ANTES del objetivo,
 //   prima real entre $0.05 y $1.00; se elige el que más paga si llega: (objetivo − strike) ÷ prima ≥ 3.
-//   1 contrato, se sostiene al vencimiento (valor intrínseco al cierre).
+//   Salida (v2, Carlos 27-oct-2026: "hagamos la regla de salida del lotto"): se compran 2 contratos;
+//   uno se vende cuando el bid llega a 1.5× la prima y el otro a 3×; lo que no se venda se sostiene
+//   al vencimiento. Medido con los 4 lottos reales (26–27-oct SPX, 23-oct TSLA): −$290 sosteniendo
+//   todo vs +$112 con esta regla (todos llegaron a ≥1.5× y vencieron fuera del dinero).
+//   El resultado ($) se expresa POR CONTRATO (promedio de los 2) para compararlo con la regla vieja.
 
 import type { KeyLevel, KeyLevelKind } from "./visionFutura";
 
@@ -32,6 +36,8 @@ export const LOTTO_TUNING = {
   momentumPts: 3,
   /** Flujo mínimo en 15 min (net premium de calls − puts). */
   flowMinUsd: 250_000,
+  /** Salida: cada tramo vende `frac` del lotto cuando el bid llega a `mult` × la prima. */
+  exits: [{ mult: 1.5, frac: 0.5 }, { mult: 3, frac: 0.5 }] as { mult: number; frac: number }[],
 };
 
 const MIN_PER_YEAR = 252 * 390;
@@ -170,8 +176,60 @@ export interface LottoTrade {
   /** Mejor precio de venta posterior (llenado real al bid) y a qué hora; null si no hay datos. */
   bestExit: { price: number; at: number } | null;
   settle: number | null;
-  /** Resultado por contrato en $ al vencimiento (intrínseco − prima) × 100. */
+  /** Resultado por contrato en $ con la regla de salida (ventas en 1.5× / 3× + lo que quedó al vencimiento). */
   pnlUsd: number | null;
+  /** Ventas hechas por la regla de salida (tramo, precio, hora). */
+  exits?: LottoExit[];
+  /** Lo que habría dado sostener todo al vencimiento (regla vieja), por contrato. */
+  holdPnlUsd?: number | null;
+}
+
+export interface LottoExit {
+  mult: number;
+  frac: number;
+  price: number;
+  at: number;
+}
+
+/**
+ * Ventas de la regla de salida sobre una serie de bids posteriores a la compra (en vivo: bid de cada
+ * refresco; en la repetición: promedio real de llenado al bid de cada bloque de 5 min). Cada tramo
+ * vende al precio objetivo (mult × prima) la primera vez que el bid lo alcanza.
+ */
+export function lottoExitsFrom(t: Pick<LottoTrade, "price" | "openedAt">, bids: { at: number; bid: number }[], tune = LOTTO_TUNING): LottoExit[] {
+  const out: LottoExit[] = [];
+  const path = [...bids].filter((b) => b.at > t.openedAt && b.bid > 0).sort((a, b) => a.at - b.at);
+  for (const e of tune.exits) {
+    const goal = Math.round(e.mult * t.price * 100) / 100;
+    const hit = path.find((b) => b.bid >= goal);
+    if (hit) out.push({ mult: e.mult, frac: e.frac, price: goal, at: hit.at });
+  }
+  return out;
+}
+
+/** Salidas aproximadas cuando solo se sabe la mejor venta (repeticiones viejas): todo tramo ≤ mejor venta se vendió. */
+export function lottoExitsFromBest(t: Pick<LottoTrade, "price" | "bestExit">, tune = LOTTO_TUNING): LottoExit[] {
+  if (!t.bestExit) return [];
+  return tune.exits
+    .filter((e) => t.bestExit!.price >= Math.round(e.mult * t.price * 100) / 100)
+    .map((e) => ({ mult: e.mult, frac: e.frac, price: Math.round(e.mult * t.price * 100) / 100, at: t.bestExit!.at }));
+}
+
+/** Resultado por contrato con la regla: lo vendido en los tramos + lo que quedó al vencimiento. */
+export function lottoPnlWithExits(t: Pick<LottoTrade, "side" | "strike" | "price">, exits: LottoExit[], settle: number | null): number | null {
+  const sold = exits.reduce((a, e) => a + e.frac, 0);
+  const left = Math.max(0, 1 - sold);
+  if (left > 1e-9 && settle == null) return null;
+  const intr = settle == null ? 0 : t.side === "call" ? Math.max(0, settle - t.strike) : Math.max(0, t.strike - settle);
+  const value = exits.reduce((a, e) => a + e.frac * e.price, 0) + left * intr;
+  return Math.round((value - t.price) * 100);
+}
+
+/** Aplica la regla a un lotto ya liquidado (o con mejor venta conocida): rellena exits, pnlUsd y holdPnlUsd. */
+export function settleLottoWithRule(t: LottoTrade, exits?: LottoExit[]): LottoTrade {
+  const ex = exits ?? t.exits ?? lottoExitsFromBest(t);
+  const hold = t.settle != null ? lottoPnlAtExpiry(t, t.settle) : null;
+  return { ...t, exits: ex, holdPnlUsd: hold, pnlUsd: lottoPnlWithExits(t, ex, t.settle) };
 }
 
 export function lottoTradeFrom(idea: LottoIdea, now: number, spot: number): LottoTrade | null {

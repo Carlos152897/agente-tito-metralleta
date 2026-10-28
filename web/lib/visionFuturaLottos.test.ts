@@ -60,3 +60,31 @@ describe("utilidades", () => {
     expect(tr).toMatchObject({ lectura: "15:30", side: "call", strike: 7635 });
   });
 });
+
+import { lottoExitsFrom, lottoExitsFromBest, lottoPnlWithExits, settleLottoWithRule, type LottoTrade } from "./visionFuturaLottos";
+
+describe("regla de salida del lotto (mitad a 1.5×, mitad a 3×)", () => {
+  const base = { id: "x", openedAt: 1000, lectura: "15:15", side: "call", strike: 7735, price: 0.73, priceReal: true, target: { label: "R", spx: 7740 }, spotAtOpen: 7727, payoff: 6.8, conditions: [], bestExit: { price: 2.55, at: 5000 }, settle: 7722.6, pnlUsd: null } as LottoTrade;
+
+  it("vende cada tramo la primera vez que el bid llega a su múltiplo", () => {
+    const ex = lottoExitsFrom(base, [{ at: 900, bid: 5 }, { at: 2000, bid: 1.0 }, { at: 3000, bid: 1.2 }, { at: 4000, bid: 2.3 }]);
+    expect(ex).toEqual([{ mult: 1.5, frac: 0.5, price: 1.1, at: 3000 }, { mult: 3, frac: 0.5, price: 2.19, at: 4000 }]);
+  });
+
+  it("27-oct 15:15: llegó a 3.5× → +$91 por contrato en vez de −$73", () => {
+    const t = settleLottoWithRule(base);
+    expect(t.holdPnlUsd).toBe(-73);
+    expect(t.pnlUsd).toBe(92); // 0.5×1.10 + 0.5×2.19 − 0.73 = 0.915
+  });
+
+  it("si solo llegó a 1.5×, la otra mitad vence", () => {
+    const t = settleLottoWithRule({ ...base, strike: 7675, side: "put", price: 0.95, bestExit: { price: 1.45, at: 5000 }, settle: 7676.77 });
+    expect(t.exits).toHaveLength(1);
+    expect(t.pnlUsd).toBe(-24); // 0.5×1.43 − 0.95 = −0.235
+  });
+
+  it("sin vender todo y sin cierre todavía no hay resultado", () => {
+    expect(lottoPnlWithExits(base, lottoExitsFromBest({ ...base, bestExit: { price: 1.2, at: 1 } }), null)).toBeNull();
+    expect(lottoPnlWithExits(base, lottoExitsFromBest(base), null)).toBe(92);
+  });
+});

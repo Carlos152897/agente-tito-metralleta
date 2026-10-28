@@ -7,6 +7,8 @@
 // backtest (entradas, spreads, lottos, señal del dinero, comparación de stops) y, para SPX, la
 // regla de la amiga. NO necesita el servidor de la app: importa los mismos módulos que la ruta
 // /api/vision-futura/replay. Idempotente: si la repetición ya estaba armada, la reusa.
+// También guarda el bloque "En vivo" (lib/visionFuturaLiveStore.ts): las alertas que salieron de
+// verdad ese día, calificadas con velas de 1 min.
 //
 // Uso (cwd = web): npx tsx scripts/vision-futura-replay/run.ts
 // Log: data/vision-futura/replay-task.log
@@ -42,6 +44,10 @@ async function main() {
   const { saveBacktestDay } = await import("../../lib/visionFuturaBacktestStore");
   const { processAmigaDay } = await import("../../lib/amigaStore");
   const { gradePremarketDay } = await import("../../lib/visionFuturaPremarketData");
+  const { attachLiveDay } = await import("../../lib/visionFuturaLiveStore");
+  const { positionsFromTicks } = await import("../../lib/visionFuturaPositioning");
+  const { instrumentOf } = await import("../../lib/visionFuturaInstruments");
+  const { settleLottoWithRule } = await import("../../lib/visionFuturaLottos");
 
   const now = new Date();
   let fallas = 0;
@@ -57,9 +63,17 @@ async function main() {
         ...bt,
         instrument: replay.instrument,
         spreads: spreadsForBacktest(replay.spreadTrades ?? []),
-        lottos: (replay.lottoTrades ?? []).filter((t) => t.pnlUsd != null),
+        lottos: (replay.lottoTrades ?? []).filter((t) => t.settle != null).map((t) => settleLottoWithRule(t)),
         money: (replay.moneyTrades ?? []).filter((t) => t.points != null),
+        pressure: positionsFromTicks(replay.ticks, !!instrumentOf(replay.instrument).night).pressure,
       });
+      // En vivo: lo que de verdad salió en la pantalla / tarea de fondo, calificado con velas de 1 min.
+      const live = await attachLiveDay(replay.instrument, replay.date).catch((e) => { log(`${inst} en vivo: ${e instanceof Error ? e.message : e}`); return null; });
+      if (live) {
+        const hm = (ms: number | null) => (ms == null ? "—" : new Date(ms).toLocaleTimeString("en-GB", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit" }));
+        const lm = live.money.filter((m) => m.points != null);
+        log(`${inst} ${replay.date}: EN VIVO vigilado ${hm(live.coverage.first)}–${hm(live.coverage.last)} (${live.coverage.minutesWatched} min con ciclos) · entradas ${live.trades.length} (${live.wins}/${live.losses}, ${live.points} pts, ${live.priceSource}) · señales del dinero ${lm.length} (${lm.reduce((a, m) => a + (m.points ?? 0), 0).toFixed(2)} pts)`);
+      } else log(`${inst} ${replay.date}: sin alertas en vivo guardadas (nadie vigiló ese día).`);
       if (replay.instrument === "SPX") await processAmigaDay(replay.date, now).catch((e) => log(`SPX amiga: ${e instanceof Error ? e.message : e}`));
       const money = (replay.moneyTrades ?? []).filter((t) => t.points != null);
       const strikesConGex = replay.ticks.at(-1)?.rows.filter((r) => r.netGex !== 0).length ?? 0;

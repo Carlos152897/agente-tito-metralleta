@@ -6,7 +6,7 @@
 // posicionados los dealers según el flujo de MarketSnack. Datos de
 // /api/vision-futura (cálculo puro en lib/visionFutura.ts).
 
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import VisionFuturaAlerts from "./VisionFuturaAlerts";
 import VisionFuturaSpreads from "./VisionFuturaSpreads";
 import VisionFuturaAmiga from "./VisionFuturaAmiga";
@@ -14,6 +14,10 @@ import VisionFuturaLottos from "./VisionFuturaLottos";
 import VisionFuturaMoney from "./VisionFuturaMoney";
 import VisionFuturaReplayBar from "./VisionFuturaReplayBar";
 import VisionFuturaPremarket from "./VisionFuturaPremarket";
+import VisionFuturaPositionLog from "./VisionFuturaPositionLog";
+import VisionFuturaTickerSearch from "./VisionFuturaTickerSearch";
+import { isEquityTicker } from "@/lib/visionFuturaInstruments";
+import { historyAt, positionsFromTicks, type PosHistory } from "@/lib/visionFuturaPositioning";
 import { DEFAULT_LABELS, VisionLabelsContext, useVisionLabels } from "./visionLabels";
 import type { InstrumentId, InstrumentLabels } from "@/lib/visionFuturaInstruments";
 import type { AlertView, LottoLive, MoneyLive } from "@/lib/visionFuturaAlertStore";
@@ -98,6 +102,8 @@ interface VisionData extends VisionFuturaReport {
   watch: VisionAlert[];
   lottos?: LottoLive;
   money?: MoneyLive;
+  /** Historial Long/Short del día (solo en vivo; en la repetición se calcula de los pasos). */
+  positions?: Pick<PosHistory, "segments" | "events">;
 }
 
 const KIND_COLOR: Record<KeyLevelKind, string> = {
@@ -274,6 +280,9 @@ const INSTRUMENT_OPTIONS: { id: InstrumentId; label: string; sub: string }[] = [
 ];
 const NIGHT_IDS: InstrumentId[] = ["ESN", "NQN"];
 const KEY_INST = "visionary.visionFutura.inst";
+/** Acciones abiertas con el buscador (las más recientes primero). */
+const KEY_RECENT = "visionary.visionFutura.recientes";
+const isFixedInst = (id: string) => INSTRUMENT_OPTIONS.some((o) => o.id === id);
 
 /** "Hoy" / "lun 26" para los botones de vencimiento. */
 function expLabel(date: string, dte: number): string {
@@ -286,6 +295,7 @@ function expLabel(date: string, dte: number): string {
 export default function VisionFuturaTab() {
   const [radius, setRadius] = useState<number>(60);
   const [inst, setInst] = useState<InstrumentId>("SPX");
+  const [recientes, setRecientes] = useState<string[]>([]);
   const [expIdx, setExpIdx] = useState(0);
   // Lo elegido AHORA: una respuesta que llega tarde de otro instrumento/vencimiento se descarta.
   const paramsRef = useRef("");
@@ -314,6 +324,8 @@ export default function VisionFuturaTab() {
   // "Repetir sesión": la última sesión reconstruida cada 5 min.
   const [mode, setMode] = useState<"vivo" | "repeticion">("vivo");
   const [replay, setReplay] = useState<ReplayPayload | null>(null);
+  // Historial Long/Short de toda la repetición (una vez); cada paso ve lo que pasó hasta su hora.
+  const replayPositions = useMemo(() => (replay ? positionsFromTicks(replay.ticks).history : null), [replay]);
   const [replayIdx, setReplayIdx] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speedMs, setSpeedMs] = useState(REPLAY_SPEEDS[0].ms);
@@ -326,7 +338,9 @@ export default function VisionFuturaTab() {
       const saved = Number(window.localStorage.getItem(KEY_RADIUS));
       if ((RADII as readonly number[]).includes(saved)) setRadius(saved);
       const savedInst = window.localStorage.getItem(KEY_INST);
-      if (savedInst && INSTRUMENT_OPTIONS.some((o) => o.id === savedInst)) setInst(savedInst as InstrumentId);
+      if (savedInst && (isFixedInst(savedInst) || isEquityTicker(savedInst))) setInst(savedInst as InstrumentId);
+      const savedRecent = JSON.parse(window.localStorage.getItem(KEY_RECENT) ?? "[]");
+      if (Array.isArray(savedRecent)) setRecientes(savedRecent.filter((x): x is string => typeof x === "string" && isEquityTicker(x)).slice(0, 6));
       const savedLayers = JSON.parse(window.localStorage.getItem(KEY_LAYERS) ?? "null");
       if (savedLayers && typeof savedLayers === "object") setLayers({ ...DEFAULT_LAYERS, ...savedLayers });
       const savedZoom = Number(window.localStorage.getItem(KEY_ZOOM));
@@ -394,6 +408,11 @@ export default function VisionFuturaTab() {
     if (NIGHT_IDS.includes(id)) setMode("vivo");
     else if (mode === "repeticion") loadReplay(false);
     try { window.localStorage.setItem(KEY_INST, id); } catch { /* ignorar */ }
+    if (!isFixedInst(id)) {
+      const next = [id, ...recientes.filter((x) => x !== id)].slice(0, 6);
+      setRecientes(next);
+      try { window.localStorage.setItem(KEY_RECENT, JSON.stringify(next)); } catch { /* ignorar */ }
+    }
   };
   const pickExp = (i: number) => {
     if (i === expIdx) return;
@@ -406,7 +425,12 @@ export default function VisionFuturaTab() {
   };
 
   useEffect(() => {
-    if (mode === "repeticion") return; // en la repetición no se refresca lo en vivo
+    if (mode === "repeticion") {
+      // En la repetición no se refresca lo en vivo, pero al cambiar de instrumento se borró: una
+      // carga para que la pantalla no quede en blanco (antes pasaba de SPX a TSLA con la repetición abierta).
+      if (!data) { setLoading(true); load(); }
+      return;
+    }
     setLoading(true);
     load();
     const id = window.setInterval(load, REFRESH_MS);
@@ -552,6 +576,15 @@ export default function VisionFuturaTab() {
             <div style={{ fontSize: 10, color: inst === o.id ? "var(--accent)" : "var(--faint)" }}>{o.sub}</div>
           </button>
         ))}
+        {!isFixedInst(inst) && (
+          <button
+            style={{ padding: "6px 14px", borderRadius: 10, textAlign: "center", minWidth: 84, border: "1px solid var(--accent)", background: "var(--accent-dim)", color: "var(--text)", cursor: "default" }}
+          >
+            <div style={{ fontWeight: 700, fontSize: 15 }}>{inst}</div>
+            <div style={{ fontSize: 10, color: "var(--accent)" }}>acción · buscada</div>
+          </button>
+        )}
+        <VisionFuturaTickerSearch onPick={(t) => pickInst(t)} recientes={recientes.filter((t) => t !== inst)} />
       </div>
       {data?.expirations && data.expirations.length > 0 && mode === "vivo" && (
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -637,6 +670,7 @@ export default function VisionFuturaTab() {
     }
   }
   const changesToShow = tick ? replayChanges : levelChanges;
+  const positionsView = tick ? (replayPositions ? historyAt(replayPositions, tickMs) : null) : view.positions ?? null;
 
   // Mini VIX bajo el precio. Repetición: el VIX de cada paso de 5 min (sirve también con repeticiones viejas).
   let vixStrip: VixStrip | null = null;
@@ -779,7 +813,7 @@ export default function VisionFuturaTab() {
 
       {/* Pre-mercado: rango probable del día y posiciones importantes (no en repetición ni de noche). */}
       {!tick && (inst === "SPX" || inst === "NQ" || inst === "TSLA") && (
-        <VisionFuturaPremarket inst={inst} livePrice={view.spot.spx} marketOpen={view.marketOpen} futLabel={labels.future} />
+        <VisionFuturaPremarket inst={inst as "SPX" | "NQ" | "TSLA"} livePrice={view.spot.spx} marketOpen={view.marketOpen} futLabel={labels.future} />
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 460px), 1fr))", gap: "var(--space-md)" }}>
@@ -955,8 +989,10 @@ export default function VisionFuturaTab() {
             prevAggressor={tick ? replayPrevAgg : prevAgg}
             unusual={tick ? replayUnusual : liveUnusual}
             vix={vixStrip}
+            positions={positionsView}
           />
         )}
+        <VisionFuturaPositionLog positions={positionsView} />
         <div style={{ fontSize: 12, color: "var(--faint)" }}>
           Posicionamiento: verde → se posicionan para arriba (compra de calls + venta de puts); morado ← para abajo (venta de calls + compra de puts).
           Agresor: ← lo vendido pegando al bid, compras → lo comprado pegando al ask; ▲▼ = cambio contra el refresco anterior.

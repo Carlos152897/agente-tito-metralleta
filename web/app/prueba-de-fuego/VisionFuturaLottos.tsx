@@ -5,7 +5,7 @@
 // En vivo: candidatos desde las 15:00 y los lottos "comprados" en cada lectura. En la repetición:
 // los candidatos de ese momento y los lottos del día con su resultado.
 
-import type { LottoIdea, LottoTrade } from "@/lib/visionFuturaLottos";
+import { LOTTO_TUNING, lottoExitsFromBest, type LottoExit, type LottoIdea, type LottoTrade } from "@/lib/visionFuturaLottos";
 import type { LottoLive } from "@/lib/visionFuturaAlertStore";
 
 const UP = "var(--green)";
@@ -43,6 +43,9 @@ function Idea({ i }: { i: LottoIdea }) {
           <b style={{ color: "var(--accent)" }}>COMPRAR</b> {call ? "CALL" : "PUT"} <b>{k(i.strike)}</b>{" "}
           <span style={{ color: "var(--muted)" }}>@ ask ${i.price.toFixed(2)} (${Math.round(i.price * 100)} por contrato)</span>
           {i.payoff != null && <> · si llega a {k(i.target.spx)} vale ~<b>{i.payoff}×</b> la prima</>}
+          <div style={{ marginTop: 2 }}>
+            <b>Salida:</b> compra <b>2</b> · vende 1 a <b>${goalOf(LOTTO_TUNING.exits[0].mult, i.price)}</b> ({LOTTO_TUNING.exits[0].mult}×) y 1 a <b>${goalOf(LOTTO_TUNING.exits[1].mult, i.price)}</b> ({LOTTO_TUNING.exits[1].mult}×) · lo que no se venda, al vencimiento
+          </div>
         </div>
       ) : null}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 4, fontSize: 12 }}>
@@ -56,8 +59,20 @@ function Idea({ i }: { i: LottoIdea }) {
   );
 }
 
-function TradeRow({ t, valueNow, final, bestExit }: { t: LottoTrade; valueNow: number | null; final: boolean; bestExit: boolean }) {
-  const pnl = valueNow != null ? Math.round((valueNow - t.price) * 100) : null;
+/** Ventas de la regla hechas hasta `atMs` (en la repetición se ven solo las de antes del momento elegido). */
+const exitsOf = (t: LottoTrade, atMs: number): LottoExit[] => (t.exits ?? lottoExitsFromBest(t)).filter((e) => e.at <= atMs);
+
+/** Resultado por contrato con la regla: lo vendido + lo que queda al valor de ahora (o al cierre). */
+function rulePnl(t: LottoTrade, exits: LottoExit[], valueLeft: number | null): number | null {
+  const sold = exits.reduce((a, e) => a + e.frac, 0);
+  const left = Math.max(0, 1 - sold);
+  if (left > 1e-9 && valueLeft == null) return null;
+  return Math.round((exits.reduce((a, e) => a + e.frac * e.price, 0) + left * (valueLeft ?? 0) - t.price) * 100);
+}
+
+function TradeRow({ t, valueNow, final, exits, bestExit }: { t: LottoTrade; valueNow: number | null; final: boolean; exits: LottoExit[]; bestExit: boolean }) {
+  const pnl = final && t.pnlUsd != null && t.exits ? t.pnlUsd : rulePnl(t, exits, valueNow);
+  const hold = final ? t.holdPnlUsd ?? (valueNow != null ? Math.round((valueNow - t.price) * 100) : null) : null;
   return (
     <tr>
       <td>{t.lectura}</td>
@@ -65,26 +80,41 @@ function TradeRow({ t, valueNow, final, bestExit }: { t: LottoTrade; valueNow: n
       <td>${t.price.toFixed(2)}{t.priceReal ? "" : " (est.)"}</td>
       <td>{t.target.label} {k(t.target.spx)}</td>
       <td>{k(t.spotAtOpen)}</td>
+      <td>
+        {LOTTO_TUNING.exits.map((r) => {
+          const e = exits.find((x) => x.mult === r.mult);
+          return (
+            <div key={r.mult} style={{ color: e ? UP : "var(--muted)" }}>
+              {r.mult}× ${goalOf(r.mult, t.price)} {e ? `· vendido ${hm(e.at)}` : "· pendiente"}
+            </div>
+          );
+        })}
+      </td>
       {bestExit && <td>{t.bestExit ? `$${t.bestExit.price.toFixed(2)} · ${hm(t.bestExit.at)}` : "—"}</td>}
       <td>{valueNow != null ? `$${valueNow.toFixed(2)}` : "—"}</td>
       <td style={{ fontWeight: 700, color: pnl == null ? "var(--muted)" : pnl > 0 ? UP : DOWN }}>
         {pnl == null ? "—" : usd(pnl)}{pnl != null && <span style={{ fontWeight: 400, color: "var(--muted)" }}> {final ? (pnl > 0 ? "GANADA" : "PERDIDA") : pnl > 0 ? "va ganando" : "va perdiendo"}</span>}
+        {hold != null && <div style={{ fontWeight: 400, fontSize: 11, color: "var(--muted)" }}>sosteniendo todo: {usd(hold)}</div>}
       </td>
     </tr>
   );
 }
 
+/** Precio objetivo de un tramo (mismo redondeo que lib/visionFuturaLottos.ts). */
+const goalOf = (mult: number, price: number) => (Math.round(mult * price * 100) / 100).toFixed(2);
+
 const intrinsic = (t: LottoTrade, s: number) => (t.side === "call" ? Math.max(0, s - t.strike) : Math.max(0, t.strike - s));
 
 export default function VisionFuturaLottos({ live, replay, marketOpen }: Props) {
   const ideas = replay ? replay.ideas ?? [] : live?.ideas ?? [];
-  const trades: { t: LottoTrade; value: number | null; final: boolean }[] = replay
+  const nowMs = replay ? replay.tickMs : Date.now();
+  const trades: { t: LottoTrade; value: number | null; final: boolean; exits: LottoExit[] }[] = replay
     ? replay.trades.filter((t) => t.openedAt <= replay.tickMs).map((t) => {
         const final = replay.isLastTick && !replay.partial && t.settle != null;
-        return { t, value: final ? intrinsic(t, t.settle!) : intrinsic(t, replay.spot), final };
+        return { t, value: final ? intrinsic(t, t.settle!) : intrinsic(t, replay.spot), final, exits: exitsOf(t, final ? Infinity : nowMs) };
       })
-    : (live?.trades ?? []).map((t) => ({ t, value: t.settle != null ? intrinsic(t, t.settle) : t.markNow, final: t.settle != null }));
-  const total = trades.reduce((a, x) => a + (x.value != null ? Math.round((x.value - x.t.price) * 100) : 0), 0);
+    : (live?.trades ?? []).map((t) => ({ t, value: t.settle != null ? intrinsic(t, t.settle) : t.markNow, final: t.settle != null, exits: exitsOf(t, Infinity) }));
+  const total = trades.reduce((a, x) => a + (rulePnl(x.t, x.exits, x.value) ?? 0), 0);
   const invested = trades.reduce((a, x) => a + Math.round(x.t.price * 100), 0);
   const replayNoIdeas = replay && (replay.ideas == null);
 
@@ -92,7 +122,7 @@ export default function VisionFuturaLottos({ live, replay, marketOpen }: Props) 
     <div className="card" style={{ gap: 12 }}>
       <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, alignItems: "baseline" }}>
         <h4 style={{ margin: 0 }}>🎟️ Lottos al cierre</h4>
-        <span style={{ fontSize: 12, color: "var(--muted)" }}>0DTE baratas ($0.05–$1.00) hacia un nivel · lecturas 15:00 · 15:15 · 15:30 · 15:45 NY · 1 contrato, al vencimiento</span>
+        <span style={{ fontSize: 12, color: "var(--muted)" }}>0DTE baratas ($0.05–$1.00) hacia un nivel · lecturas 15:00 · 15:15 · 15:30 · 15:45 NY · 2 contratos: 1 se vende a 1.5× y 1 a 3×</span>
       </div>
 
       <details style={{ fontSize: 12, color: "var(--muted)" }}>
@@ -102,7 +132,8 @@ export default function VisionFuturaLottos({ live, replay, marketOpen }: Props) 
           <li><b>Obligatorio — al alcance:</b> a ≤ 1.5σ del movimiento que queda. σ sale del straddle ATM real (call + put en el dinero ≈ 0.8σ), no del VIX: en la última hora el VIX exagera mucho.</li>
           <li><b>2 de 3 confirmaciones:</b> GEX neto negativo (los dealers aceleran) · momentum de 15 min hacia el objetivo (≥ 3 pts) · flujo de 15 min hacia el objetivo (calls − puts ≥ $250K).</li>
           <li>Contrato: call si el objetivo está arriba, put si está abajo; fuera del dinero y ANTES del objetivo; prima $0.05–$1.00; el que más paga si llega (mínimo 3× la prima).</li>
-          <li>En cada lectura se compra el mejor que cumpla (máx. 1). Se sostiene hasta el vencimiento: casi siempre se pierde la prima; cuando pega, paga varias veces.</li>
+          <li>En cada lectura se compra el mejor que cumpla (máx. 1), <b>2 contratos</b>.</li>
+          <li><b>Salida (desde 27-oct):</b> uno se vende cuando el bid llega a <b>1.5×</b> la prima y el otro a <b>3×</b>; lo que no se venda se sostiene al vencimiento. Con los 4 lottos reales: −$290 sosteniendo todo vs +$112 con esta regla. El resultado se muestra por contrato (promedio de los 2).</li>
         </ul>
       </details>
 
@@ -134,12 +165,13 @@ export default function VisionFuturaLottos({ live, replay, marketOpen }: Props) 
               <thead>
                 <tr>
                   <th>Lectura</th><th>Contrato</th><th>Prima</th><th>Objetivo</th><th>Spot</th>
+                  <th>Salida (regla)</th>
                   {replay && <th>Mejor venta</th>}
                   <th>{trades.some((x) => x.final) ? "Valor al cierre" : "Valor ahora"}</th><th>Resultado</th>
                 </tr>
               </thead>
               <tbody>
-                {trades.map((x) => <TradeRow key={x.t.id} t={x.t} valueNow={x.value} final={x.final} bestExit={!!replay} />)}
+                {trades.map((x) => <TradeRow key={x.t.id} t={x.t} valueNow={x.value} final={x.final} exits={x.exits} bestExit={!!replay} />)}
               </tbody>
             </table>
           </div>

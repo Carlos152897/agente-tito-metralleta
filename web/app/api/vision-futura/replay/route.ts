@@ -17,6 +17,10 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
+import { positionsFromTicks } from "@/lib/visionFuturaPositioning";
+import { instrumentOf } from "@/lib/visionFuturaInstruments";
+import { settleLottoWithRule } from "@/lib/visionFuturaLottos";
+
 export async function GET(req: Request) {
   const params = new URL(req.url).searchParams;
   const force = params.get("force") === "1";
@@ -36,8 +40,9 @@ export async function GET(req: Request) {
         ...simulateDay({ date: replay.date, alerts: replay.alerts, priceSeries: replay.priceSeries }),
         instrument: replay.instrument,
         spreads: spreadsForBacktest(replay.spreadTrades ?? []),
-        lottos: (replay.lottoTrades ?? []).filter((t) => t.pnlUsd != null),
+        lottos: (replay.lottoTrades ?? []).filter((t) => t.settle != null).map((t) => settleLottoWithRule(t)),
         money: (replay.moneyTrades ?? []).filter((t) => t.points != null),
+        pressure: positionsFromTicks(replay.ticks, !!instrumentOf(replay.instrument).night).pressure,
       });
       // "Verticales amiga": lecturas + salidas + cierre del día (idempotente, no repite lo hecho).
       if (replay.instrument === "SPX") await processAmigaDay(replay.date, new Date()).catch(() => null);

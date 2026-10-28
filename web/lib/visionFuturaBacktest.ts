@@ -12,6 +12,8 @@
 import type { MoneyTrade } from "./visionFuturaMoneyFlow";
 import type { LottoTrade } from "./visionFuturaLottos";
 import type { ReplayAlert, ReplaySpreadTrade } from "./visionFuturaReplay";
+import type { LiveDay } from "./visionFuturaLive";
+import type { PressureMark } from "./visionFuturaPositioning";
 
 export interface BacktestTrade {
   date: string;
@@ -105,6 +107,10 @@ export interface BacktestDay {
   lottos?: LottoTrade[];
   /** Señales del dinero del día (lib/visionFuturaMoneyFlow.ts), ya simuladas. */
   money?: MoneyTrade[];
+  /** Lo que de verdad salió EN VIVO ese día, calificado con velas de 1 min (lib/visionFuturaLive.ts). */
+  live?: LiveDay;
+  /** Marcas de presión Long/Short del día con su resultado a 15/30/60 min (lib/visionFuturaPositioning.ts). */
+  pressure?: PressureMark[];
 }
 
 /** Spreads ejecutados en la repetición → filas del backtest (solo los ya liquidados). */
