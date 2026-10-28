@@ -29,6 +29,7 @@ import type { ReplayDay } from "./VisionFuturaReplayBar";
 import type { VisionAlert } from "@/lib/visionFuturaAlerts";
 import type { SpreadsReport } from "@/lib/visionFuturaSpreads";
 import type { MsPremiumMinute, MsUnusualTrade } from "@/lib/marketsnack";
+import type { DotExit } from "@/lib/visionFuturaUnusualExit";
 import { detectUnusual, mergeUnusual, snapshotOf, UNUSUAL_TUNING, type FlowSnapshot, type UnusualHit } from "@/lib/visionFuturaFlowChanges";
 import VisionFuturaChart, { DEFAULT_LAYERS, LAYERS, type CandleBar, type HistoryPoint, type LayerKey, type VixStrip } from "./VisionFuturaChart";
 import type { ConvertedLevel, DealerLevel, KeyLevel, KeyLevelKind, VisionFuturaReport, VisionStrikeRow } from "@/lib/visionFutura";
@@ -101,7 +102,7 @@ interface VisionData extends VisionFuturaReport {
   vixPrevClose?: number | null;
   vixMagnetSeries?: { time: number; value: number }[];
   /** Terminal de MarketSnack (lib/visionFuturaMsStore.ts): prima por minuto, presión, inusuales. */
-  marketSnack?: { premium: MsPremiumMinute[]; unusual: MsUnusualTrade[] } | null;
+  marketSnack?: { premium: MsPremiumMinute[]; unusual: MsUnusualTrade[]; unusualExits?: Record<number, DotExit> } | null;
   spreads?: SpreadsReport | null;
   spreadsError?: string | null;
   alerts: AlertView[];
@@ -1028,6 +1029,7 @@ export default function VisionFuturaTab() {
             vix={vixStrip}
             premium={tick ? null : data.marketSnack?.premium ?? null}
             unusualMs={tick ? null : data.marketSnack?.unusual ?? null}
+            unusualExits={tick ? null : data.marketSnack?.unusualExits ?? null}
             positions={positionsView}
           />
         )}

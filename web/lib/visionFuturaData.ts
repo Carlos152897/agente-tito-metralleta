@@ -23,6 +23,7 @@ import { loadNightVisionFutura } from "./visionFuturaNight";
 import { captureChainsForReplay } from "./visionFuturaReplay";
 import { captureMsDay, loadMsDay, type MsDay, type MsPressureSnap } from "./visionFuturaMsStore";
 import { withSingleLeg } from "./visionFuturaLegs";
+import { unusualExits, type DotExit } from "./visionFuturaUnusualExit";
 import { backingOf, multiExpGex, MULTI_EXP_TUNING } from "./visionFuturaMultiExp";
 
 // Cadenas de los vencimientos siguientes (para el GEX de varios vencimientos): cambian despacio, 5 min.
@@ -81,7 +82,13 @@ export interface VisionFuturaPayload extends VisionFuturaReport {
    * minuto, inusuales) — guardados cada día en data/vision-futura/marketsnack (lib/visionFuturaMsStore.ts).
    * null si MarketSnack no los dio o no es el vencimiento más próximo.
    */
-  marketSnack?: { pressure: MsPressureSnap | null; premium: MsDay["premium"]; unusual: MsDay["unusual"] } | null;
+  marketSnack?: {
+    pressure: MsPressureSnap | null;
+    premium: MsDay["premium"];
+    unusual: MsDay["unusual"];
+    /** Inusuales que (estimado) ya salieron, por id (lib/visionFuturaUnusualExit.ts). */
+    unusualExits?: Record<number, DotExit>;
+  } | null;
   /** Sección "Spreads": ideas de crédito/débito/iron condor con cotización real de tastytrade. */
   spreads: SpreadsReport | null;
   spreadsError: string | null;
@@ -325,7 +332,12 @@ export async function loadVisionFutura(
     scale,
     strikeStep,
     expirations,
-    marketSnack: msDay ? { pressure: msDay.pressure.at(-1) ?? null, premium: msDay.premium, unusual: msDay.unusual } : null,
+    marketSnack: msDay
+      ? {
+          pressure: msDay.pressure.at(-1) ?? null, premium: msDay.premium, unusual: msDay.unusual,
+          unusualExits: unusualExits(msDay.unusual, Object.fromEntries(Object.entries(msDay.contractFlow ?? {}).map(([k, v]) => [k, v.buckets])), now.getTime()),
+        }
+      : null,
     spreads,
     spreadsError,
     optionQuotes,

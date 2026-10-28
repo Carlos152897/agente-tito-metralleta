@@ -15,6 +15,7 @@ import type { RowWithLegs } from "@/lib/visionFuturaLegs";
 import type { MsPremiumMinute } from "@/lib/marketsnack";
 import { premiumNewMoney, premiumSeries } from "@/lib/visionFuturaPremium";
 import { unusualDots, type RowMultiExp, type UnusualDot } from "@/lib/visionFuturaMultiExp";
+import type { DotExit } from "@/lib/visionFuturaUnusualExit";
 import type { MsUnusualTrade } from "@/lib/marketsnack";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useVisionLabels } from "./visionLabels";
@@ -125,6 +126,8 @@ interface Props {
   premium?: MsPremiumMinute[] | null;
   /** Operaciones inusuales de MarketSnack, una por una → puntos (hora × strike). */
   unusualMs?: MsUnusualTrade[] | null;
+  /** Inusuales que (estimado) ya salieron: se dibujan como círculo vacío y tenue. */
+  unusualExits?: Record<number, DotExit> | null;
   /** Historial Long/Short del día (lib/visionFuturaPositioning.ts): franjas por strike y marcas de presión. */
   positions?: Pick<PosHistory, "segments" | "events"> | null;
 }
@@ -983,10 +986,17 @@ export default function VisionFuturaChart(props: Props) {
               {dots.map((d) => {
                 const r = 3.5 + 5.5 * Math.sqrt(d.premium / maxP);
                 const fill = d.dir === "arriba" ? "#12b76a" : d.dir === "abajo" ? "#f97066" : "#9aa5c0";
-                return (
+                const out = props.unusualExits?.[d.id];
+                const sel = dotSel?.d.id === d.id;
+                // Ya salieron (estimado): círculo vacío y tenue del color de su dirección; siguen dentro: bola llena.
+                return out ? (
+                  <circle key={d.id} data-vf-dot="" data-vf-dot-out="" cx={x(d.time)} cy={y(d.strike)} r={r} fill="transparent"
+                    stroke={fill} strokeOpacity={sel ? 0.9 : 0.4} strokeWidth={sel ? 2 : 1.2} strokeDasharray={out.kind === "estimada" ? "2 2" : undefined}
+                    style={{ cursor: "pointer" }} onClick={(e) => setDotSel(sel ? null : { d, cx: e.clientX, cy: e.clientY })} />
+                ) : (
                   <circle key={d.id} data-vf-dot="" cx={x(d.time)} cy={y(d.strike)} r={r} fill={fill} fillOpacity={0.85}
-                    stroke={UNUSUAL} strokeWidth={dotSel?.d.id === d.id ? 2.5 : 1.2} style={{ cursor: "pointer" }}
-                    onClick={(e) => setDotSel(dotSel?.d.id === d.id ? null : { d, cx: e.clientX, cy: e.clientY })} />
+                    stroke={UNUSUAL} strokeWidth={sel ? 2.5 : 1.2} style={{ cursor: "pointer" }}
+                    onClick={(e) => setDotSel(sel ? null : { d, cx: e.clientX, cy: e.clientY })} />
                 );
               })}
             </g>
@@ -1010,6 +1020,17 @@ export default function VisionFuturaChart(props: Props) {
             <div style={{ color: "#f5f7fb", fontWeight: 700 }}>{d.type === "call" ? "CALL" : "PUT"} {n2(d.strike, 0)} · {d.size} contratos @ ${d.price.toFixed(2)}</div>
             <div>Prima <b style={{ color: "#f5f7fb" }}>${money(d.premium)}</b> · {side}</div>
             <div style={{ color }}>{d.dir ? `Apunta hacia ${d.dir.toUpperCase()}` : "Sin dirección clara (a mitad: puede ser spread o cruce)"}</div>
+            {(() => {
+              const out = props.unusualExits?.[d.id];
+              if (!d.dir) return null;
+              return out ? (
+                out.kind === "cierre"
+                  ? <div style={{ color: "#fdb022" }}>○ Cierre: {out.text}</div>
+                  : <div style={{ color: "#fdb022" }}>○ Probablemente salieron {hm(out.at)}{out.kind === "estimada" ? " (estimado)" : ""}: {out.text}</div>
+              ) : (
+                <div style={{ color: "#c7cede" }}>● Siguen dentro (no se ve la salida todavía)</div>
+              );
+            })()}
             <div style={{ color: "#6b7591", fontSize: 11 }}>MarketSnack: score {d.score} · prioridad {d.priority} · {d.sentiment}</div>
           </div>
         );

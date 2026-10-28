@@ -9,10 +9,12 @@
 import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import {
-  fetchNetPremiumSentiment, fetchOptionPressure, fetchUnusualTrades,
+  fetchContractTradeSummary, fetchNetPremiumSentiment, fetchOptionPressure, fetchUnusualTrades,
   type MsPremiumMinute, type MsPressure, type MsUnusualTrade,
 } from "./marketsnack";
 import { marketDateStr } from "./occ";
+import type { TradeSummaryBucket } from "./neighborContracts";
+import { symbolsToTrack } from "./visionFuturaUnusualExit";
 
 const DIR = join(process.cwd(), "data", "vision-futura", "marketsnack");
 
@@ -36,7 +38,17 @@ export interface MsDay {
   premium: MsPremiumMinute[];
   pressure: MsPressureSnap[];
   unusual: MsUnusualTrade[];
+  /**
+   * Bloques de 5 min (trade_summaries) de cada contrato con una inusual con lado: sirven para estimar
+   * si ya salieron (lib/visionFuturaUnusualExit.ts). `at` = ms de la última consulta.
+   */
+  contractFlow?: Record<string, { at: number; buckets: TradeSummaryBucket[] }>;
 }
+
+/** Cada cuánto se vuelve a pedir el flujo de un contrato con inusual. */
+export const CONTRACT_FLOW_MS = 3 * 60_000;
+/** Máximo de contratos seguidos por día (los más recientes). */
+export const CONTRACT_FLOW_MAX = 40;
 
 export interface MsFresh {
   premium: MsPremiumMinute[];
@@ -109,6 +121,18 @@ export async function captureMsDay(opts: { inst: string; msTicker: string; expir
       t,
       !!opts.force,
     );
+    // Flujo por contrato de las inusuales (para saber si ya salieron), en secuencia y cada 3 min.
+    const cf = { ...(day.contractFlow ?? {}) };
+    for (const sym of symbolsToTrack(day.unusual).slice(-CONTRACT_FLOW_MAX)) {
+      if (!opts.force && cf[sym] && t - cf[sym].at < CONTRACT_FLOW_MS) continue;
+      try {
+        const buckets = await fetchContractTradeSummary(sym);
+        if (buckets.length || !cf[sym]) cf[sym] = { at: t, buckets };
+      } catch {
+        break; // cookie vencida u otro error: se reintenta en la próxima captura
+      }
+    }
+    day.contractFlow = cf;
     saveMsDay(day);
     lastRun.set(key, { at: t, day });
     return day;
