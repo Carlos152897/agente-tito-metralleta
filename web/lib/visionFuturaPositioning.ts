@@ -11,7 +11,7 @@
 // entra dinero nuevo a favor de su lado). La presión es una marca para observar y medir — a
 // cuántos puntos estuvo el precio 15/30/60 min después (`markOutcome`) — no una alerta de entrada.
 
-import { detectUnusual, snapshotOf } from "./visionFuturaFlowChanges";
+import { minutesSinceOpen } from "./visionFuturaFlowChanges";
 
 export type PosSide = "L" | "S";
 export type PosSegment = { strike: number; side: PosSide; start: number; end: number | null };
@@ -30,13 +30,78 @@ export interface PosRow {
   putFlow: number;
 }
 
-/** Salto inusual de compras/ventas (lib/visionFuturaFlowChanges.ts → UnusualHit). */
+/**
+ * Orden grande en un strike. Con `type`/`push` es la versión NETA (calls compradas − vendidas o puts
+ * compradas − vendidas, ver `netFlowJumps`); sin ellos es el salto bruto viejo de compras/ventas.
+ */
 export interface PosUnusual {
   strike: number;
   side: "compra" | "venta";
+  /** Monto de la pata que más empujó ($, neto si trae `type`). */
   delta: number;
   /** Compra y venta del mismo tamaño en el mismo strike (no direccional). */
   cruce?: boolean;
+  type?: "call" | "put";
+  /** Hacia dónde empuja todo el strike: Long = calls compradas o puts vendidas. */
+  push?: PosSide;
+  /** Empuje neto completo del strike ($), el que pasa los filtros. */
+  total?: number;
+}
+
+export const NET_FLOW_RULES = {
+  minUsd: 250_000, // ≥ $250K netos
+  minOfMaxBar: 0.1, // ≥ 10% de la barra más grande (compras o ventas)
+  medianMult: 4, // ≥ 4× la mediana de los empujes de ese lado (si se movieron ≥ 3 strikes)
+  minMovedForMedian: 3,
+  minShareOfSide: 0.12, // ≥ 12% de todo lo que empujó hacia ese lado
+  maxPerSide: 2,
+  warmupMin: 15, // 9:30–9:45 NY sin marcas: en la apertura todo parece inusual
+};
+
+const median = (xs: number[]) => {
+  const s = [...xs].sort((a, b) => a - b);
+  const m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+};
+
+/**
+ * Órdenes grandes NETAS contra la lectura anterior (versión "visionfutura-main"): en cada strike se
+ * resta lo vendido de lo comprado por tipo, así una compra y una venta parecidas se anulan. Cumplen
+ * TODO: ≥ $250K netos, ≥ 10% de la barra más grande, ≥ 4× la mediana de su lado (si se movieron ≥ 3
+ * strikes) y ≥ 12% de todo lo que empujó hacia ese lado. Máx. 2 por lado.
+ */
+export function netFlowJumps(rows: PosRow[], prev: PosRow[] | null, t: number, maxBar: number, dayWarmup = true, rules = NET_FLOW_RULES): PosUnusual[] {
+  if (!prev || prev.length === 0) return [];
+  if (dayWarmup) {
+    const m = minutesSinceOpen(t);
+    if (m >= 0 && m < rules.warmupMin) return [];
+  }
+  const before = new Map(prev.map((r) => [r.spx, r]));
+  const byDir: Record<PosSide, { d: number; u: PosUnusual }[]> = { L: [], S: [] };
+  for (const r of rows) {
+    const p = before.get(r.spx);
+    if (!p) continue;
+    const callNet = r.callFlow - p.callFlow; // + = calls compradas netas
+    const putNet = r.putFlow - p.putFlow; // + = puts compradas netas
+    const push = callNet - putNet; // + Long, − Short
+    if (push === 0) continue;
+    const dir = push > 0 ? 1 : -1;
+    const useCall = callNet * dir >= -putNet * dir; // la pata que más empujó en esa dirección
+    const leg = useCall ? callNet : putNet;
+    const side: PosSide = dir > 0 ? "L" : "S";
+    byDir[side].push({ d: Math.abs(push), u: { strike: r.spx, side: leg >= 0 ? "compra" : "venta", delta: Math.abs(leg), type: useCall ? "call" : "put", push: side, total: Math.abs(push) } });
+  }
+  const out: PosUnusual[] = [];
+  for (const jumps of Object.values(byDir)) {
+    const total = jumps.reduce((a, j) => a + j.d, 0);
+    const med = jumps.length >= rules.minMovedForMedian ? median(jumps.map((j) => j.d)) : 0;
+    jumps
+      .filter((j) => j.d >= rules.minUsd && j.d >= rules.minOfMaxBar * Math.max(1, maxBar) && (jumps.length < rules.minMovedForMedian || j.d >= rules.medianMult * med) && j.d >= rules.minShareOfSide * total)
+      .sort((a, b) => b.d - a.d)
+      .slice(0, rules.maxPerSide)
+      .forEach((j) => out.push(j.u));
+  }
+  return out;
 }
 
 export const POS_TUNING = {
@@ -71,8 +136,9 @@ export function classify(rows: PosRow[], t = POS_TUNING): Map<number, PosSide> {
 
 export const sideName = (s: PosSide) => (s === "L" ? "Long" : "Short");
 
-/** Texto de un salto inusual: "▲ compra +$9.6M". */
+/** Texto de una orden grande: "▲ compra CALL +$12.7M neto · empuja Long" (o el viejo "▲ compra +$9.6M (agresor inusual)"). */
 export function unusualText(u: PosUnusual): string {
+  if (u.type && u.push) return `${u.side === "compra" ? "▲ compra" : "▼ venta"} ${u.type.toUpperCase()} +${fmtUsd(u.delta)} neto · empuja ${sideName(u.push)}`;
   if (u.cruce) return `⇄ cruce compra/venta +${fmtUsd(u.delta)} (no direccional)`;
   return `${u.side === "compra" ? "▲ compra" : "▼ venta"} +${fmtUsd(u.delta)} (agresor inusual)`;
 }
@@ -209,7 +275,8 @@ export function positionsFromTicks(ticks: PosTick[], night = false): { history: 
     const t = tk.time * 1000;
     const rows: PosRow[] = tk.rows.map((r) => ({ spx: r.spx, callFlow: r.callFlow, putFlow: r.putFlow }));
     const step = rows.length > 1 ? Math.abs(rows[1].spx - rows[0].spx) : 5;
-    const unusual = prev ? detectUnusual(tk.rows, snapshotOf(prev.rows), t, undefined, !night).map((u) => ({ strike: u.strike, side: u.side, delta: u.delta, cruce: u.cruce })) : [];
+    const maxBar = Math.max(1, ...tk.rows.map((r) => Math.max(r.compras, r.ventas)));
+    const unusual = prev ? netFlowJumps(rows, prev.rows, t, maxBar, !night) : [];
     const marks = prev ? pressureMarks(rows, prev.rows, tk.spot.spx, step, t) : [];
     pressure.push(...marks);
     // En la repetición cada paso es de 5 min: un cambio sostenido 2 pasos ya pasó el minuto de confirmación.

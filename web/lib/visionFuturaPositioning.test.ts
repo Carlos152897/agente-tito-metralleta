@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classify, emptyPosHistory, historyAt, markOutcome, netOf, pressureMarks, stepPositions, type PosRow } from "./visionFuturaPositioning";
+import { classify, emptyPosHistory, historyAt, markOutcome, netFlowJumps, netOf, pressureMarks, stepPositions, unusualText, type PosRow } from "./visionFuturaPositioning";
 
 // Pruebas traídas del zip "visionfutura-main", con filas de este proyecto:
 // callFlow = calls compradas − calls vendidas; putFlow = puts compradas − puts vendidas.
@@ -52,6 +52,35 @@ describe("posicionamiento Long/Short", () => {
     h = stepPositions(h, shortRows, t0 + 60_000);
     h = stepPositions(h, shortRows, t0 + 120_000); // ahora sí, 1 minuto sostenido
     expect(h.events.at(-1)).toMatchObject({ kind: "cambia", text: "pasó de Long a Short" });
+  });
+});
+
+describe("órdenes grandes netas (CALL/PUT · empuja)", () => {
+  const T = Date.parse("2026-10-28T12:05:00-04:00");
+  const noise = [7650, 7655, 7660, 7665].map((k) => row(k, 1e6, 0, 0, 0));
+  const prev = [row(7680, 30e6, 5e6, 20e6, 8e6), row(7670, 10e6, 2e6, 9e6, 3e6), ...noise];
+
+  it("compra neta de calls → '▲ compra CALL … neto · empuja Long'", () => {
+    const now = [row(7680, 42.74e6, 5e6, 20e6, 8e6), row(7670, 10e6, 2e6, 9e6, 3e6), ...noise.map((r) => ({ ...r, callFlow: r.callFlow + 50_000 }))];
+    const [u] = netFlowJumps(now, prev, T, 40e6);
+    expect(u).toMatchObject({ strike: 7680, side: "compra", type: "call", push: "L" });
+    expect(unusualText(u)).toBe("▲ compra CALL +$12.7M neto · empuja Long");
+  });
+
+  it("compra y venta parecidas en el mismo strike se anulan; venta de puts empuja Long", () => {
+    const cruce = [row(7680, 32e6, 5e6, 22e6, 8e6), ...prev.slice(1)]; // +2M compradas y +2M vendidas
+    expect(netFlowJumps(cruce, prev, T, 40e6)).toEqual([]);
+    const putsVendidas = [row(7680, 30e6, 9e6, 20e6, 8e6), ...prev.slice(1)];
+    const [u] = netFlowJumps(putsVendidas, prev, T, 40e6);
+    expect(unusualText(u)).toBe("▼ venta PUT +$4.0M neto · empuja Long");
+  });
+
+  it("9:30–9:45 sin marcas (salvo noche) y nada sin lectura anterior", () => {
+    const now = [row(7680, 42.74e6, 5e6, 20e6, 8e6), ...prev.slice(1)];
+    const at940 = Date.parse("2026-10-28T09:40:00-04:00");
+    expect(netFlowJumps(now, prev, at940, 40e6)).toEqual([]);
+    expect(netFlowJumps(now, prev, at940, 40e6, false)).toHaveLength(1);
+    expect(netFlowJumps(now, null, T, 40e6)).toEqual([]);
   });
 });
 

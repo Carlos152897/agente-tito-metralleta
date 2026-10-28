@@ -17,7 +17,7 @@ import { evaluateVisionAlerts, ALERT_TUNING, type Sample, type VisionAlert } fro
 import { marketDateStr } from "./occ";
 import { instrumentOf } from "./visionFuturaInstruments";
 import { sessionStartMs } from "./visionFuturaNight";
-import { emptyPosHistory, pressureMarks, stepPositions, type PosHistory, type PosRow } from "./visionFuturaPositioning";
+import { emptyPosHistory, netFlowJumps, pressureMarks, stepPositions, type PosHistory, type PosRow } from "./visionFuturaPositioning";
 import { detectUnusual, snapshotOf as snapshotOfRows, type FlowSnapshot } from "./visionFuturaFlowChanges";
 import { hybridFromAlert, hybridFromMoney, resolveHybrid, type HybridDay } from "./visionFuturaHybrid";
 import { closeAt, openResult, stepOrder, type OrderInput, type OrderResult } from "./visionFuturaAlertOutcome";
@@ -212,9 +212,11 @@ export async function runVisionFuturaCycle(now: Date, radius: number, instrument
   if (payload.marketOpen && payload.rows.length > 0) {
     const rowsNow: PosRow[] = payload.rows.map((r) => ({ spx: r.spx, callFlow: r.callFlow, putFlow: r.putFlow }));
     const step = payload.rows.length > 1 ? Math.abs(payload.rows[1].spx - payload.rows[0].spx) : 5;
-    const prevAgg = state.posAgg ? new Map(state.posAgg.snap) : null;
-    const unusual = detectUnusual(payload.rows, prevAgg, t, undefined, !isNightInst).map((u) => ({ strike: u.strike, side: u.side, delta: u.delta, cruce: u.cruce }));
-    const marks = state.posPrev && t - state.posPrev.t >= 10_000 ? pressureMarks(rowsNow, state.posPrev.rows, payload.spot.spx, step, t) : [];
+    // Órdenes grandes NETAS (CALL/PUT · empuja Long/Short) contra la lectura de hace ≥ 10 s.
+    const ready = state.posPrev && t - state.posPrev.t >= 10_000;
+    const maxBar = Math.max(1, ...payload.rows.map((r) => Math.max(r.compras, r.ventas)));
+    const unusual = ready ? netFlowJumps(rowsNow, state.posPrev!.rows, t, maxBar, !isNightInst) : [];
+    const marks = ready ? pressureMarks(rowsNow, state.posPrev!.rows, payload.spot.spx, step, t) : [];
     state.positions = stepPositions(state.positions ?? emptyPosHistory(), rowsNow, t, unusual, marks);
     if (!state.posPrev || t - state.posPrev.t >= 10_000) state.posPrev = { t, rows: rowsNow };
     state.posAgg = { t, snap: [...snapshotOfRows(payload.rows)] };
