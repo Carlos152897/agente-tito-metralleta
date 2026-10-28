@@ -48,6 +48,8 @@ async function main() {
   const { positionsFromTicks } = await import("../../lib/visionFuturaPositioning");
   const { instrumentOf } = await import("../../lib/visionFuturaInstruments");
   const { settleLottoWithRule } = await import("../../lib/visionFuturaLottos");
+  const { attachHybridDay } = await import("../../lib/visionFuturaHybridStore");
+  const { hybridSummary } = await import("../../lib/visionFuturaHybrid");
 
   const now = new Date();
   let fallas = 0;
@@ -74,6 +76,12 @@ async function main() {
         const lm = live.money.filter((m) => m.points != null);
         log(`${inst} ${replay.date}: EN VIVO vigilado ${hm(live.coverage.first)}–${hm(live.coverage.last)} (${live.coverage.minutesWatched} min con ciclos) · entradas ${live.trades.length} (${live.wins}/${live.losses}, ${live.points} pts, ${live.priceSource}) · señales del dinero ${lm.length} (${lm.reduce((a, m) => a + (m.points ?? 0), 0).toFixed(2)} pts)`);
       } else log(`${inst} ${replay.date}: sin alertas en vivo guardadas (nadie vigiló ese día).`);
+      // Motor híbrido (después del vivo, que también guarda el estado del día): velas de 1 min.
+      const hy = await attachHybridDay(replay.instrument, replay.date, replay).catch((e) => { log(`${inst} híbrido: ${e instanceof Error ? e.message : e}`); return null; });
+      if (hy) {
+        const a = hybridSummary(hy.alerts), m = hybridSummary(hy.money);
+        log(`${inst} ${replay.date}: MOTOR HÍBRIDO (${hy.priceSource}) · alertas ${a.n} (${a.wins}/${a.losses}, ${a.points} pts) · señales ${m.n} (${m.wins}/${m.losses}, ${m.points} pts) · bloqueadas ${hy.blocked.length}`);
+      }
       if (replay.instrument === "SPX") await processAmigaDay(replay.date, now).catch((e) => log(`SPX amiga: ${e instanceof Error ? e.message : e}`));
       const money = (replay.moneyTrades ?? []).filter((t) => t.points != null);
       const strikesConGex = replay.ticks.at(-1)?.rows.filter((r) => r.netGex !== 0).length ?? 0;

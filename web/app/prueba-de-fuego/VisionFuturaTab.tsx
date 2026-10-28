@@ -16,6 +16,8 @@ import VisionFuturaReplayBar from "./VisionFuturaReplayBar";
 import VisionFuturaPremarket from "./VisionFuturaPremarket";
 import VisionFuturaPositionLog from "./VisionFuturaPositionLog";
 import VisionFuturaTickerSearch from "./VisionFuturaTickerSearch";
+import VisionFuturaHybrid from "./VisionFuturaHybrid";
+import { hybridFromReplay, type HybridDay } from "@/lib/visionFuturaHybrid";
 import { isEquityTicker } from "@/lib/visionFuturaInstruments";
 import { historyAt, positionsFromTicks, type PosHistory } from "@/lib/visionFuturaPositioning";
 import { DEFAULT_LABELS, VisionLabelsContext, useVisionLabels } from "./visionLabels";
@@ -104,6 +106,8 @@ interface VisionData extends VisionFuturaReport {
   money?: MoneyLive;
   /** Historial Long/Short del día (solo en vivo; en la repetición se calcula de los pasos). */
   positions?: Pick<PosHistory, "segments" | "events">;
+  /** Motor híbrido del día (solo en vivo; en la repetición se calcula de la repetición). */
+  hybrid?: HybridDay;
 }
 
 const KIND_COLOR: Record<KeyLevelKind, string> = {
@@ -326,6 +330,9 @@ export default function VisionFuturaTab() {
   const [replay, setReplay] = useState<ReplayPayload | null>(null);
   // Historial Long/Short de toda la repetición (una vez); cada paso ve lo que pasó hasta su hora.
   const replayPositions = useMemo(() => (replay ? positionsFromTicks(replay.ticks).history : null), [replay]);
+  // Motor híbrido de la repetición (las mismas alertas/señales del día con sus filtros).
+  const replayHybrid = useMemo(() => (replay ? hybridFromReplay(replay) : null), [replay]);
+  const replayHybridPrices = useMemo(() => (replay ? replay.priceSeries.map((p) => ({ t: p.time * 1000, v: p.value })) : null), [replay]);
   const [replayIdx, setReplayIdx] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speedMs, setSpeedMs] = useState(REPLAY_SPEEDS[0].ms);
@@ -1004,6 +1011,15 @@ export default function VisionFuturaTab() {
         </button>
         {showTable && view.rows.length > 0 && <Ladder rows={view.rows} spot={view.spot.spx} maxGex={maxGex} />}
       </div>
+
+      <VisionFuturaHybrid
+        day={tick ? replayHybrid : view.hybrid ?? null}
+        replayPrices={tick ? replayHybridPrices : null}
+        nowMs={tick ? tickMs : Date.now()}
+        conversion={view.conversion}
+        instrument={inst}
+        night={isNightInst}
+      />
 
       <VisionFuturaMoney
         reading={tick ? tick.money ?? null : view.money?.reading ?? null}

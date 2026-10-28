@@ -14,6 +14,7 @@ import type { LottoTrade } from "./visionFuturaLottos";
 import type { ReplayAlert, ReplaySpreadTrade } from "./visionFuturaReplay";
 import type { LiveDay } from "./visionFuturaLive";
 import type { PressureMark } from "./visionFuturaPositioning";
+import type { HybridDay } from "./visionFuturaHybrid";
 
 export interface BacktestTrade {
   date: string;
@@ -111,6 +112,8 @@ export interface BacktestDay {
   live?: LiveDay;
   /** Marcas de presión Long/Short del día con su resultado a 15/30/60 min (lib/visionFuturaPositioning.ts). */
   pressure?: PressureMark[];
+  /** Motor híbrido del día (lib/visionFuturaHybridStore.ts), calificado con velas de 1 min. */
+  hybrid?: HybridDay & { priceSource: string; live?: HybridDay | null };
 }
 
 /** Spreads ejecutados en la repetición → filas del backtest (solo los ya liquidados). */

@@ -57,6 +57,8 @@ export const UNUSUAL_TUNING = {
   warmupMin: 15,
   /** Cuánto tiempo queda encendido el strike en vivo. */
   holdMs: 3 * 60_000,
+  /** Compra y venta inusual en el mismo strike con tamaños ≥ 75% una de la otra = cruce, no dirección. */
+  cruceRatio: 0.75,
 };
 
 export interface UnusualHit {
@@ -67,6 +69,12 @@ export interface UnusualHit {
   after: number;
   /** ms en que se detectó (lo pone quien llama). */
   at: number;
+  /**
+   * Cruce: en el mismo refresco hubo compra Y venta inusual en el mismo strike con tamaño parecido
+   * (≥ 75% una de la otra). Suele ser un spread o un cruce de órdenes, no una apuesta direccional
+   * (27-oct: "venta 7685 +$2.4M" y "compra 7685 +$2.5M" al mismo tiempo, una y otra vez).
+   */
+  cruce?: boolean;
 }
 
 const median = (xs: number[]) => {
@@ -112,6 +120,11 @@ export function detectUnusual(rows: FlowRow[], prev: Map<number, FlowSnapshot> |
       .sort((a, b) => b.delta - a.delta)
       .slice(0, t.maxPerSide)
       .forEach((m) => hits.push({ ...m, side, at }));
+  }
+  // Cruces: compra y venta inusual en el mismo strike, de tamaño parecido.
+  for (const h of hits) {
+    const other = hits.find((o) => o !== h && o.strike === h.strike && o.side !== h.side);
+    if (other && Math.min(h.delta, other.delta) >= t.cruceRatio * Math.max(h.delta, other.delta)) h.cruce = true;
   }
   return hits.sort((a, b) => b.delta - a.delta);
 }

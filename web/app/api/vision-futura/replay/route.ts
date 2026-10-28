@@ -20,6 +20,7 @@ export const maxDuration = 300;
 import { positionsFromTicks } from "@/lib/visionFuturaPositioning";
 import { instrumentOf } from "@/lib/visionFuturaInstruments";
 import { settleLottoWithRule } from "@/lib/visionFuturaLottos";
+import { attachHybridDay } from "@/lib/visionFuturaHybridStore";
 
 export async function GET(req: Request) {
   const params = new URL(req.url).searchParams;
@@ -44,6 +45,8 @@ export async function GET(req: Request) {
         money: (replay.moneyTrades ?? []).filter((t) => t.points != null),
         pressure: positionsFromTicks(replay.ticks, !!instrumentOf(replay.instrument).night).pressure,
       });
+      // Motor híbrido del día con velas de 1 min (no rompe la repetición si falla).
+      await attachHybridDay(replay.instrument, replay.date, replay).catch(() => null);
       // "Verticales amiga": lecturas + salidas + cierre del día (idempotente, no repite lo hecho).
       if (replay.instrument === "SPX") await processAmigaDay(replay.date, new Date()).catch(() => null);
     }

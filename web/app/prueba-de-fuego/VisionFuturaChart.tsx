@@ -161,6 +161,8 @@ const SHORT_LABEL: Record<string, string> = {
 /** Columna extra del agresor para la etiqueta "Compra/Venta inusual". */
 const UNUSUAL_W = 128;
 const UNUSUAL = "#facc15";
+/** Cruce (compra y venta inusual del mismo tamaño en el strike): gris, no es dirección. */
+const CRUCE = "#9aa5c0";
 const TOP = 8;
 const BOTTOM = 26;
 /** Franja del mini VIX (Carlos: "cerca de la gráfica del activo, pero pequeña"). */
@@ -537,7 +539,7 @@ export default function VisionFuturaChart(props: Props) {
 
         {/* Strikes con compra/venta inusual: franja amarilla en toda la fila */}
         {layers.agresor && rows.map((r, i) => unusualBy.has(r.spx) && (
-          <rect key={`unu-${r.spx}`} x={0} y={TOP + i * ROW_H} width={width} height={ROW_H} fill={UNUSUAL} opacity={0.13} />
+          <rect key={`unu-${r.spx}`} x={0} y={TOP + i * ROW_H} width={width} height={ROW_H} fill={unusualBy.get(r.spx)?.cruce ? CRUCE : UNUSUAL} opacity={unusualBy.get(r.spx)?.cruce ? 0.07 : 0.13} />
         ))}
 
         {/* Columna de posicionamiento */}
@@ -809,12 +811,13 @@ export default function VisionFuturaChart(props: Props) {
               const arrow = !show || prevNet == null || grew === 0 ? "" : grew > 0 ? "▲" : "▼";
               const hit = unusualBy.get(r.spx);
               const pr = pressureLit.get(r.spx);
-              const col = hit ? UNUSUAL : buy ? "#2f6bff" : "#f04438";
+              const uCol = hit?.cruce ? CRUCE : UNUSUAL;
+              const col = hit && !hit.cruce ? UNUSUAL : buy ? "#2f6bff" : "#f04438";
               const sideCol = buy ? "#7aa2ff" : "#f97066";
               const isSpot = r.spx === spotStrike;
               return (
                 <g key={`agg-${r.spx}`}>
-                  {hit && <rect x={aggX + AGG_GEX_W} y={ry0 + 1} width={rightW - AGG_GEX_W - 4} height={ROW_H - 2} rx={4} fill="rgba(250,204,21,0.10)" stroke={UNUSUAL} strokeWidth={1.2} />}
+                  {hit && <rect x={aggX + AGG_GEX_W} y={ry0 + 1} width={rightW - AGG_GEX_W - 4} height={ROW_H - 2} rx={4} fill={hit.cruce ? "rgba(154,165,192,0.08)" : "rgba(250,204,21,0.10)"} stroke={uCol} strokeWidth={1.2} strokeDasharray={hit.cruce ? "2 2" : undefined} />}
                   {!hit && pr && (
                     <rect x={aggX + AGG_GEX_W} y={ry0 + 1} width={rightW - AGG_GEX_W - 4} height={ROW_H - 2} rx={4}
                       fill={pr.side === "S" ? "rgba(168,85,247,0.12)" : "rgba(18,183,106,0.12)"} stroke={pr.side === "S" ? POS_DOWN : COLOR.posicionamiento} strokeDasharray="4 3" />
@@ -823,7 +826,7 @@ export default function VisionFuturaChart(props: Props) {
                   {show && !buy && (
                     <>
                       <text x={aggC - AGG_HALF - 4} y={ry + 14} fontSize={10} textAnchor="end" fill={arrow === "▼" ? "#9aa5c0" : sideCol}>{arrow}</text>
-                      <text x={aggC - AGG_HALF - 16} y={ry + 14} fontSize={10} fontWeight={700} textAnchor="end" fill={hit ? UNUSUAL : "#f5f7fb"}>{money1(-net)}</text>
+                      <text x={aggC - AGG_HALF - 16} y={ry + 14} fontSize={10} fontWeight={700} textAnchor="end" fill={hit && !hit.cruce ? UNUSUAL : "#f5f7fb"}>{money1(-net)}</text>
                       <rect x={aggC - w} y={ry + 4} width={w} height={12} rx={2} fill={col} opacity={0.85} />
                     </>
                   )}
@@ -831,13 +834,13 @@ export default function VisionFuturaChart(props: Props) {
                     <>
                       <rect x={aggC} y={ry + 4} width={w} height={12} rx={2} fill={col} opacity={0.85} />
                       <text x={aggC + AGG_HALF + 4} y={ry + 14} fontSize={10} fill={arrow === "▼" ? "#9aa5c0" : sideCol}>{arrow}</text>
-                      <text x={aggC + AGG_HALF + 16} y={ry + 14} fontSize={10} fontWeight={700} fill={hit ? UNUSUAL : "#f5f7fb"}>{money1(net)}</text>
+                      <text x={aggC + AGG_HALF + 16} y={ry + 14} fontSize={10} fontWeight={700} fill={hit && !hit.cruce ? UNUSUAL : "#f5f7fb"}>{money1(net)}</text>
                     </>
                   )}
                   <text x={strikeX} y={ry + 14} fontSize={10.5} fill={isSpot || hit ? "#f5f7fb" : "#9aa5c0"} fontWeight={isSpot || hit ? 700 : 400}>{n2(r.spx, Number.isInteger(r.spx) ? 0 : 1)}</text>
                   {hit && (
-                    <text x={unusX} y={ry + 14} fontSize={10} fontWeight={700} fill={UNUSUAL}>
-                      {hit.side === "compra" ? "▲ Compra inusual" : "▼ Venta inusual"} +{money(hit.delta)}
+                    <text x={unusX} y={ry + 14} fontSize={10} fontWeight={700} fill={uCol}>
+                      {hit.cruce ? "⇄ Cruce compra/venta" : hit.side === "compra" ? "▲ Compra inusual" : "▼ Venta inusual"} +{money(hit.delta)}
                     </text>
                   )}
                   {!hit && pr && (
@@ -916,7 +919,7 @@ export default function VisionFuturaChart(props: Props) {
                   style={{ background: "none", border: "none", color: "#9aa5c0", cursor: "pointer", fontSize: 14, padding: 0, lineHeight: 1 }}>✕</button>
               </span>
             </div>
-            {hit && <div style={{ color: UNUSUAL, fontWeight: 700 }}>{hit.side === "compra" ? "▲ Compra inusual" : "▼ Venta inusual"} +{money(hit.delta)} ({money(hit.before)} → {money(hit.after)})</div>}
+            {hit && <div style={{ color: hit.cruce ? CRUCE : UNUSUAL, fontWeight: 700 }}>{hit.cruce ? "⇄ Cruce compra/venta (mismo tamaño: spread o cruce, no dirección)" : hit.side === "compra" ? "▲ Compra inusual" : "▼ Venta inusual"} +{money(hit.delta)} ({money(hit.before)} → {money(hit.after)})</div>}
             <div style={{ marginTop: 4, color: COLOR.posicionamiento, fontWeight: 700 }}>🟢 Arriba {money(p.up)}{p.dUp > minGrowth ? ` (▲${money(p.dUp)})` : ""}</div>
             {line("  C · calls compradas", money(p.callsBought), COLOR.posicionamiento)}
             {line("  P · puts vendidas", money(p.putsSold), POS_UP_PUT)}

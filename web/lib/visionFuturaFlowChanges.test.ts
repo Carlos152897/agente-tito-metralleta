@@ -55,3 +55,14 @@ describe("mergeUnusual", () => {
     expect(mergeUnusual([a], [], 3 * 60_000 + 1)).toEqual([]);
   });
 });
+
+describe("cruces compra/venta", () => {
+  it("compra y venta inusual del mismo tamaño en el mismo strike = cruce", () => {
+    const at = Date.parse("2026-10-27T10:30:00-04:00");
+    const prev = new Map([[7685, { compras: 10e6, ventas: 10e6, up: 0, down: 0 }], [7690, { compras: 1e6, ventas: 1e6, up: 0, down: 0 }]]);
+    const rows = [{ spx: 7685, callFlow: 0, putFlow: 0, compras: 12.5e6, ventas: 12.4e6 }, { spx: 7690, callFlow: 0, putFlow: 0, compras: 1.1e6, ventas: 1.05e6 }];
+    const hits = detectUnusual(rows, prev, at);
+    expect(hits.filter((h) => h.strike === 7685)).toHaveLength(2);
+    expect(hits.every((h) => h.strike !== 7685 || h.cruce)).toBe(true);
+  });
+});

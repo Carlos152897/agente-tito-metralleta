@@ -18,6 +18,7 @@ import { instrumentOf } from "./visionFuturaInstruments";
 import { sessionStartMs } from "./visionFuturaNight";
 import { emptyPosHistory, pressureMarks, stepPositions, type PosHistory, type PosRow } from "./visionFuturaPositioning";
 import { detectUnusual, snapshotOf as snapshotOfRows, type FlowSnapshot } from "./visionFuturaFlowChanges";
+import { hybridFromAlert, hybridFromMoney, resolveHybrid, type HybridDay } from "./visionFuturaHybrid";
 
 const STATE_DIR = join(process.cwd(), "data", "vision-futura");
 /** Un archivo de estado por instrumento (SPX conserva el nombre original). */
@@ -57,6 +58,8 @@ export interface AlertState {
   /** Lectura anterior para las marcas de presión y foto del agresor para los saltos inusuales. */
   posPrev?: { t: number; rows: PosRow[] } | null;
   posAgg?: { t: number; snap: [number, FlowSnapshot][] } | null;
+  /** Motor híbrido (lib/visionFuturaHybrid.ts): TODAS las alertas/señales híbridas del día y las bloqueadas. */
+  hybrid?: HybridDay;
 }
 
 function emptyState(date: string): AlertState {
@@ -124,6 +127,8 @@ export interface VisionFuturaCycle {
   watch: VisionAlert[];
   /** Historial Long/Short del día (franjas y cambios). */
   positions: Pick<PosHistory, "segments" | "events">;
+  /** Motor híbrido del día (la pantalla muestra solo la última de cada tipo). */
+  hybrid: HybridDay;
 }
 
 /** Cómo se opera cada lado según el instrumento (texto de la orden de las alertas). */
@@ -202,7 +207,7 @@ export async function runVisionFuturaCycle(now: Date, radius: number, instrument
     const rowsNow: PosRow[] = payload.rows.map((r) => ({ spx: r.spx, callFlow: r.callFlow, putFlow: r.putFlow }));
     const step = payload.rows.length > 1 ? Math.abs(payload.rows[1].spx - payload.rows[0].spx) : 5;
     const prevAgg = state.posAgg ? new Map(state.posAgg.snap) : null;
-    const unusual = detectUnusual(payload.rows, prevAgg, t, undefined, !isNightInst).map((u) => ({ strike: u.strike, side: u.side, delta: u.delta }));
+    const unusual = detectUnusual(payload.rows, prevAgg, t, undefined, !isNightInst).map((u) => ({ strike: u.strike, side: u.side, delta: u.delta, cruce: u.cruce }));
     const marks = state.posPrev && t - state.posPrev.t >= 10_000 ? pressureMarks(rowsNow, state.posPrev.rows, payload.spot.spx, step, t) : [];
     state.positions = stepPositions(state.positions ?? emptyPosHistory(), rowsNow, t, unusual, marks);
     if (!state.posPrev || t - state.posPrev.t >= 10_000) state.posPrev = { t, rows: rowsNow };
@@ -214,7 +219,14 @@ export async function runVisionFuturaCycle(now: Date, radius: number, instrument
     activeIds.add(a.id);
     const existing = state.fired.find((f) => f.id === a.id && t - f.lastSeenAt < COOLDOWN_MS);
     if (existing) existing.lastSeenAt = t;
-    else state.fired.push({ ...a, firedAt: t, lastSeenAt: t });
+    else {
+      state.fired.push({ ...a, firedAt: t, lastSeenAt: t });
+      // Motor híbrido: la misma alerta con sus filtros y stop/objetivo más amplios.
+      state.hybrid ??= { alerts: [], money: [], blocked: [] };
+      const h = hybridFromAlert(a, { at: t, keyLevels: payload.keyLevels, scale: payload.scale ?? 1 });
+      if (h.trade) state.hybrid.alerts.push(h.trade);
+      if (h.blocked) state.hybrid.blocked.push(h.blocked);
+    }
   }
   // ── Lottos al cierre (lib/visionFuturaLottos.ts): desde las 15:00, solo 0DTE y sesión de día ──
   const quotes: LottoQuote[] = (payload.optionQuotes ?? []).map((q) => ({ type: q.type, strike: q.strike, bid: q.bid, ask: q.ask, real: true }));
@@ -294,7 +306,12 @@ export async function runVisionFuturaCycle(now: Date, radius: number, instrument
       const open = state.moneyTrades.some((tr) => tr.outcome == null);
       const lastSame = [...state.moneyTrades].reverse().find((tr) => sig && tr.side === sig.side);
       if (sig && !open && nyMin <= 15 * 60 + 30 && (!lastSame || t - lastSame.openedAt >= MONEY_TUNING.cooldownMs)) {
-        state.moneyTrades.push({ ...sig, id: `${t}:${sig.side}`, openedAt: t, votes: moneyReading.votes, exit: null, exitAt: null, outcome: null, points: null });
+        const mt = { ...sig, id: `${t}:${sig.side}`, openedAt: t, votes: moneyReading.votes, exit: null, exitAt: null, outcome: null, points: null };
+        state.moneyTrades.push(mt);
+        state.hybrid ??= { alerts: [], money: [], blocked: [] };
+        const h = hybridFromMoney(mt, { keyLevels: payload.keyLevels });
+        if (h.trade) state.hybrid.money.push(h.trade);
+        if (h.blocked) state.hybrid.blocked.push(h.blocked);
       }
     }
   }
@@ -304,6 +321,17 @@ export async function runVisionFuturaCycle(now: Date, radius: number, instrument
       if (tr.outcome != null) continue;
       const up = tr.side === "largo";
       Object.assign(tr, { outcome: "cierre", exit: spotNow, exitAt: t, points: Math.round((up ? spotNow - tr.entry : tr.entry - spotNow) * 100) / 100 });
+    }
+  }
+  // Motor híbrido: las abiertas se resuelven con el precio en vivo; después del cierre, al último precio.
+  state.hybrid ??= { alerts: [], money: [], blocked: [] };
+  if (!instrumentOf(inst).night) {
+    const closed = !payload.marketOpen && nyMin >= 16 * 60;
+    if (payload.marketOpen || closed) {
+      const px = [{ t, v: spotNow }];
+      const step = (list: typeof state.hybrid.alerts) => list.map((tr) => (tr.outcome != null ? tr : resolveHybrid(tr, px, closed)));
+      state.hybrid.alerts = step(state.hybrid.alerts);
+      state.hybrid.money = step(state.hybrid.money);
     }
   }
   const money: MoneyLive = { reading: moneyReading, trades: state.moneyTrades };
@@ -325,5 +353,5 @@ export async function runVisionFuturaCycle(now: Date, radius: number, instrument
     .slice(0, 4);
 
   const positions = { segments: state.positions?.segments ?? [], events: state.positions?.events ?? [] };
-  return { payload, alerts, watch, lottos, money, positions };
+  return { payload, alerts, watch, lottos, money, positions, hybrid: state.hybrid };
 }

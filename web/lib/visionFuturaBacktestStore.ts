@@ -26,9 +26,10 @@ const sheetName = (d: { date: string; instrument?: string }) => (!d.instrument |
 export function saveBacktestDay(day: BacktestDay) {
   mkdirSync(BT_DIR, { recursive: true });
   // Rearmar la repetición no borra el bloque "En vivo" ya guardado (viene de otra fuente).
-  if (!day.live) {
+  if (!day.live || !day.hybrid) {
     const prev = loadBacktestDay(day.date, day.instrument);
-    if (prev?.live) day = { ...day, live: prev.live };
+    if (prev?.live && !day.live) day = { ...day, live: prev.live };
+    if (prev?.hybrid && !day.hybrid) day = { ...day, hybrid: prev.hybrid };
   }
   writeFileSync(join(BT_DIR, btFile(day)), JSON.stringify(day, null, 2), "utf8");
 }

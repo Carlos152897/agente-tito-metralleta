@@ -18,7 +18,7 @@ export default function VisionFuturaPositionLog({ positions }: { positions: Pick
   if (!positions) return null;
   const ev = [...positions.events].reverse().filter((e) => !onlyPressure || e.kind === "presion");
   const shown = all ? ev : ev.slice(0, 10);
-  const color = (e: (typeof ev)[number]) => (e.kind === "prende" ? YELLOW : e.kind === "sale" ? "#9aa5c0" : e.side === "L" ? LONG : SHORT);
+  const color = (e: (typeof ev)[number]) => (e.kind === "prende" ? (e.text?.startsWith("⇄") ? "#9aa5c0" : YELLOW) : e.kind === "sale" ? "#9aa5c0" : e.side === "L" ? LONG : SHORT);
   const nowLong = positions.segments.filter((s) => s.end == null && s.side === "L").length;
   const nowShort = positions.segments.filter((s) => s.end == null && s.side === "S").length;
   return (

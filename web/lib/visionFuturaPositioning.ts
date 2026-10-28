@@ -35,6 +35,8 @@ export interface PosUnusual {
   strike: number;
   side: "compra" | "venta";
   delta: number;
+  /** Compra y venta del mismo tamaño en el mismo strike (no direccional). */
+  cruce?: boolean;
 }
 
 export const POS_TUNING = {
@@ -71,6 +73,7 @@ export const sideName = (s: PosSide) => (s === "L" ? "Long" : "Short");
 
 /** Texto de un salto inusual: "▲ compra +$9.6M". */
 export function unusualText(u: PosUnusual): string {
+  if (u.cruce) return `⇄ cruce compra/venta +${fmtUsd(u.delta)} (no direccional)`;
   return `${u.side === "compra" ? "▲ compra" : "▼ venta"} +${fmtUsd(u.delta)} (agresor inusual)`;
 }
 
@@ -168,7 +171,11 @@ export function stepPositions(h: PosHistory, rows: PosRow[], t: number, unusual:
       else if (cur) events.push({ t, strike: k, kind: "sale", side: cur.side, text: "sale (ya no está posicionado)" });
     }
   }
-  for (const u of unusual) events.push({ t, strike: u.strike, kind: "prende", text: unusualText(u) });
+  const seenCruce = new Set<number>();
+  for (const u of unusual) {
+    if (u.cruce) { if (seenCruce.has(u.strike)) continue; seenCruce.add(u.strike); }
+    events.push({ t, strike: u.strike, kind: "prende", text: unusualText(u) });
+  }
   for (const m of marks) events.push({ t, strike: m.strike, kind: "presion", side: m.side, text: m.text });
   return { segments, events: events.slice(-tune.maxEvents), pending };
 }
@@ -202,7 +209,7 @@ export function positionsFromTicks(ticks: PosTick[], night = false): { history: 
     const t = tk.time * 1000;
     const rows: PosRow[] = tk.rows.map((r) => ({ spx: r.spx, callFlow: r.callFlow, putFlow: r.putFlow }));
     const step = rows.length > 1 ? Math.abs(rows[1].spx - rows[0].spx) : 5;
-    const unusual = prev ? detectUnusual(tk.rows, snapshotOf(prev.rows), t, undefined, !night).map((u) => ({ strike: u.strike, side: u.side, delta: u.delta })) : [];
+    const unusual = prev ? detectUnusual(tk.rows, snapshotOf(prev.rows), t, undefined, !night).map((u) => ({ strike: u.strike, side: u.side, delta: u.delta, cruce: u.cruce })) : [];
     const marks = prev ? pressureMarks(rows, prev.rows, tk.spot.spx, step, t) : [];
     pressure.push(...marks);
     // En la repetición cada paso es de 5 min: un cambio sostenido 2 pasos ya pasó el minuto de confirmación.
