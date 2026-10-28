@@ -13,7 +13,7 @@
 // Uso (cwd = web): npx tsx scripts/vision-futura-live/poll.ts
 // Log: data/vision-futura/live-task.log
 
-import { appendFileSync, mkdirSync, readFileSync } from "fs";
+import { appendFileSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 
 const WEB_DIR = process.cwd();
@@ -50,7 +50,33 @@ function ny(ms = Date.now()) {
 }
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Candado: UNA sola vigilancia a la vez (28-oct-2026: tras reiniciar la tarea quedaron hasta 3
+// procesos escribiendo los mismos archivos y se borró el estado de NQ). Si ya hay otra viva, esta
+// se cierra sin hacer nada. Para reiniciar con código nuevo: Reiniciar-Vigilancia.ps1 (mata la vieja).
+const LOCK = join(LOG_DIR, "live.lock");
+const alive = (pid: number) => {
+  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
+};
+function takeLock(): boolean {
+  try {
+    const cur = JSON.parse(readFileSync(LOCK, "utf8")) as { pid: number; at: number };
+    if (cur.pid !== process.pid && alive(cur.pid) && Date.now() - cur.at < 14 * 3600_000) {
+      log(`ya hay una vigilancia corriendo (proceso ${cur.pid}); esta se cierra.`);
+      return false;
+    }
+  } catch { /* sin candado o candado roto: se toma */ }
+  mkdirSync(LOG_DIR, { recursive: true });
+  writeFileSync(LOCK, JSON.stringify({ pid: process.pid, at: Date.now() }), "utf8");
+  const free = () => {
+    try { if ((JSON.parse(readFileSync(LOCK, "utf8")) as { pid: number }).pid === process.pid) unlinkSync(LOCK); } catch { /* ya no está */ }
+  };
+  process.on("exit", free);
+  for (const sig of ["SIGINT", "SIGTERM", "SIGBREAK"] as const) process.on(sig, () => { free(); process.exit(0); });
+  return true;
+}
+
 async function main() {
+  if (!takeLock()) return;
   const { runVisionFuturaCycle } = await import("../../lib/visionFuturaAlertStore");
   const { archiveLiveState } = await import("../../lib/visionFuturaLiveStore");
 
@@ -95,4 +121,4 @@ async function main() {
   log(`${date}: terminó la vigilancia · alertas: ${INSTRUMENTS.map((i) => `${i} ${fired[i] ?? 0}`).join(", ")} · estado archivado en data/vision-futura/live/`);
 }
 
-main().catch((e) => { log(`FALLÓ — ${e instanceof Error ? e.message : String(e)}`); process.exit(1); });
+main().then(() => process.exit(0)).catch((e) => { log(`FALLÓ — ${e instanceof Error ? e.message : String(e)}`); process.exit(1); });

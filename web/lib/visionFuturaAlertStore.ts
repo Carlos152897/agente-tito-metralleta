@@ -10,7 +10,7 @@
 import { MONEY_TUNING, readMoney, stepAgo, type MoneyReading, type MoneyRow, type MoneyTrade } from "./visionFuturaMoneyFlow";
 import { premiumNewMoney, premiumSeries } from "./visionFuturaPremium";
 import { evaluateLottos, lecturaAt, lottoExitsFrom, lottoTradeFrom, minutesToClose, settleLottoWithRule, type LottoIdea, type LottoQuote, type LottoTrade } from "./visionFuturaLottos";
-import { mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { loadVisionFutura, type VisionFuturaPayload } from "./visionFuturaData";
 import { evaluateVisionAlerts, ALERT_TUNING, type Sample, type VisionAlert } from "./visionFuturaAlerts";
@@ -81,13 +81,26 @@ export interface LottoLive {
   zeroDte: boolean;
 }
 
+/**
+ * Estado del día. Si el archivo EXISTE pero no se puede leer (otro proceso lo está escribiendo),
+ * reintenta y al final lanza error: NUNCA empieza vacío encima de un estado bueno (28-oct-2026:
+ * así se borró el estado de NQ a las 15:45).
+ */
 function loadState(date: string, inst: string): AlertState {
-  try {
-    const s = JSON.parse(readFileSync(stateFile(inst), "utf8")) as AlertState;
-    return s.date === date ? { ...emptyState(date), ...s } : emptyState(date);
-  } catch {
-    return emptyState(date);
+  const file = stateFile(inst);
+  if (!existsSync(file)) return emptyState(date);
+  let last: unknown = null;
+  for (let i = 0; i < 5; i++) {
+    try {
+      const s = JSON.parse(readFileSync(file, "utf8")) as AlertState;
+      return s.date === date ? { ...emptyState(date), ...s } : emptyState(date);
+    } catch (e) {
+      last = e;
+      const until = Date.now() + 40;
+      while (Date.now() < until) { /* espera corta: el otro proceso termina de escribir */ }
+    }
   }
+  throw new Error(`no se pudo leer el estado de ${inst} (${last instanceof Error ? last.message : "error"}); se reintenta en el próximo ciclo`);
 }
 
 /** Estado en vivo guardado de un día (null si el archivo ya es de otro día). Para el backtest "En vivo". */
@@ -103,7 +116,16 @@ export function loadAlertStateFor(date: string, inst: string): AlertState | null
 function saveState(s: AlertState, inst: string) {
   try {
     mkdirSync(STATE_DIR, { recursive: true });
-    writeFileSync(stateFile(inst), JSON.stringify(s), "utf8");
+    // Atómico: se escribe a un temporal y se renombra, así nadie lee un archivo a medias.
+    const file = stateFile(inst);
+    const tmp = `${file}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(s), "utf8");
+    try {
+      renameSync(tmp, file);
+    } catch {
+      writeFileSync(file, JSON.stringify(s), "utf8"); // Windows: si el destino está abierto, escritura directa
+      try { unlinkSync(tmp); } catch { /* ya no está */ }
+    }
   } catch {
     // no crítico: sin disco, las alertas solo pierden memoria entre refrescos
   }
