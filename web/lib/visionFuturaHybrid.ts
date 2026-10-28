@@ -55,6 +55,8 @@ export interface HybridTrade {
   exit: number | null;
   exitAt: number | null;
   points: number | null;
+  /** Base futuro − índice cuando salió (NQ: mostrar en /NQ). */
+  futBasis?: number | null;
 }
 
 export interface HybridBlocked {

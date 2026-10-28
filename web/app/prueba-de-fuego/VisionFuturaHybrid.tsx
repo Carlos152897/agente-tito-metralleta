@@ -8,7 +8,8 @@
 import { useMemo } from "react";
 import { HYBRID_TUNING, hybridSummary, resolveHybrid, type HybridDay, type HybridTrade } from "@/lib/visionFuturaHybrid";
 import type { Conversion } from "@/lib/visionFutura";
-import { useVisionLabels } from "./visionLabels";
+import { toFuture, useFutureFirst, useVisionLabels } from "./visionLabels";
+import { FutureFirstNote } from "./VisionFuturaAlerts";
 
 const UP = "var(--green)";
 const DOWN = "var(--red-soft)";
@@ -40,11 +41,15 @@ function Status({ t }: { t: HybridTrade }) {
 
 function Card({ kind, list, conversion }: { kind: "alerta" | "senal"; list: HybridTrade[]; conversion: Conversion }) {
   const lb = useVisionLabels();
+  const ff = useFutureFirst();
   const cur = list.at(-1) ?? null;
+  /** Precio principal: el futuro con NQ en vivo; el índice si no. */
+  const px = (v: number, basis: number | null | undefined = cur?.futBasis ?? ff.basis) => { const f = toFuture(ff, v, basis); return f != null ? `${ff.label} ${n2(f)}` : n2(v); };
   const prev = list.length > 1 ? list.at(-2)! : null;
   const s = hybridSummary(list);
   const conv = (v: number) => {
     const parts = [];
+    if (toFuture(ff, v) != null) { parts.push(`${lb.main} ${n2(v)}`); if (lb.etf && conversion.spyRatio) parts.push(`${lb.etf} ${n2(v * conversion.spyRatio)}`); return parts.join(" · "); }
     if (lb.etf && conversion.spyRatio) parts.push(`${lb.etf} ${n2(v * conversion.spyRatio)}`);
     if (lb.future && conversion.esBasis != null) parts.push(`${lb.future} ${n2(v + conversion.esBasis)}`);
     return parts.join(" · ");
@@ -67,13 +72,13 @@ function Card({ kind, list, conversion }: { kind: "alerta" | "senal"; list: Hybr
             <span style={{ fontSize: 12, color: "var(--muted)" }}>{hm(cur.at)} NY</span>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "3px 12px", fontSize: 13, fontVariantNumeric: "tabular-nums" }}>
-            <span style={{ color: "var(--muted)" }}>Entrada</span><span><b>{n2(cur.entry)}</b> <span style={{ color: "var(--faint)" }}>{conv(cur.entry)}</span></span>
-            <span style={{ color: DOWN }}>Stop</span><span><b>{n2(cur.stop)}</b> <span style={{ color: "var(--faint)" }}>{conv(cur.stop)}</span></span>
-            <span style={{ color: UP }}>Objetivo</span><span><b>{n2(cur.target)}</b> <span style={{ color: "var(--faint)" }}>{conv(cur.target)}</span></span>
+            <span style={{ color: "var(--muted)" }}>Entrada</span><span><b>{px(cur.entry)}</b> <span style={{ color: "var(--faint)" }}>{conv(cur.entry)}</span></span>
+            <span style={{ color: DOWN }}>Stop</span><span><b>{px(cur.stop)}</b> <span style={{ color: "var(--faint)" }}>{conv(cur.stop)}</span></span>
+            <span style={{ color: UP }}>Objetivo</span><span><b>{px(cur.target)}</b> <span style={{ color: "var(--faint)" }}>{conv(cur.target)}</span></span>
           </div>
           <div style={{ fontSize: 12, color: "var(--muted)" }}>Riesgo {cur.riskPts} pts · Recompensa {cur.rewardPts} pts · {cur.note}</div>
           <div style={{ fontSize: 13 }}><Status t={cur} /></div>
-          {prev && <div style={{ fontSize: 11, color: "var(--faint)" }}>Reemplaza a la de las {hm(prev.at)} ({prev.side === "largo" ? "largo" : "corto"} {n2(prev.entry)} · {prev.outcome ?? "abierta"}{prev.points != null ? ` ${prev.points > 0 ? "+" : ""}${prev.points}` : ""}).</div>}
+          {prev && <div style={{ fontSize: 11, color: "var(--faint)" }}>Reemplaza a la de las {hm(prev.at)} ({prev.side === "largo" ? "largo" : "corto"} {px(prev.entry, prev.futBasis ?? null)} · {prev.outcome ?? "abierta"}{prev.points != null ? ` ${prev.points > 0 ? "+" : ""}${prev.points}` : ""}).</div>}
         </div>
       )}
     </div>
@@ -98,6 +103,7 @@ export default function VisionFuturaHybrid({ day, replayPrices, nowMs, conversio
         <h4 style={{ margin: 0 }}>⚙️ Motor híbrido</h4>
         <span style={{ fontSize: 12, color: "var(--muted)" }}>las mismas alertas y señales, con las mejoras medidas · una a la vez</span>
       </div>
+      <FutureFirstNote />
       {instrument === "NQ" && (
         <div style={{ fontSize: 12, color: "var(--amber-text)" }}>Ojo: en NQ estas mejoras no dieron ventaja en el backtest (4 días). Úsalo como lectura.</div>
       )}

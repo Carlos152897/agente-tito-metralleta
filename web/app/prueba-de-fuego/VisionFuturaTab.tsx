@@ -17,10 +17,11 @@ import VisionFuturaPremarket from "./VisionFuturaPremarket";
 import VisionFuturaPositionLog from "./VisionFuturaPositionLog";
 import VisionFuturaTickerSearch from "./VisionFuturaTickerSearch";
 import VisionFuturaHybrid from "./VisionFuturaHybrid";
+import { orderResultsFromPrices } from "@/lib/visionFuturaAlertOutcome";
 import { hybridFromReplay, type HybridDay } from "@/lib/visionFuturaHybrid";
 import { isEquityTicker } from "@/lib/visionFuturaInstruments";
 import { historyAt, positionsFromTicks, type PosHistory } from "@/lib/visionFuturaPositioning";
-import { DEFAULT_LABELS, VisionLabelsContext, useVisionLabels } from "./visionLabels";
+import { DEFAULT_LABELS, FutureFirstContext, VisionLabelsContext, useVisionLabels } from "./visionLabels";
 import type { InstrumentId, InstrumentLabels } from "@/lib/visionFuturaInstruments";
 import type { AlertView, LottoLive, MoneyLive } from "@/lib/visionFuturaAlertStore";
 import type { ReplayPayload } from "@/lib/visionFuturaReplay";
@@ -655,10 +656,19 @@ export default function VisionFuturaTab() {
         radius: replay.radius,
         priceSeries: replay.priceSeries.filter((p) => p.time <= tick.time),
         history: replay.history.filter((h) => h.time <= tick.time),
-        alerts: replay.alerts
-          .filter((a) => a.firedAt <= tickMs)
-          .map((a) => ({ ...a, lastSeenAt: Math.min(a.lastSeenAt, tickMs), activa: tick.activeIds.includes(a.id) }))
-          .sort((a, b) => b.firedAt - a.firedAt),
+        alerts: (() => {
+          // Resultado de cada orden con el precio hasta este momento: la vieja se cierra cuando sale la nueva.
+          const shown = replay.alerts.filter((a) => a.firedAt <= tickMs);
+          const results = orderResultsFromPrices(
+            shown.map((a) => ({ at: a.firedAt, side: a.order.side, entry: a.order.entry.spx, stop: a.order.stop.spx, target: a.order.target?.spx ?? null })),
+            replay.priceSeries.map((p) => ({ t: p.time * 1000, v: p.value })),
+            tickMs,
+            replayIdx >= replay.ticks.length - 1 && !replay.partial,
+          );
+          return shown
+            .map((a, i) => ({ ...a, lastSeenAt: Math.min(a.lastSeenAt, tickMs), activa: tick.activeIds.includes(a.id), result: results[i] }))
+            .sort((a, b) => b.firedAt - a.firedAt);
+        })(),
       }
     : liveView;
   const replayPrevAgg = tick && replay && replayIdx > 0 ? snapshotOf(replay.ticks[replayIdx - 1].rows) : null;
@@ -731,6 +741,22 @@ export default function VisionFuturaTab() {
     }
     chartCandles = out;
   }
+  // Ganada / perdida / abierta de cada alerta con las velas de 1 min (máximo y mínimo): en vivo
+  // rellena las que no traen resultado del servidor (las de antes de este cambio); en la repetición
+  // reemplaza el cálculo de 5 min, que no ve los stops que se tocan en 1–2 min.
+  const alertsWithResults = (() => {
+    const list = view.alerts ?? [];
+    const bars = (tick ? chartCandles : baseBars).map((b) => ({ t: b.time * 1000, high: b.high, low: b.low, close: b.close }));
+    if (list.length === 0 || bars.length === 0) return list;
+    if (!tick && list.every((a) => a.result)) return list;
+    const res = orderResultsFromPrices(
+      list.map((a) => ({ at: a.firedAt, side: a.order.side, entry: a.order.entry.spx, stop: a.order.stop.spx, target: a.order.target?.spx ?? null })),
+      bars,
+      tick ? tickMs : Date.now(),
+      tick ? replayIdx >= (replay?.ticks.length ?? 0) - 1 && !replay?.partial : !view.marketOpen,
+    );
+    return list.map((a, i) => (tick || !a.result ? { ...a, result: res[i] } : a));
+  })();
   const levelsSrc = isNightInst ? "opciones de CME en tastytrade" : "MarketSnack";
   // Ventana real de cada botón (misma regla que el servidor: 10/20/30 strikes por lado fuera de SPX).
   const step = (tick ? replay?.strikeStep : data.strikeStep) ?? 5;
@@ -738,6 +764,7 @@ export default function VisionFuturaTab() {
 
   return (
     <VisionLabelsContext.Provider value={labels}>
+    <FutureFirstContext.Provider value={{ on: inst === "NQ", label: labels.future, basis: tick ? null : view.conversion.esBasis ?? null }}>
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-md)" }}>
       {instrumentBar}
       {isNightInst && (
@@ -1038,7 +1065,7 @@ export default function VisionFuturaTab() {
         mult={inst === "NQ" ? { big: 20, bigLabel: "$ por 1 /NQ" } : inst === "TSLA" ? { big: 100, bigLabel: "$ por 100 acciones" } : { big: 50, bigLabel: "$ por 1 /ES" }}
       />
 
-      <VisionFuturaAlerts alerts={view.alerts ?? []} watch={view.watch ?? []} marketOpen={view.marketOpen} />
+      <VisionFuturaAlerts alerts={alertsWithResults} watch={view.watch ?? []} marketOpen={view.marketOpen} />
 
       <VisionFuturaSpreads
         spreads={tick ? null : view.spreads}
@@ -1073,6 +1100,7 @@ export default function VisionFuturaTab() {
 
       {isSpx && <VisionFuturaAmiga replayDate={tick && replay ? replay.date : null} replayTickMs={tick ? tickMs : null} />}
     </div>
+    </FutureFirstContext.Provider>
     </VisionLabelsContext.Provider>
   );
 }

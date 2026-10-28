@@ -9,7 +9,8 @@
 import type { AlertView } from "@/lib/visionFuturaAlertStore";
 import type { AlertOrder, VisionAlert } from "@/lib/visionFuturaAlerts";
 import type { ConvertedLevel } from "@/lib/visionFutura";
-import { useVisionLabels } from "./visionLabels";
+import { toFuture, useFutureFirst, useVisionLabels } from "./visionLabels";
+import { orderSummary, type OrderResult } from "@/lib/visionFuturaAlertOutcome";
 
 const fmt = (n: number | null | undefined, d = 2) =>
   n == null || !Number.isFinite(n) ? "—" : n.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -22,7 +23,20 @@ const DOWN = "var(--red-soft)";
 
 function Levels({ l }: { l: ConvertedLevel | null }) {
   const lb = useVisionLabels();
+  const ff = useFutureFirst();
   if (!l) return <span style={{ color: "var(--faint)" }}>sin objetivo claro</span>;
+  // El /NQ guardado cuando salió la alerta; si no hay, con la base de ahora.
+  const fut = ff.on ? (l.es ?? toFuture(ff, l.spx)) : null;
+  if (fut != null) {
+    // NQ: el futuro va primero (es lo que se opera); el índice y el ETF de referencia.
+    return (
+      <span style={{ fontVariantNumeric: "tabular-nums" }}>
+        <b>{ff.label} {fmt(fut)}</b>
+        <span style={{ color: "var(--muted)" }}> · {lb.main} {fmt(l.spx)}</span>
+        {lb.etf && <span style={{ color: "var(--muted)" }}> · {lb.etf} {fmt(l.spy)}</span>}
+      </span>
+    );
+  }
   return (
     <span style={{ fontVariantNumeric: "tabular-nums" }}>
       <b>{fmt(l.spx)}</b>
@@ -80,10 +94,37 @@ function TrapBanner({ text }: { text: string }) {
   );
 }
 
+/** GANADA / PERDIDA / ABIERTA de la orden, con sus puntos y por qué se cerró. */
+function ResultBadge({ r, basis }: { r: OrderResult | undefined; basis: number | null }) {
+  const lb = useVisionLabels();
+  const ff = useFutureFirst();
+  if (!r) return null;
+  const exitFut = r.exit != null ? toFuture(ff, r.exit, basis ?? ff.basis) : null;
+  const unit = ff.on && ff.basis != null ? ff.label : lb.main;
+  const p = r.points;
+  const ptsTxt = p == null ? "" : ` ${p > 0 ? "+" : ""}${fmt(p, 2)} pts ${unit}`;
+  if (r.status === "abierta") {
+    return (
+      <span style={{ padding: "2px 10px", borderRadius: 999, background: "var(--amber-bg)", border: "1px solid var(--amber-border)", color: "var(--amber-text)", fontWeight: 700, fontSize: 12 }}>
+        ABIERTA{p != null ? ` · va ${p > 0 ? "+" : ""}${fmt(p, 2)}` : ""}
+      </span>
+    );
+  }
+  const win = r.status === "ganada";
+  const color = win ? UP : r.status === "perdida" ? DOWN : "var(--muted)";
+  const why = r.reason === "objetivo" ? "tocó el objetivo" : r.reason === "stop" ? "tocó el stop" : r.reason === "nueva alerta" ? "cerrada por la nueva alerta" : "al cierre";
+  return (
+    <span style={{ padding: "2px 10px", borderRadius: 999, border: `1px solid ${color}`, color, fontWeight: 700, fontSize: 12 }}>
+      {win ? "GANADA" : r.status === "perdida" ? "PERDIDA" : "EMPATE"}{ptsTxt}
+      <span style={{ fontWeight: 400, color: "var(--muted)" }}> · {why}{r.exitAt ? ` ${hmNy(r.exitAt)}` : ""}{r.exit != null ? ` a ${exitFut != null ? `${ff.label} ${fmt(exitFut)}` : fmt(r.exit)}` : ""}</span>
+    </span>
+  );
+}
+
 function AlertCard({ a }: { a: AlertView }) {
   const color = a.direction === "alcista" ? UP : DOWN;
   return (
-    <div style={{ border: "1px solid var(--border)", borderLeft: `4px solid ${color}`, borderRadius: 12, padding: 14, display: "flex", flexDirection: "column", gap: 10, opacity: a.activa ? 1 : 0.7 }}>
+    <div style={{ border: "1px solid var(--border)", borderLeft: `4px solid ${color}`, borderRadius: 12, padding: 14, display: "flex", flexDirection: "column", gap: 10, opacity: a.result ? (a.result.status === "abierta" ? 1 : 0.75) : a.activa ? 1 : 0.7 }}>
       <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, alignItems: "baseline" }}>
         <div style={{ fontWeight: 700, fontSize: 15, color }}>{a.direction === "alcista" ? "🟢" : "🔴"} {a.title}</div>
         <div style={{ fontSize: 12, color: "var(--muted)" }}>
@@ -93,6 +134,7 @@ function AlertCard({ a }: { a: AlertView }) {
             : <span>ya no se cumple (último {hmNy(a.lastSeenAt)})</span>}
         </div>
       </div>
+      <div><ResultBadge r={a.result} basis={a.order.entry.es != null ? a.order.entry.es - a.order.entry.spx : null} /></div>
       {a.trap && <TrapBanner text={a.trap} />}
       <div style={{ fontSize: 13, color: "var(--muted)" }}>
         Nivel: <Levels l={a.level} /> <span style={{ color: "var(--faint)" }}>({a.levelSources.join(", ")})</span>
@@ -111,6 +153,16 @@ function AlertCard({ a }: { a: AlertView }) {
   );
 }
 
+/** Aviso con NQ: en vivo, los precios van en el futuro; en la repetición no hay base histórica. */
+export function FutureFirstNote() {
+  const ff = useFutureFirst();
+  const lb = useVisionLabels();
+  if (!ff.on) return null;
+  return ff.basis != null
+    ? <div style={{ fontSize: 12, color: "var(--muted)" }}>Precios en <b>{ff.label}</b> (base {ff.basis > 0 ? "+" : ""}{fmt(ff.basis)} pts sobre {lb.main}); stop y objetivo a la misma distancia en puntos.</div>
+    : <div style={{ fontSize: 12, color: "var(--amber-text)" }}>En la repetición no hay {ff.label ?? "futuro"} histórico: los precios se muestran en {lb.main}.</div>;
+}
+
 export default function VisionFuturaAlerts({ alerts, watch, marketOpen }: { alerts: AlertView[]; watch: VisionAlert[]; marketOpen: boolean }) {
   return (
     <div className="card" style={{ gap: 14 }}>
@@ -121,11 +173,25 @@ export default function VisionFuturaAlerts({ alerts, watch, marketOpen }: { aler
         </span>
       </div>
 
+      <FutureFirstNote />
+
       {!marketOpen && (
         <div className="wheel-empty" style={{ fontSize: 13 }}>
           Mercado cerrado: las alertas se evalúan con el mercado abierto y esta pestaña abierta (cada refresco de 30 s revisa las condiciones).
         </div>
       )}
+
+      {alerts.some((a) => a.result) && (() => {
+        const sm = orderSummary(alerts.filter((a) => a.result).map((a) => a.result!));
+        return (
+          <div style={{ fontSize: 13, color: "var(--muted)" }}>
+            Hoy: <b style={{ color: "var(--text)" }}>{sm.n}</b> entradas · <b style={{ color: UP }}>{sm.wins} ganadas</b> · <b style={{ color: DOWN }}>{sm.losses} perdidas</b>
+            {sm.open > 0 && <> · <b style={{ color: "var(--amber-text)" }}>{sm.open} abierta</b></>} · cerradas{" "}
+            <b style={{ color: sm.points > 0 ? UP : sm.points < 0 ? DOWN : "var(--text)" }}>{sm.points > 0 ? "+" : ""}{fmt(sm.points, 2)} pts</b>
+            <span style={{ color: "var(--faint)" }}> · cuando llega una nueva, la anterior se cierra a ese precio</span>
+          </div>
+        );
+      })()}
 
       {alerts.length > 0 ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>

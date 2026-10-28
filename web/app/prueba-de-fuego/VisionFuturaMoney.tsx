@@ -5,6 +5,8 @@
 // la señal LONG/SHORT con entrada, objetivo y stop, y las señales del día con su resultado.
 
 import type { MoneyReading, MoneyTrade } from "@/lib/visionFuturaMoneyFlow";
+import { FutureFirstNote } from "./VisionFuturaAlerts";
+import { toFuture, useFutureFirst } from "./visionLabels";
 
 const UP = "var(--green)";
 const DOWN = "var(--red-soft)";
@@ -47,11 +49,18 @@ export default function VisionFuturaMoney(p: Props) {
   const open = trades.find((x) => !x.closed);
   const sig = reading?.signal ?? null;
   const leanColor = reading?.lean === "alcista" ? UP : reading?.lean === "bajista" ? DOWN : "var(--muted)";
+  const ff = useFutureFirst();
+  const futOn = ff.on && ff.basis != null;
   const eq = (spx: number) => {
     const c = p.conv(spx);
-    const parts = [c.spy != null && p.etfLabel ? `${p.etfLabel} ${c.spy.toFixed(2)}` : null, c.es != null && p.futLabel ? `${p.futLabel} ${c.es.toFixed(2)}` : null].filter(Boolean);
+    // NQ en vivo: el futuro va primero (px) y acá queda el índice de referencia.
+    const parts = futOn
+      ? [`${p.main} ${spx.toFixed(2)}`, c.spy != null && p.etfLabel ? `${p.etfLabel} ${c.spy.toFixed(2)}` : null].filter(Boolean)
+      : [c.spy != null && p.etfLabel ? `${p.etfLabel} ${c.spy.toFixed(2)}` : null, c.es != null && p.futLabel ? `${p.futLabel} ${c.es.toFixed(2)}` : null].filter(Boolean);
     return parts.length ? ` (${parts.join(" · ")})` : "";
   };
+  /** Precio principal: el futuro con NQ en vivo; el índice si no. */
+  const px = (v: number, basis: number | null | undefined = ff.basis) => { const f = toFuture(ff, v, basis); return f != null ? `${ff.label} ${k(f)}` : k(v); };
 
   return (
     <div className="card" style={{ gap: 12 }}>
@@ -69,6 +78,8 @@ export default function VisionFuturaMoney(p: Props) {
           <li>Gana menos de la mitad de las veces, pero los objetivos son más largos que los stops. El resultado de cada día queda en el Excel del backtest (hoja “dinero”). Con pocos días es una lectura, no una garantía — siempre con stop.</li>
         </ul>
       </details>
+
+      <FutureFirstNote />
 
       {p.night ? (
         <div style={{ fontSize: 13, color: "var(--muted)" }}>Solo en la sesión de día (SPX, NQ, TSLA).</div>
@@ -95,15 +106,15 @@ export default function VisionFuturaMoney(p: Props) {
           {sig ? (
             <div style={{ border: `2px solid ${sig.side === "largo" ? UP : DOWN}`, borderRadius: 12, padding: 12, display: "flex", flexDirection: "column", gap: 6, background: "var(--panel-2)" }}>
               <div style={{ fontSize: 18, fontWeight: 800, color: sig.side === "largo" ? UP : DOWN }}>
-                {sig.side === "largo" ? "🟢 LONG" : "🔴 SHORT"} {p.main}
+                {sig.side === "largo" ? "🟢 LONG" : "🔴 SHORT"} {futOn ? ff.label : p.main}
                 {open && (open.t.side === sig.side && Math.abs(open.t.entry - sig.entry) < 0.005
                   ? <span style={{ fontSize: 12, fontWeight: 400, color: "var(--muted)" }}> · ✅ tomada a las {hm(open.t.openedAt)}</span>
                   : <span style={{ fontSize: 12, fontWeight: 400, color: "var(--muted)" }}> · ya hay una operación abierta: esta señal no se toma</span>)}
               </div>
               <div style={{ fontSize: 14, fontVariantNumeric: "tabular-nums", display: "grid", gridTemplateColumns: "auto 1fr", gap: "2px 12px" }}>
-                <span style={{ color: "var(--muted)" }}>Entrada</span><b>{k(sig.entry)}{eq(sig.entry)}</b>
-                <span style={{ color: "var(--muted)" }}>🎯 Objetivo</span><b style={{ color: UP }}>{k(sig.target)} · {sig.targetLabel} · +{sig.rewardPts.toFixed(2)} pts{eq(sig.target)}</b>
-                <span style={{ color: "var(--muted)" }}>🛑 Stop</span><b style={{ color: DOWN }}>{k(sig.stop)} · {sig.stopLabel} · −{sig.riskPts.toFixed(2)} pts{eq(sig.stop)}</b>
+                <span style={{ color: "var(--muted)" }}>Entrada</span><b>{px(sig.entry)}{eq(sig.entry)}</b>
+                <span style={{ color: "var(--muted)" }}>🎯 Objetivo</span><b style={{ color: UP }}>{px(sig.target)} · {sig.targetLabel} · +{sig.rewardPts.toFixed(2)} pts{eq(sig.target)}</b>
+                <span style={{ color: "var(--muted)" }}>🛑 Stop</span><b style={{ color: DOWN }}>{px(sig.stop)} · {sig.stopLabel} · −{sig.riskPts.toFixed(2)} pts{eq(sig.stop)}</b>
                 <span style={{ color: "var(--muted)" }}>Gana / arriesga</span><b>{sig.rb.toFixed(2)} : 1 · {p.mult.bigLabel}: +${Math.round(sig.rewardPts * p.mult.big).toLocaleString("en-US")} / −${Math.round(sig.riskPts * p.mult.big).toLocaleString("en-US")}</b>
               </div>
               <div style={{ fontSize: 12, color: "var(--muted)" }}>Cómo: {sig.side === "largo" ? p.instrumentos.largo : p.instrumentos.corto}. Es una lectura del flujo, no una recomendación.</div>
@@ -134,9 +145,9 @@ export default function VisionFuturaMoney(p: Props) {
                   <tr key={t.id}>
                     <td>{hm(t.openedAt)}</td>
                     <td style={{ color: t.side === "largo" ? UP : DOWN, fontWeight: 700 }}>{t.side === "largo" ? "LONG" : "SHORT"}</td>
-                    <td>{k(t.entry)}</td>
-                    <td>{k(t.target)} <span style={{ color: "var(--muted)" }}>{t.targetLabel}</span></td>
-                    <td>{k(t.stop)}</td>
+                    <td>{px(t.entry, t.futBasis ?? null)}</td>
+                    <td>{px(t.target, t.futBasis ?? null)} <span style={{ color: "var(--muted)" }}>{t.targetLabel}</span></td>
+                    <td>{px(t.stop, t.futBasis ?? null)}</td>
                     <td>{t.rb.toFixed(2)}</td>
                     <td>{closed ? `${t.outcome === "objetivo" ? "🎯 objetivo" : t.outcome === "stop" ? "🛑 stop" : "⏹ cierre"} ${t.exitAt ? hm(t.exitAt) : ""}` : "abierta"}</td>
                     <td style={{ fontWeight: 700, color: value > 0 ? UP : value < 0 ? DOWN : "var(--muted)" }}>{pts(value)}{!closed && <span style={{ fontWeight: 400, color: "var(--muted)" }}> (va)</span>}</td>

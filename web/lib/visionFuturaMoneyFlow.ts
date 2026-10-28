@@ -189,6 +189,8 @@ export interface MoneyTrade extends MoneySignal {
   exitAt: number | null;
   outcome: "objetivo" | "stop" | "cierre" | null;
   points: number | null;
+  /** Base futuro − índice cuando salió (para mostrar la entrada en el futuro real de ese momento). */
+  futBasis?: number | null;
 }
 
 /**

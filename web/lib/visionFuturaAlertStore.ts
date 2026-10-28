@@ -19,6 +19,7 @@ import { sessionStartMs } from "./visionFuturaNight";
 import { emptyPosHistory, pressureMarks, stepPositions, type PosHistory, type PosRow } from "./visionFuturaPositioning";
 import { detectUnusual, snapshotOf as snapshotOfRows, type FlowSnapshot } from "./visionFuturaFlowChanges";
 import { hybridFromAlert, hybridFromMoney, resolveHybrid, type HybridDay } from "./visionFuturaHybrid";
+import { closeAt, openResult, stepOrder, type OrderInput, type OrderResult } from "./visionFuturaAlertOutcome";
 
 const STATE_DIR = join(process.cwd(), "data", "vision-futura");
 /** Un archivo de estado por instrumento (SPX conserva el nombre original). */
@@ -34,7 +35,11 @@ type AggMap = Record<string, { compras: number; ventas: number }>;
 export interface FiredAlert extends VisionAlert {
   firedAt: number;
   lastSeenAt: number;
+  /** Cómo va o cómo terminó su orden (lib/visionFuturaAlertOutcome.ts): abierta, ganada o perdida. */
+  result?: OrderResult;
 }
+
+const orderOf = (a: VisionAlert): OrderInput => ({ side: a.order.side, entry: a.order.entry.spx, stop: a.order.stop.spx, target: a.order.target?.spx ?? null });
 
 export interface AlertState {
   date: string;
@@ -214,17 +219,24 @@ export async function runVisionFuturaCycle(now: Date, radius: number, instrument
     state.posAgg = { t, snap: [...snapshotOfRows(payload.rows)] };
   }
 
+  // Resultado de las órdenes: las abiertas avanzan con el precio de este refresco.
+  if (payload.marketOpen) {
+    for (const f of state.fired) if (f.result?.status === "abierta") f.result = stepOrder(orderOf(f), f.result, payload.spot.spx, t);
+  }
+
   const activeIds = new Set<string>();
   for (const a of evaluated.filter((x) => x.fires)) {
     activeIds.add(a.id);
     const existing = state.fired.find((f) => f.id === a.id && t - f.lastSeenAt < COOLDOWN_MS);
     if (existing) existing.lastSeenAt = t;
     else {
-      state.fired.push({ ...a, firedAt: t, lastSeenAt: t });
+      // Entrada nueva: la que siga abierta se cierra a este precio (ganada o perdida según cómo iba).
+      for (const f of state.fired) if (f.result?.status === "abierta") f.result = closeAt(orderOf(f), payload.spot.spx, t, "nueva alerta");
+      state.fired.push({ ...a, firedAt: t, lastSeenAt: t, result: openResult() });
       // Motor híbrido: la misma alerta con sus filtros y stop/objetivo más amplios.
       state.hybrid ??= { alerts: [], money: [], blocked: [] };
       const h = hybridFromAlert(a, { at: t, keyLevels: payload.keyLevels, scale: payload.scale ?? 1 });
-      if (h.trade) state.hybrid.alerts.push(h.trade);
+      if (h.trade) state.hybrid.alerts.push({ ...h.trade, futBasis: payload.conversion.esBasis ?? null });
       if (h.blocked) state.hybrid.blocked.push(h.blocked);
     }
   }
@@ -306,14 +318,18 @@ export async function runVisionFuturaCycle(now: Date, radius: number, instrument
       const open = state.moneyTrades.some((tr) => tr.outcome == null);
       const lastSame = [...state.moneyTrades].reverse().find((tr) => sig && tr.side === sig.side);
       if (sig && !open && nyMin <= 15 * 60 + 30 && (!lastSame || t - lastSame.openedAt >= MONEY_TUNING.cooldownMs)) {
-        const mt = { ...sig, id: `${t}:${sig.side}`, openedAt: t, votes: moneyReading.votes, exit: null, exitAt: null, outcome: null, points: null };
+        const mt = { ...sig, id: `${t}:${sig.side}`, openedAt: t, votes: moneyReading.votes, exit: null, exitAt: null, outcome: null, points: null, futBasis: payload.conversion.esBasis ?? null };
         state.moneyTrades.push(mt);
         state.hybrid ??= { alerts: [], money: [], blocked: [] };
         const h = hybridFromMoney(mt, { keyLevels: payload.keyLevels });
-        if (h.trade) state.hybrid.money.push(h.trade);
+        if (h.trade) state.hybrid.money.push({ ...h.trade, futBasis: mt.futBasis });
         if (h.blocked) state.hybrid.blocked.push(h.blocked);
       }
     }
+  }
+  // Después del cierre: la orden de alerta que siga abierta sale al último precio.
+  if (!payload.marketOpen && nyMin >= 16 * 60) {
+    for (const f of state.fired) if (f.result?.status === "abierta") f.result = closeAt(orderOf(f), spotNow, t, "cierre");
   }
   // Después del cierre: las abiertas salen al último precio.
   if (!payload.marketOpen && nyMin >= 16 * 60) {
