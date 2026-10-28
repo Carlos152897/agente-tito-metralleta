@@ -81,6 +81,22 @@ export function nyMinute(ms: number): number {
   return (Number(p.find((x) => x.type === "hour")?.value) % 24) * 60 + Number(p.find((x) => x.type === "minute")?.value);
 }
 
+const hhmm = (ms: number) => {
+  const m = nyMinute(ms);
+  return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+};
+
+/**
+ * Sin operaciones encontradas (Carlos, 28-oct: LARGO de la señal 9:45 + CORTO de la alerta 9:46,
+ * las dos abiertas → "no tiene sentido"): si alguna de las dos tarjetas tiene una abierta del lado
+ * contrario, la nueva se bloquea. `open` = híbridas sin resultado todavía.
+ */
+function opposingBlock(side: "largo" | "corto", open: HybridTrade[] | undefined): string | null {
+  const o = (open ?? []).filter((x) => x.outcome == null && x.side !== side).sort((a, b) => b.at - a.at)[0];
+  if (!o) return null;
+  return `ya hay un ${o.side === "largo" ? "LARGO" : "CORTO"} abierto (${o.source === "alerta" ? "alerta" : "señal"} de las ${hhmm(o.at)}): no se abre la contraria encima`;
+}
+
 /** Lo mínimo de una alerta disparada (lib/visionFuturaAlerts.ts) que usa el motor. */
 export interface HybridAlertInput {
   id: string;
@@ -90,10 +106,12 @@ export interface HybridAlertInput {
 }
 
 /** Alerta híbrida a partir de una alerta original que se disparó en `at`. */
-export function hybridFromAlert(a: HybridAlertInput, ctx: { at: number; keyLevels: Pick<KeyLevel, "kind" | "spx">[]; scale: number }, t = HYBRID_TUNING): { trade: HybridTrade | null; blocked: HybridBlocked | null } {
+export function hybridFromAlert(a: HybridAlertInput, ctx: { at: number; keyLevels: Pick<KeyLevel, "kind" | "spx">[]; scale: number; open?: HybridTrade[] }, t = HYBRID_TUNING): { trade: HybridTrade | null; blocked: HybridBlocked | null } {
   const side = a.order.side;
   const base = { source: "alerta" as const, at: ctx.at, side, title: a.title };
   if (nyMinute(ctx.at) < t.startMin) return { trade: null, blocked: { ...base, reason: "antes de las 9:45 (la apertura es ruido)" } };
+  const opp = opposingBlock(side, ctx.open);
+  if (opp) return { trade: null, blocked: { ...base, reason: opp } };
   const mag = ctx.keyLevels.find((k) => k.kind === "magneto")?.spx;
   const magDist = mag != null ? Math.abs(a.level.spx - mag) : Infinity;
   if (magDist <= t.magnetPts * ctx.scale) {
@@ -116,9 +134,11 @@ export function hybridFromAlert(a: HybridAlertInput, ctx: { at: number; keyLevel
 }
 
 /** Señal híbrida a partir de una señal del dinero original. */
-export function hybridFromMoney(m: Pick<MoneyTrade, "id" | "side" | "entry" | "stop" | "target" | "targetLabel" | "openedAt">, ctx: { keyLevels: Pick<KeyLevel, "kind" | "spx" | "label">[] }, t = HYBRID_TUNING): { trade: HybridTrade | null; blocked: HybridBlocked | null } {
+export function hybridFromMoney(m: Pick<MoneyTrade, "id" | "side" | "entry" | "stop" | "target" | "targetLabel" | "openedAt">, ctx: { keyLevels: Pick<KeyLevel, "kind" | "spx" | "label">[]; open?: HybridTrade[] }, t = HYBRID_TUNING): { trade: HybridTrade | null; blocked: HybridBlocked | null } {
   const dir = m.side === "largo" ? 1 : -1;
   const title = `${m.side === "largo" ? "LONG" : "SHORT"} hacia ${m.targetLabel} ${m.target}`;
+  const opp = opposingBlock(m.side, ctx.open);
+  if (opp) return { trade: null, blocked: { source: "senal", at: m.openedAt, side: m.side, title, reason: opp } };
   const kinds = dir > 0 ? ["resistencia", "iman_positivo", "magneto"] : ["piso", "iman_negativo", "magneto"];
   const span = Math.abs(m.target - m.entry);
   const blocker = ctx.keyLevels
@@ -161,7 +181,11 @@ export interface HybridReplayInput {
   ticks: { time: number; keyLevels: Pick<KeyLevel, "kind" | "spx" | "label">[] }[];
   alerts: (HybridAlertInput & { firedAt: number })[];
   moneyTrades?: Pick<MoneyTrade, "id" | "side" | "entry" | "stop" | "target" | "targetLabel" | "openedAt">[];
+  /** Precio de la repetición (5 min): para saber qué seguía abierto si no se pasan velas. */
+  priceSeries?: { time: number; value: number }[];
 }
+
+type HybridPrice = { t: number; v?: number; high?: number; low?: number; close?: number };
 
 /** Niveles del paso de la repetición vigente en `ms`. */
 function levelsAt(rp: HybridReplayInput, ms: number) {
@@ -173,18 +197,34 @@ function levelsAt(rp: HybridReplayInput, ms: number) {
   return tk?.keyLevels ?? [];
 }
 
-/** Motor híbrido de toda una repetición (sin resolver: el resultado depende de qué precio se use). */
-export function hybridFromReplay(rp: HybridReplayInput): HybridDay {
+/**
+ * Motor híbrido de toda una repetición (sin resolver: el resultado depende de qué precio se use).
+ * Alertas y señales se recorren en orden de hora; para bloquear la contraria se ve qué seguía
+ * abierto con `prices` (velas 1 min) o, si no, con el precio de la repetición.
+ */
+export function hybridFromReplay(rp: HybridReplayInput, prices?: HybridPrice[]): HybridDay {
   const day: HybridDay = { alerts: [], money: [], blocked: [] };
-  for (const a of [...rp.alerts].sort((x, y) => x.firedAt - y.firedAt)) {
-    const r = hybridFromAlert(a, { at: a.firedAt, keyLevels: levelsAt(rp, a.firedAt), scale: rp.scale || 1 });
-    if (r.trade) day.alerts.push(r.trade);
-    if (r.blocked) day.blocked.push(r.blocked);
-  }
-  for (const m of [...(rp.moneyTrades ?? [])].sort((x, y) => x.openedAt - y.openedAt)) {
-    const r = hybridFromMoney(m, { keyLevels: levelsAt(rp, m.openedAt) });
-    if (r.trade) day.money.push(r.trade);
-    if (r.blocked) day.blocked.push(r.blocked);
+  const px: HybridPrice[] = prices ?? (rp.priceSeries ?? []).map((p) => ({ t: p.time * 1000, v: p.value }));
+  // Solo cuenta lo que ya pasó: una vela (con máx/mín) cuenta cuando terminó.
+  const openAt = (ms: number) => {
+    const seen = px.filter((p) => p.t + (p.high != null ? 60_000 : 0) <= ms);
+    return [...day.alerts, ...day.money].map((tr) => resolveHybrid(tr, seen, false)).filter((tr) => tr.outcome == null);
+  };
+  const events = [
+    ...rp.alerts.map((a) => ({ at: a.firedAt, a, m: null as null | NonNullable<HybridReplayInput["moneyTrades"]>[number] })),
+    ...(rp.moneyTrades ?? []).map((m) => ({ at: m.openedAt, a: null as null | HybridReplayInput["alerts"][number], m })),
+  ].sort((x, y) => x.at - y.at);
+  for (const ev of events) {
+    const open = openAt(ev.at);
+    if (ev.a) {
+      const r = hybridFromAlert(ev.a, { at: ev.at, keyLevels: levelsAt(rp, ev.at), scale: rp.scale || 1, open });
+      if (r.trade) day.alerts.push(r.trade);
+      if (r.blocked) day.blocked.push(r.blocked);
+    } else if (ev.m) {
+      const r = hybridFromMoney(ev.m, { keyLevels: levelsAt(rp, ev.at), open });
+      if (r.trade) day.money.push(r.trade);
+      if (r.blocked) day.blocked.push(r.blocked);
+    }
   }
   return day;
 }

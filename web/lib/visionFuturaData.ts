@@ -21,6 +21,20 @@ import { marketDateStr } from "./occ";
 import type { ExtendedChainContract } from "./spxLevels";
 import { loadNightVisionFutura } from "./visionFuturaNight";
 import { captureChainsForReplay } from "./visionFuturaReplay";
+import { captureMsDay, loadMsDay, type MsDay, type MsPressureSnap } from "./visionFuturaMsStore";
+import { withSingleLeg } from "./visionFuturaLegs";
+import { backingOf, multiExpGex, MULTI_EXP_TUNING } from "./visionFuturaMultiExp";
+
+// Cadenas de los vencimientos siguientes (para el GEX de varios vencimientos): cambian despacio, 5 min.
+const chainCache = new Map<string, { at: number; c: ExtendedChainContract[] }>();
+async function cachedChain(ticker: string, exp: string): Promise<ExtendedChainContract[]> {
+  const k = `${ticker}|${exp}`;
+  const hit = chainCache.get(k);
+  if (hit && Date.now() - hit.at < 5 * 60_000) return hit.c;
+  const c = await fetchOptionChainExtended(ticker, exp).catch(() => [] as ExtendedChainContract[]);
+  chainCache.set(k, { at: Date.now(), c });
+  return c;
+}
 
 export class VisionFuturaError extends Error {}
 
@@ -62,6 +76,12 @@ export interface VisionFuturaPayload extends VisionFuturaReport {
   nightConfirm?: NightConfirm | null;
   /** 🌙 Modo noche: velas de 1 min recientes (máx/mín reales para la ventana de 15 min de las alertas). */
   nightBars?: { time: number; high: number; low: number; close: number }[];
+  /**
+   * Datos de la terminal de MarketSnack del vencimiento (presión una pata vs spreads, prima por
+   * minuto, inusuales) — guardados cada día en data/vision-futura/marketsnack (lib/visionFuturaMsStore.ts).
+   * null si MarketSnack no los dio o no es el vencimiento más próximo.
+   */
+  marketSnack?: { pressure: MsPressureSnap | null; premium: MsDay["premium"]; unusual: MsDay["unusual"] } | null;
   /** Sección "Spreads": ideas de crédito/débito/iron condor con cotización real de tastytrade. */
   spreads: SpreadsReport | null;
   spreadsError: string | null;
@@ -105,17 +125,25 @@ export async function spreadQuotes(chainSymbol: string, expiration: string, spot
 
 /**
  * Vencimientos para los botones: los 6 más próximos (0DTE … 5DTE). Con el
- * mercado ya cerrado, el de hoy no cuenta (antes de las 9 am NY sí).
+ * mercado ya cerrado (4 pm NY en adelante), el de hoy no cuenta; antes de la
+ * apertura (pre-mercado, 9:00–9:30 incluido) sí.
  */
 async function expirationsFor(cfg: InstrumentConfig, now: Date): Promise<ExpirationChip[]> {
   const today = marketDateStr(now);
   const hourNy = Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }).format(now));
-  const includeToday = isMarketOpen(now) || hourNy < 9;
+  const includeToday = isMarketOpen(now) || hourNy < 16;
   const dates = [...new Set((await nestedFor(cfg.tastyChain)).map((e) => e["expiration-date"]))]
     .filter((d) => (includeToday ? d >= today : d > today))
     .sort()
     .slice(0, 6);
   return dates.map((date, dte) => ({ date, dte }));
+}
+
+/** Vencimiento más próximo desde `date` (incluido): el 0DTE de la sesión `date` si existe. */
+export async function nearestExpirationFrom(instrument: string, date: string): Promise<string | null> {
+  const cfg = instrumentOf(instrument);
+  const dates = [...new Set((await nestedFor(cfg.tastyChain)).map((e) => e["expiration-date"]))].filter((d) => d >= date).sort();
+  return dates[0] ?? null;
 }
 
 async function futureQuote(product: string): Promise<{ symbol: string; price: number } | null> {
@@ -269,12 +297,35 @@ export async function loadVisionFutura(
     spreadsError = e instanceof Error ? e.message : "No se pudieron leer las cotizaciones de tastytrade.";
   }
 
+  // Terminal de MarketSnack: con mercado abierto se pide (máx 1/min) y se guarda; cerrado, lo guardado de hoy.
+  let msDay: MsDay | null = null;
+  if (expIndex === 0) {
+    msDay = isMarketOpen(now)
+      ? await captureMsDay({ inst: cfg.id, msTicker: cfg.msTicker, expiration, spot, now })
+      : loadMsDay(cfg.id, marketDateStr(now));
+    if (msDay && msDay.expiration !== expiration) msDay = null;
+  }
+  // GEX de los vencimientos siguientes por strike (lib/visionFuturaMultiExp.ts): `multiExp` y `backing`.
+  if (expIndex === 0 && expirations.length > 1) {
+    const next = expirations.slice(1, 1 + MULTI_EXP_TUNING.nextCount).map((e) => e.date);
+    const chains = await Promise.all(next.map(async (exp) => ({ expiration: exp, contracts: await cachedChain(cfg.msTicker, exp) })));
+    const by = multiExpGex(chains.filter((c) => c.contracts.length), spot, report.rows.map((r) => r.spx));
+    report.rows = report.rows.map((r) => {
+      const me = by.get(r.spx);
+      return me ? { ...r, multiExp: me, backing: backingOf(r.netGex, me) } : r;
+    });
+  }
+  // Una pata vs spreads por strike (lib/visionFuturaLegs.ts): campo `legs` en cada fila con datos.
+  const lastPressure = msDay?.pressure.at(-1);
+  if (lastPressure?.rows.length) report.rows = withSingleLeg(report.rows, lastPressure.rows, spot);
+
   return {
     instrument: cfg.id,
     labels: labelsOf(cfg, fut?.symbol ?? null),
     scale,
     strikeStep,
     expirations,
+    marketSnack: msDay ? { pressure: msDay.pressure.at(-1) ?? null, premium: msDay.premium, unusual: msDay.unusual } : null,
     spreads,
     spreadsError,
     optionQuotes,

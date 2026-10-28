@@ -11,6 +11,11 @@
 
 import type { PosHistory } from "@/lib/visionFuturaPositioning";
 import { positioningParts, positioningSides, type FlowSnapshot, type UnusualHit } from "@/lib/visionFuturaFlowChanges";
+import type { RowWithLegs } from "@/lib/visionFuturaLegs";
+import type { MsPremiumMinute } from "@/lib/marketsnack";
+import { premiumNewMoney, premiumSeries } from "@/lib/visionFuturaPremium";
+import { unusualDots, type RowMultiExp, type UnusualDot } from "@/lib/visionFuturaMultiExp";
+import type { MsUnusualTrade } from "@/lib/marketsnack";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useVisionLabels } from "./visionLabels";
 import type { DealerLevel, KeyLevel, KeyLevelKind, VisionStrikeRow, ExpectedMove, Conversion } from "@/lib/visionFutura";
@@ -31,11 +36,15 @@ export type LayerKey =
   | "historial"
   | "historial_ls"
   | "agresor"
-  | "vix";
+  | "vix"
+  | "spreads"
+  | "prima"
+  | "inusuales_ms";
 
 export const LAYERS: { key: LayerKey; label: string; color: string }[] = [
   { key: "precio", label: "Precio", color: "#2dd4bf" },
   { key: "posicionamiento", label: "Posicionamiento", color: "#12b76a" },
+  { key: "spreads", label: "Spreads en gris", color: "#5b6478" },
   { key: "magneto", label: "Magneto", color: "#a78bfa" },
   { key: "iman_positivo", label: "Imán +", color: "#12b76a" },
   { key: "iman_negativo", label: "Imán −", color: "#f97066" },
@@ -50,18 +59,22 @@ export const LAYERS: { key: LayerKey; label: string; color: string }[] = [
   { key: "historial_ls", label: "Historial Long/Short", color: "#12b76a" },
   { key: "agresor", label: "Agresor", color: "#2f6bff" },
   { key: "vix", label: "Mini VIX", color: "#f97066" },
+  { key: "prima", label: "Prima neta", color: "#7aa2ff" },
+  { key: "inusuales_ms", label: "Inusuales MarketSnack", color: "#facc15" },
 ];
 
 export const DEFAULT_LAYERS: Record<LayerKey, boolean> = {
   precio: true, posicionamiento: true, magneto: true, iman_positivo: true, iman_negativo: true,
   resistencia: true, piso: true, gamma_flip: false, max_pain: false, charm: false,
-  dealers: false, rango_vix: false, historial: false, historial_ls: true, agresor: true, vix: true,
+  dealers: false, rango_vix: false, historial: false, historial_ls: true, agresor: true, vix: true, spreads: true, prima: true, inusuales_ms: true,
 };
 
 const COLOR = Object.fromEntries(LAYERS.map((l) => [l.key, l.color])) as Record<LayerKey, string>;
 const POS_DOWN = "#a855f7"; // morado: se posicionan para abajo
 // Tono claro de cada lado = la parte que viene de PUTS (el fuerte = CALLS).
 const POS_UP_PUT = "#86efac";
+// Parte de la barra que viene de spreads (varias patas): no dice dirección.
+const SPREAD_GRAY = "#5b6478";
 const POS_DOWN_PUT = "#d8b4fe";
 const CHARM_NEG = "#fb923c";
 
@@ -108,6 +121,10 @@ interface Props {
   unusual?: UnusualHit[];
   /** Mini gráfica del VIX en una franja bajo el precio, con el mismo eje de hora. */
   vix?: VixStrip | null;
+  /** Prima neta por minuto de MarketSnack (calls / puts acumuladas del día) — franja "Prima neta". */
+  premium?: MsPremiumMinute[] | null;
+  /** Operaciones inusuales de MarketSnack, una por una → puntos (hora × strike). */
+  unusualMs?: MsUnusualTrade[] | null;
   /** Historial Long/Short del día (lib/visionFuturaPositioning.ts): franjas por strike y marcas de presión. */
   positions?: Pick<PosHistory, "segments" | "events"> | null;
 }
@@ -234,6 +251,26 @@ export default function VisionFuturaChart(props: Props) {
   const [hover, setHover] = useState<{ strike: number; cx: number; cy: number } | null>(null);
   // Cruz de lectura (pasar el mouse por el precio o el VIX): hora + precio + VIX en ese momento.
   const [cross, setCross] = useState<number | null>(null);
+  // Punto de operación inusual de MarketSnack elegido (click): tarjeta con el detalle.
+  const [dotSel, setDotSel] = useState<{ d: UnusualDot; cx: number; cy: number } | null>(null);
+  useEffect(() => {
+    if (!dotSel) return;
+    const onDown = (e: MouseEvent) => {
+      const el = e.target as Element | null;
+      if (el?.closest?.("[data-vf-dot]") || el?.closest?.("[data-vf-dotcard]")) return;
+      setDotSel(null);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setDotSel(null); };
+    const onScroll = () => setDotSel(null);
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+  }, [dotSel]);
   useEffect(() => {
     if (!hover) return;
     // Se cierra con un click fuera de las filas, con Esc o al desplazar la página.
@@ -331,8 +368,18 @@ export default function VisionFuturaChart(props: Props) {
   const vixOn = layers.vix && !props.nightSession && vixPts.length > 0;
   const vixTop = plotBottom + VIX_GAP;
   const vixBottom = vixTop + VIX_H;
-  const height = (vixOn ? vixBottom : plotBottom) + BOTTOM;
-  const gridBottom = vixOn ? vixBottom : plotBottom;
+  // ── Prima neta (MarketSnack, por minuto): franja bajo el VIX (o bajo el precio) ──
+  const premPts = premiumSeries(props.premium ?? []).filter((p) => p.time >= open && p.time <= close);
+  const premOn = layers.prima && !props.nightSession && premPts.length > 1;
+  const premTop = (vixOn ? vixBottom : plotBottom) + VIX_GAP;
+  const premBottom = premTop + VIX_H;
+  const height = (premOn ? premBottom : vixOn ? vixBottom : plotBottom) + BOTTOM;
+  const gridBottom = premOn ? premBottom : vixOn ? vixBottom : plotBottom;
+  const premAbs = Math.max(1, ...premPts.flatMap((p) => [Math.abs(p.call), Math.abs(p.put)]));
+  const py = (v: number) => premTop + VIX_H / 2 - (v / premAbs) * (VIX_H / 2 - 6);
+  const premPath = (k: "call" | "put") => premPts.map((p, i) => `${i === 0 ? "M" : "L"}${x(p.time).toFixed(1)},${py(p[k]).toFixed(1)}`).join("");
+  const premLast = premPts.at(-1) ?? null;
+  const premNew = premOn && premLast ? premiumNewMoney(premPts, premLast.time * 1000) : null;
   const vixLast = vixPts.at(-1)?.value ?? null;
   // Referencia del día: cierre anterior; si no hay (fin de semana / repetición vieja), la apertura.
   const vixPrevClose = props.vix?.prevClose ?? null;
@@ -375,7 +422,12 @@ export default function VisionFuturaChart(props: Props) {
     const { up, down } = positioningSides(r);
     const parts = positioningParts(r);
     const prev = prevAggressor?.get(r.spx);
-    return { strike: r.spx, up, down, ...parts, dUp: prev ? up - prev.up : 0, dDown: prev ? down - prev.down : 0 };
+    // % de una pata (MarketSnack): la parte de spreads se pinta gris (capa "Spreads en gris").
+    const legs = (r as RowWithLegs).legs;
+    return {
+      strike: r.spx, up, down, ...parts, dUp: prev ? up - prev.up : 0, dDown: prev ? down - prev.down : 0,
+      callShare: legs?.callShare ?? null, putShare: legs?.putShare ?? null,
+    };
   });
   const maxPos = Math.max(1, ...pos.map((p) => Math.max(p.up, p.down)));
   // Crecimientos menores al 1% de la barra mayor no se marcan (ruido).
@@ -404,7 +456,10 @@ export default function VisionFuturaChart(props: Props) {
     // Charm − con su propio color para distinguirlo de Charm + (mismo interruptor).
     const color = k.label === "Charm −" ? CHARM_NEG : COLOR[layer];
     const lvl = Math.abs(k.spx % 1) < 0.005 ? n2(k.spx, 0) : n2(k.spx, 2);
-    addChip({ key: `${k.label}-${k.spx}`, text: `${SHORT_LABEL[k.label] ?? k.label} ${lvl}`, color, dashed: k.kind === "gamma_flip" || k.kind === "max_pain" }, k.spx);
+    // ★ = los vencimientos siguientes tienen GEX del mismo signo en ese strike (lib/visionFuturaMultiExp.ts).
+    const kr = rows.find((r) => Math.abs(r.spx - k.spx) <= step / 2) as (VisionStrikeRow & RowMultiExp) | undefined;
+    const star = kr?.backing === "respaldado" ? "★ " : "";
+    addChip({ key: `${k.label}-${k.spx}`, text: `${star}${SHORT_LABEL[k.label] ?? k.label} ${lvl}`, color, dashed: k.kind === "gamma_flip" || k.kind === "max_pain" }, k.spx);
   }
   if (layers.dealers) {
     for (const d of dealerLevels) {
@@ -423,7 +478,7 @@ export default function VisionFuturaChart(props: Props) {
   for (const c of chips) {
     const same = merged.find((m) => !!m.offscreen === !!c.offscreen && Math.abs(m.y - c.y) < 0.5);
     if (!same) { merged.push({ ...c }); continue; }
-    const name = (t: string) => t.replace(/^[↑↓] /, "").replace(/ [\d,.]+$/, "");
+    const name = (t: string) => t.replace(/^[↑↓] /, "").replace(/^★ /, "").replace(/ [\d,.]+$/, "");
     const num = same.text.match(/ ([\d,.]+)$/)?.[1] ?? "";
     const arrow = same.text.match(/^[↑↓] /)?.[0] ?? "";
     // Fuera de la escala con distinto precio: se muestran los dos precios.
@@ -512,6 +567,7 @@ export default function VisionFuturaChart(props: Props) {
         <defs>
           <clipPath id="vf-plot"><rect x={plotL} y={TOP} width={plotW} height={rows.length * ROW_H} /></clipPath>
           <clipPath id="vf-vix"><rect x={plotL} y={vixTop} width={plotW} height={VIX_H} /></clipPath>
+          <clipPath id="vf-prem"><rect x={plotL} y={premTop} width={plotW} height={VIX_H} /></clipPath>
           <linearGradient id="vf-vix-fill" x1="0" x2="0" y1="0" y2="1">
             <stop offset="0%" stopColor={vixColor} stopOpacity={0.28} />
             <stop offset="100%" stopColor={vixColor} stopOpacity={0.02} />
@@ -562,18 +618,25 @@ export default function VisionFuturaChart(props: Props) {
                   {(() => {
                     const wdC = p.down > 0 ? (p.callsSold / p.down) * wd : 0, wdP = wd - wdC;
                     const wuC = p.up > 0 ? (p.callsBought / p.up) * wu : 0, wuP = wu - wuC;
-                    const seg = (x0: number, w: number, fill: string, label: string, txt: string, dark: boolean) => w <= 0 ? null : (
-                      <g>
-                        <rect x={x0} y={ry} width={Math.max(1, w)} height={12} fill={fill} opacity={0.9} />
-                        {w >= 38 && <text x={x0 + w / 2} y={ry + 10} fontSize={9} textAnchor="middle" fill={dark ? "#14111f" : "#fff"} style={{ pointerEvents: "none" }}>{label} {txt}</text>}
-                      </g>
-                    );
+                    // share = % de una pata de ese tramo; la parte de spreads (1 − share) va gris en la
+                    // punta de afuera del tramo (outerLeft = el tramo crece hacia la izquierda).
+                    const seg = (x0: number, w: number, fill: string, label: string, txt: string, dark: boolean, share: number | null, outerLeft: boolean) => {
+                      if (w <= 0) return null;
+                      const gw = layers.spreads && share != null ? Math.max(0, Math.min(w, w * (1 - share))) : 0;
+                      return (
+                        <g>
+                          <rect x={x0} y={ry} width={Math.max(1, w)} height={12} fill={fill} opacity={0.9} />
+                          {gw >= 1 && <rect x={outerLeft ? x0 : x0 + w - gw} y={ry} width={gw} height={12} fill={SPREAD_GRAY} opacity={0.95} style={{ pointerEvents: "none" }} />}
+                          {w >= 38 && <text x={x0 + w / 2} y={ry + 10} fontSize={9} textAnchor="middle" fill={dark ? "#14111f" : "#fff"} style={{ pointerEvents: "none" }}>{label} {txt}</text>}
+                        </g>
+                      );
+                    };
                     return (
                       <>
-                        {seg(posX - wdC, wdC, POS_DOWN, "C", money(p.callsSold), false)}
-                        {seg(posX - wd, wdP, POS_DOWN_PUT, "P", money(p.putsBought), true)}
-                        {seg(posX, wuC, COLOR.posicionamiento, "C", money(p.callsBought), false)}
-                        {seg(posX + wuC, wuP, POS_UP_PUT, "P", money(p.putsSold), true)}
+                        {seg(posX - wdC, wdC, POS_DOWN, "C", money(p.callsSold), false, p.callShare, true)}
+                        {seg(posX - wd, wdP, POS_DOWN_PUT, "P", money(p.putsBought), true, p.putShare, true)}
+                        {seg(posX, wuC, COLOR.posicionamiento, "C", money(p.callsBought), false, p.callShare, false)}
+                        {seg(posX + wuC, wuP, POS_UP_PUT, "P", money(p.putsSold), true, p.putShare, false)}
                       </>
                     );
                   })()}
@@ -586,7 +649,7 @@ export default function VisionFuturaChart(props: Props) {
               );
             })}
             <text x={posX - 6} y={height - 8} fontSize={10} textAnchor="end"><tspan fill={POS_DOWN}>← abajo</tspan> <tspan fill="#6b7591">C</tspan><tspan fill={POS_DOWN}>■</tspan><tspan fill="#6b7591">P</tspan><tspan fill={POS_DOWN_PUT}>■</tspan></text>
-            <text x={posX + 6} y={height - 8} fontSize={10}><tspan fill="#6b7591">C</tspan><tspan fill={COLOR.posicionamiento}>■</tspan><tspan fill="#6b7591">P</tspan><tspan fill={POS_UP_PUT}>■</tspan> <tspan fill={COLOR.posicionamiento}>arriba →</tspan></text>
+            <text x={posX + 6} y={height - 8} fontSize={10}><tspan fill="#6b7591">C</tspan><tspan fill={COLOR.posicionamiento}>■</tspan><tspan fill="#6b7591">P</tspan><tspan fill={POS_UP_PUT}>■</tspan> <tspan fill={COLOR.posicionamiento}>arriba →</tspan>{layers.spreads && pos.some((q) => q.callShare != null || q.putShare != null) && <> <tspan fill={SPREAD_GRAY}>■</tspan><tspan fill="#6b7591"> spreads</tspan></>}</text>
           </g>
         )}
 
@@ -761,6 +824,41 @@ export default function VisionFuturaChart(props: Props) {
           </g>
         )}
 
+        {/* Prima neta por minuto (MarketSnack): calls verde, puts rojo, acumuladas del día */}
+        {premOn && premLast && (() => {
+          const M = (v: number) => `${v >= 0 ? "+" : "−"}$${(Math.abs(v) / 1e6).toFixed(1)}M`;
+          const dir = premLast.call - premLast.put;
+          return (
+            <g>
+              <rect x={0} y={premTop} width={width} height={VIX_H} fill="rgba(255,255,255,0.02)" />
+              <line x1={0} x2={width} y1={premTop} y2={premTop} stroke="#263049" />
+              <line x1={0} x2={width} y1={premBottom} y2={premBottom} stroke="#263049" />
+              <text x={6} y={premTop + 15} fontSize={10} fill="#9aa5c0" fontWeight={600} letterSpacing={0.5}>PRIMA NETA (por minuto)</text>
+              <text x={6} y={premTop + 31} fontSize={11} fontWeight={600}><tspan fill={CANDLE_UP}>Calls {M(premLast.call)}</tspan><tspan fill="#6b7591"> · </tspan><tspan fill={CANDLE_DOWN}>Puts {M(premLast.put)}</tspan></text>
+              <text x={6} y={premTop + 47} fontSize={10} fill={dir >= 0 ? CANDLE_UP : CANDLE_DOWN}>dinero del día {dir >= 0 ? "hacia ARRIBA" : "hacia ABAJO"} ({M(dir)})</text>
+              {premNew && (
+                <text x={6} y={premTop + 63} fontSize={9.5} fill={premNew.vote > 0 ? CANDLE_UP : premNew.vote < 0 ? CANDLE_DOWN : "#6b7591"}>
+                  últimos 15 min: {premNew.vote > 0 ? "↑ " : premNew.vote < 0 ? "↓ " : "· "}{M(premNew.net)}
+                </text>
+              )}
+              <g clipPath="url(#vf-prem)">
+                <line x1={plotL} x2={plotR} y1={py(0)} y2={py(0)} stroke="#6b7591" strokeDasharray="3 3" strokeWidth={1} />
+                <path d={premPath("call")} fill="none" stroke={CANDLE_UP} strokeWidth={1.5} />
+                <path d={premPath("put")} fill="none" stroke={CANDLE_DOWN} strokeWidth={1.5} />
+                <circle cx={x(premLast.time)} cy={py(premLast.call)} r={2.5} fill={CANDLE_UP} />
+                <circle cx={x(premLast.time)} cy={py(premLast.put)} r={2.5} fill={CANDLE_DOWN} />
+              </g>
+              {rightW > 0 && (
+                <g>
+                  <text x={plotR + 14} y={premTop + 22} fontSize={10} fill="#9aa5c0">Verde arriba de 0 = compran calls.</text>
+                  <text x={plotR + 14} y={premTop + 38} fontSize={10} fill="#9aa5c0">Rojo arriba de 0 = compran puts.</text>
+                  <text x={plotR + 14} y={premTop + 52} fontSize={10} fill="#9aa5c0">Mira si el dinero va con el precio.</text>
+                </g>
+              )}
+            </g>
+          );
+        })()}
+
         {/* Cruz de lectura: hora + precio + VIX */}
         {cross != null && (() => {
           const cx = x(cross);
@@ -875,7 +973,47 @@ export default function VisionFuturaChart(props: Props) {
             </g>
           );
         })}
+        {/* Operaciones inusuales de MarketSnack: punto en la hora y el strike; tamaño = prima; color = dirección. */}
+        {layers.inusuales_ms && !props.nightSession && (() => {
+          const dots = unusualDots(props.unusualMs ?? []).filter((d) => d.time >= open && d.time <= close && inView(d.strike));
+          if (!dots.length) return null;
+          const maxP = Math.max(...dots.map((d) => d.premium), 1);
+          return (
+            <g>
+              {dots.map((d) => {
+                const r = 3.5 + 5.5 * Math.sqrt(d.premium / maxP);
+                const fill = d.dir === "arriba" ? "#12b76a" : d.dir === "abajo" ? "#f97066" : "#9aa5c0";
+                return (
+                  <circle key={d.id} data-vf-dot="" cx={x(d.time)} cy={y(d.strike)} r={r} fill={fill} fillOpacity={0.85}
+                    stroke={UNUSUAL} strokeWidth={dotSel?.d.id === d.id ? 2.5 : 1.2} style={{ cursor: "pointer" }}
+                    onClick={(e) => setDotSel(dotSel?.d.id === d.id ? null : { d, cx: e.clientX, cy: e.clientY })} />
+                );
+              })}
+            </g>
+          );
+        })()}
       </svg>
+      {dotSel && (() => {
+        const d = dotSel.d;
+        const W = 270;
+        const vw = typeof window !== "undefined" ? window.innerWidth : 1200;
+        const left = dotSel.cx + 14 + W > vw - 8 ? Math.max(8, dotSel.cx - W - 14) : dotSel.cx + 14;
+        const top = Math.max(84, dotSel.cy - 70);
+        const side = d.side.toUpperCase().includes("ASK") ? "comprado al ask" : d.side.toUpperCase().includes("BID") ? "vendido al bid" : "a mitad (sin lado)";
+        const color = d.dir === "arriba" ? "#12b76a" : d.dir === "abajo" ? "#f97066" : "#9aa5c0";
+        return (
+          <div data-vf-dotcard="" style={{ position: "fixed", left, top, width: W, zIndex: 50, background: "#0f1522", border: `1px solid ${UNUSUAL}`, borderRadius: 10, padding: "10px 12px", boxShadow: "0 8px 24px rgba(0,0,0,0.45)", fontSize: 12, fontVariantNumeric: "tabular-nums", display: "flex", flexDirection: "column", gap: 3, color: "#c7cede" }}>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <b style={{ color: UNUSUAL }}>Operación inusual · {hm(d.time)}</b>
+              <button type="button" aria-label="Cerrar" onClick={() => setDotSel(null)} style={{ background: "none", border: "none", color: "#9aa5c0", cursor: "pointer", fontSize: 14, padding: 0 }}>✕</button>
+            </div>
+            <div style={{ color: "#f5f7fb", fontWeight: 700 }}>{d.type === "call" ? "CALL" : "PUT"} {n2(d.strike, 0)} · {d.size} contratos @ ${d.price.toFixed(2)}</div>
+            <div>Prima <b style={{ color: "#f5f7fb" }}>${money(d.premium)}</b> · {side}</div>
+            <div style={{ color }}>{d.dir ? `Apunta hacia ${d.dir.toUpperCase()}` : "Sin dirección clara (a mitad: puede ser spread o cruce)"}</div>
+            <div style={{ color: "#6b7591", fontSize: 11 }}>MarketSnack: score {d.score} · prioridad {d.priority} · {d.sentiment}</div>
+          </div>
+        );
+      })()}
       {hover && (() => {
         const r = rows.find((x) => x.spx === hover.strike);
         const p = pos.find((x) => x.strike === hover.strike);
@@ -897,7 +1035,7 @@ export default function VisionFuturaChart(props: Props) {
           : net > 0 ? `domina ARRIBA por ${money(net)}` : `domina ABAJO por ${money(-net)}`;
         // Fija a la pantalla, junto al cursor, siempre visible (debajo del encabezado de la página, ~80 px).
         const W = 300;
-        const CARD_H = hit ? 350 : 330;
+        const CARD_H = (hit ? 350 : 330) + ((r as RowWithLegs).legs ? 85 : 0) + ((r as VisionStrikeRow & RowMultiExp).multiExp?.length ? 70 : 0);
         const vw = typeof window !== "undefined" ? window.innerWidth : 1200;
         const vh = typeof window !== "undefined" ? window.innerHeight : 800;
         const left = hover.cx + 16 + W > vw - 8 ? Math.max(8, hover.cx - W - 16) : hover.cx + 16;
@@ -932,6 +1070,45 @@ export default function VisionFuturaChart(props: Props) {
             {line("Ventas al bid", `${money(r.ventas)}${plus(dV)}`, "#f97066")}
             {line("GEX neto", `${gexM(r.netGex)} M`, r.netGex > 0 ? "#12b76a" : r.netGex < 0 ? "#f97066" : "#9aa5c0")}
             {r.dealerRole && <div style={{ color: "#c7cede" }}>Dealers: {role[r.dealerRole]}</div>}
+            {(() => {
+              const lg = (r as RowWithLegs).legs;
+              if (!lg) return null;
+              const pct = (s: number | null) => (s == null ? "—" : `${Math.round(s * 100)}%`);
+              const mostlySpreads = (r.spx >= spot ? lg.callShare : lg.putShare) ?? 1;
+              return (
+                <>
+                  <div style={{ borderTop: "1px solid #263049", margin: "4px 0 2px" }} />
+                  <div style={{ color: "#c7cede", fontWeight: 700 }}>Una pata vs spreads (prima del día)</div>
+                  {line("  Calls", `${pct(lg.callShare)} una pata · $${money(lg.callSingle)} / $${money(lg.callMulti)}`)}
+                  {line("  Puts", `${pct(lg.putShare)} una pata · $${money(lg.putSingle)} / $${money(lg.putMulti)}`)}
+                  <div style={{ color: mostlySpreads < 0.5 ? "#fdb022" : "#c7cede" }}>
+                    {lg.dealerRole1 ? `Solo una pata → Dealers: ${role[lg.dealerRole1]}` : mostlySpreads < 0.5 ? "⚠ Mayormente spreads: el rol de dealers aquí es ruido" : "Solo una pata → sin rol claro de dealers"}
+                  </div>
+                </>
+              );
+            })()}
+            {(() => {
+              const me = (r as VisionStrikeRow & RowMultiExp).multiExp;
+              if (!me?.length) return null;
+              const bk = (r as VisionStrikeRow & RowMultiExp).backing;
+              const cell = (label: string, v: number) => (
+                <div key={label} style={{ display: "flex", flexDirection: "column", alignItems: "center", minWidth: 0 }}>
+                  <span style={{ color: "#6b7591", fontSize: 10 }}>{label}</span>
+                  <span style={{ color: v > 0 ? "#12b76a" : v < 0 ? "#f97066" : "#6b7591", fontWeight: 600, fontSize: 11 }}>{gexM(v)}</span>
+                </div>
+              );
+              return (
+                <>
+                  <div style={{ borderTop: "1px solid #263049", margin: "4px 0 2px" }} />
+                  <div style={{ color: "#c7cede", fontWeight: 700 }}>GEX por vencimiento (M)</div>
+                  <div style={{ display: "grid", gridTemplateColumns: `repeat(${me.length + 1}, minmax(0, 1fr))`, gap: 2 }}>
+                    {cell("hoy", r.netGex)}
+                    {me.map((e) => cell(e.expiration.slice(5).replace("-", "/"), e.netGex))}
+                  </div>
+                  {bk && <div style={{ color: bk === "respaldado" ? "#12b76a" : "#fdb022" }}>{bk === "respaldado" ? "★ Respaldado: los días siguientes tienen el mismo signo" : "⚠ Contrario: los días siguientes van al revés"}</div>}
+                </>
+              );
+            })()}
             <div style={{ color: "#6b7591", fontSize: 11 }}>Flujo neto: calls {sm(r.callFlow)} · puts {sm(r.putFlow)}{prev ? " · ▲▼ vs refresco anterior" : ""}</div>
           </div>
         );

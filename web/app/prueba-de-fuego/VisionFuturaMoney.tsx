@@ -102,6 +102,20 @@ export default function VisionFuturaMoney(p: Props) {
               </span>
             ))}
           </div>
+          {reading.msNewMoney && (() => {
+            const ms = reading.msNewMoney;
+            const ours = reading.votes[2]?.vote ?? 0;
+            const agree = ms.vote === ours;
+            return (
+              <div style={{ fontSize: 12, color: "var(--muted)" }}
+                title="Prima neta de calls y puts por minuto (MarketSnack). Se compara con el voto 'Dinero nuevo 15 min'; solo informa, no cuenta en la señal.">
+                <span style={{ color: ms.vote > 0 ? UP : ms.vote < 0 ? DOWN : "var(--muted)", fontWeight: 600 }}>
+                  {ms.vote > 0 ? "↑" : ms.vote < 0 ? "↓" : "·"} Dinero nuevo 15 min por minuto (MarketSnack):
+                </span>{" "}
+                {ms.detail} · {agree ? "✓ coincide con el voto 3" : <span style={{ color: "var(--amber-text)" }}>⚠ no coincide con el voto 3</span>}
+              </div>
+            );
+          })()}
 
           {sig ? (
             <div style={{ border: `2px solid ${sig.side === "largo" ? UP : DOWN}`, borderRadius: 12, padding: 12, display: "flex", flexDirection: "column", gap: 6, background: "var(--panel-2)" }}>

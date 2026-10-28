@@ -63,6 +63,11 @@ export interface MoneyReading {
   /** Por qué no hay señal (si no la hay). */
   blocked: string | null;
   biggest: { strike: number; total: number } | null;
+  /**
+   * El mismo "dinero nuevo 15 min" pero con la prima por MINUTO de MarketSnack
+   * (lib/visionFuturaPremium.ts). Solo informa: NO cuenta en los votos.
+   */
+  msNewMoney?: { vote: -1 | 0 | 1; net: number; detail: string } | null;
 }
 
 export interface MoneyInput {
@@ -191,6 +196,8 @@ export interface MoneyTrade extends MoneySignal {
   points: number | null;
   /** Base futuro − índice cuando salió (para mostrar la entrada en el futuro real de ese momento). */
   futBasis?: number | null;
+  /** Dinero nuevo de MarketSnack por minuto al abrir (comparación, no decide). */
+  msNewMoney?: MoneyReading["msNewMoney"];
 }
 
 /**

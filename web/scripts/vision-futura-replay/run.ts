@@ -53,6 +53,33 @@ async function main() {
 
   const now = new Date();
   let fallas = 0;
+  // Terminal de MarketSnack (presión una pata/spreads, prima por minuto, inusuales): foto FINAL del
+  // día antes de que MarketSnack la borre. Solo existe el día de hoy → si la PC no corre esto, se pierde.
+  {
+    const { captureMsDay, loadMsDay } = await import("../../lib/visionFuturaMsStore");
+    const { nearestExpirationFrom } = await import("../../lib/visionFuturaData");
+    const { fetchAssetPrice } = await import("../../lib/marketsnack");
+    const { marketDateStr } = await import("../../lib/occ");
+    const today = marketDateStr(now);
+    const dow = new Date(`${today}T12:00:00Z`).getUTCDay();
+    if (dow >= 1 && dow <= 5) {
+      for (const inst of ["SPX", "NQ", "TSLA"]) {
+        try {
+          const cfg = instrumentOf(inst);
+          const exp = loadMsDay(inst, today)?.expiration ?? (await nearestExpirationFrom(inst, today));
+          const spot = await fetchAssetPrice(cfg.msTicker).catch(() => null);
+          if (!exp || !spot) { log(`${inst} ${today}: MarketSnack terminal — sin vencimiento o sin precio, no se guardó.`); continue; }
+          const d = await captureMsDay({ inst, msTicker: cfg.msTicker, expiration: exp, spot, now, force: true });
+          log(d
+            ? `${inst} ${today}: MarketSnack terminal guardada (venc. ${exp}) · prima ${d.premium.length} min · presión ${d.pressure.length} fotos · inusuales ${d.unusual.length}`
+            : `${inst} ${today}: MarketSnack terminal sin datos (¿cookie vencida?).`);
+        } catch (e) {
+          log(`${inst} MarketSnack terminal: ${e instanceof Error ? e.message : e}`);
+        }
+      }
+    }
+  }
+
   for (const inst of ["SPX", "NQ", "TSLA"]) {
     try {
       const replay = await buildReplay(now, { inst });

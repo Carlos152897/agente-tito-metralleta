@@ -50,7 +50,7 @@ export async function attachHybridDay(inst: string, date: string, replay: Hybrid
     } catch { /* sin vivo */ }
   }
   if (liveHybrid) live = score({ alerts: liveHybrid.alerts.map((t) => ({ ...t, outcome: null, exit: null, exitAt: null, points: null })), money: liveHybrid.money.map((t) => ({ ...t, outcome: null, exit: null, exitAt: null, points: null })), blocked: liveHybrid.blocked });
-  const hybrid: HybridBacktest = { ...score(hybridFromReplay(replay)), priceSource, live };
+  const hybrid: HybridBacktest = { ...score(hybridFromReplay(replay, prices)), priceSource, live };
   saveBacktestDay({ ...loadBacktestDay(date, inst)!, hybrid });
   return hybrid;
 }

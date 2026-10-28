@@ -66,3 +66,29 @@ describe("resolver y repetición", () => {
     expect(hybridSummary(day.alerts)).toMatchObject({ n: 1, closed: 0 });
   });
 });
+
+describe("sin operaciones contrarias entre las dos tarjetas (28-oct)", () => {
+  const far = [{ kind: "magneto" as const, spx: 7600, label: "Magneto" }];
+  const longSig = { id: "m", side: "largo" as const, entry: 7730.3, stop: 7723, target: 7740, targetLabel: "Barra más grande", openedAt: at("09:45") };
+  it("con un LARGO de la señal abierto, la alerta CORTO se bloquea", () => {
+    const open = [hybridFromMoney(longSig, { keyLevels: far }).trade!];
+    const r = hybridFromAlert(alert(7730, "corto", 7728.18), { at: at("09:46"), keyLevels: far, scale: 1, open });
+    expect(r.trade).toBeNull();
+    expect(r.blocked?.reason).toContain("LARGO abierto");
+    expect(r.blocked?.reason).toContain("09:45");
+  });
+  it("del mismo lado sí deja pasar, y si la contraria ya cerró también", () => {
+    const open = [hybridFromMoney(longSig, { keyLevels: far }).trade!];
+    expect(hybridFromAlert(alert(7725, "largo", 7728), { at: at("09:50"), keyLevels: far, scale: 1, open }).trade).not.toBeNull();
+    const closed = [{ ...open[0], outcome: "stop" as const }];
+    expect(hybridFromAlert(alert(7730, "corto", 7728.18), { at: at("09:50"), keyLevels: far, scale: 1, open: closed }).trade).not.toBeNull();
+  });
+  it("en la repetición mira qué seguía abierto con el precio", () => {
+    const base = { scale: 1, ticks: [{ time: at("09:30") / 1000, keyLevels: far }], moneyTrades: [longSig] };
+    const corto = { ...alert(7730, "corto", 7728.18), firedAt: at("09:50") };
+    // sigue abierto → bloquea
+    expect(hybridFromReplay({ ...base, alerts: [corto], priceSeries: [{ time: at("09:47") / 1000, value: 7729 }] }).alerts).toHaveLength(0);
+    // el LARGO tocó su stop 7723 a las 9:47 → el corto de las 9:50 pasa
+    expect(hybridFromReplay({ ...base, alerts: [corto], priceSeries: [{ time: at("09:47") / 1000, value: 7722 }] }).alerts).toHaveLength(1);
+  });
+});

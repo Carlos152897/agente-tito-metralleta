@@ -146,6 +146,12 @@ function AlertCard({ a }: { a: AlertView }) {
             Cumple <b>{a.score}/5</b>{a.regimeNote ? ` · ${a.regimeNote}` : ""}
             {a.target && <> · objetivo: {a.target.label}</>}
           </div>
+          {a.singleLeg && (
+            <div style={{ fontSize: 12, color: a.singleLeg.share != null && a.singleLeg.share >= 0.5 ? "var(--text)" : "var(--amber-text)" }}
+              title="Prima del día en este strike: operaciones de una pata (apuestas de dirección) vs spreads (varias patas). Dato de MarketSnack; solo informa, no cambia si la alerta dispara.">
+              {a.singleLeg.share != null && a.singleLeg.share >= 0.5 ? "◆" : "⚠"} Una pata: {a.singleLeg.text}
+            </div>
+          )}
         </div>
         <OrderBox o={a.order} color={color} />
       </div>

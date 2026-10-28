@@ -29,6 +29,7 @@
 
 import type { ConvertedLevel, Conversion, KeyLevel, DealerLevel, VisionStrikeRow } from "./visionFutura";
 import { convertLevel } from "./visionFutura";
+import { alertSingleLeg, type AlertSingleLeg, type RowWithLegs } from "./visionFuturaLegs";
 
 export type AlertKind = "rechazo_techo" | "defensa_piso" | "ruptura_piso" | "ruptura_techo";
 
@@ -81,6 +82,8 @@ export interface VisionAlert {
   target: (ConvertedLevel & { label: string }) | null;
   order: AlertOrder;
   regimeNote: string | null;
+  /** Una pata vs spreads del nivel (lib/visionFuturaLegs.ts). Solo informa, NO cambia si dispara. */
+  singleLeg?: AlertSingleLeg | null;
 }
 
 /** Confirmaciones del modo noche (ver arriba). */
@@ -424,6 +427,7 @@ export function evaluateVisionAlerts(input: EvaluateInput): VisionAlert[] {
     out.push({
       id: `${kind}:${lvl.spx}`, kind, direction, title, level: conv(lvl.spx), levelSources: lvl.sources,
       price: conv(spot), conditions, score, fires: conditionsOk && blocked == null, blocked, trap: trapFor(kind, lvl.spx), target, regimeNote: note,
+      singleLeg: alertSingleLeg(kind, nearestRow(rows, lvl.spx) as RowWithLegs | null, conditions.find((c) => c.key === "firme")?.ok ?? false),
       order: {
         side,
         instrumento: input.instrumentos

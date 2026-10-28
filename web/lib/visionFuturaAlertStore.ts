@@ -8,6 +8,7 @@
 // tarea de fondo scripts/vision-futura-live/poll.ts (todo el día, sin la página) — sin Telegram.
 
 import { MONEY_TUNING, readMoney, stepAgo, type MoneyReading, type MoneyRow, type MoneyTrade } from "./visionFuturaMoneyFlow";
+import { premiumNewMoney, premiumSeries } from "./visionFuturaPremium";
 import { evaluateLottos, lecturaAt, lottoExitsFrom, lottoTradeFrom, minutesToClose, settleLottoWithRule, type LottoIdea, type LottoQuote, type LottoTrade } from "./visionFuturaLottos";
 import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
@@ -235,7 +236,7 @@ export async function runVisionFuturaCycle(now: Date, radius: number, instrument
       state.fired.push({ ...a, firedAt: t, lastSeenAt: t, result: openResult() });
       // Motor híbrido: la misma alerta con sus filtros y stop/objetivo más amplios.
       state.hybrid ??= { alerts: [], money: [], blocked: [] };
-      const h = hybridFromAlert(a, { at: t, keyLevels: payload.keyLevels, scale: payload.scale ?? 1 });
+      const h = hybridFromAlert(a, { at: t, keyLevels: payload.keyLevels, scale: payload.scale ?? 1, open: [...state.hybrid.alerts, ...state.hybrid.money] });
       if (h.trade) state.hybrid.alerts.push({ ...h.trade, futBasis: payload.conversion.esBasis ?? null });
       if (h.blocked) state.hybrid.blocked.push(h.blocked);
     }
@@ -314,14 +315,17 @@ export async function runVisionFuturaCycle(now: Date, radius: number, instrument
     if (nyMin >= 9 * 60 + 45) {
       const ago = stepAgo(state.flowSnaps.filter((s) => s.r === payload.radius), t);
       moneyReading = readMoney({ spot: spotNow, keyLevels: payload.keyLevels, rows: rowsNow, rows15: ago?.rows ?? null, scale: payload.scale });
+      // En paralelo: el mismo voto con la prima por minuto de MarketSnack (no decide).
+      const nm = premiumNewMoney(premiumSeries(payload.marketSnack?.premium ?? []), t);
+      moneyReading.msNewMoney = nm ? { vote: nm.vote, net: nm.net, detail: nm.detail } : null;
       const sig = moneyReading.signal;
       const open = state.moneyTrades.some((tr) => tr.outcome == null);
       const lastSame = [...state.moneyTrades].reverse().find((tr) => sig && tr.side === sig.side);
       if (sig && !open && nyMin <= 15 * 60 + 30 && (!lastSame || t - lastSame.openedAt >= MONEY_TUNING.cooldownMs)) {
-        const mt = { ...sig, id: `${t}:${sig.side}`, openedAt: t, votes: moneyReading.votes, exit: null, exitAt: null, outcome: null, points: null, futBasis: payload.conversion.esBasis ?? null };
+        const mt = { ...sig, id: `${t}:${sig.side}`, openedAt: t, votes: moneyReading.votes, exit: null, exitAt: null, outcome: null, points: null, futBasis: payload.conversion.esBasis ?? null, msNewMoney: moneyReading.msNewMoney ?? null };
         state.moneyTrades.push(mt);
         state.hybrid ??= { alerts: [], money: [], blocked: [] };
-        const h = hybridFromMoney(mt, { keyLevels: payload.keyLevels });
+        const h = hybridFromMoney(mt, { keyLevels: payload.keyLevels, open: [...state.hybrid.alerts, ...state.hybrid.money] });
         if (h.trade) state.hybrid.money.push({ ...h.trade, futBasis: mt.futBasis });
         if (h.blocked) state.hybrid.blocked.push(h.blocked);
       }

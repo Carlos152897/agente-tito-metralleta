@@ -352,6 +352,65 @@ export async function fetchGexStats(
   return json.data ?? [];
 }
 
+// ── Datos de la terminal de MarketSnack (vistos 2026-10-28). SOLO dan el día de HOY: ──
+// ── para la repetición hay que guardarlos (lib/visionFuturaMsStore.ts).              ──
+
+async function getJson<T>(path: string): Promise<T | null> {
+  const res = await fetch(`${BASE_URL}${path}`, {
+    headers: { Accept: "application/json", Cookie: await cookie() },
+    cache: "no-store",
+    redirect: "manual",
+  });
+  if (res.status === 401 || res.status === 403 || (res.status >= 300 && res.status < 400)) {
+    throw new MarketSnackError("Sesión de MarketSnack inválida o expirada. Actualiza la cookie en /ajustes.", res.status);
+  }
+  if (!res.ok) return null;
+  return (await res.json()) as T;
+}
+
+export interface MsLegSplit { single_leg: number; multi_leg: number }
+export interface MsPressureRow { strike: number; call: MsLegSplit; put: MsLegSplit }
+export interface MsPressure { rows: MsPressureRow[]; totals: { call: MsLegSplit; put: MsLegSplit } | null }
+
+/**
+ * Presión por strike (`option_pressure`): prima del día por strike partida en operaciones de UNA
+ * pata (apuesta de dirección) y de VARIAS patas (spreads). ~20 strikes alrededor de `spot`.
+ */
+export async function fetchOptionPressure(ticker: string, expirationDate: string, spot: number): Promise<MsPressure> {
+  const t = encodeURIComponent(ticker.trim().toUpperCase());
+  const j = await getJson<{ data?: MsPressureRow[]; totals?: MsPressure["totals"] }>(
+    `/api/assets/${t}/option_pressure?period=1d&spot=${Math.round(spot)}&expiration_date=${encodeURIComponent(expirationDate)}`,
+  );
+  return { rows: j?.data ?? [], totals: j?.totals ?? null };
+}
+
+export interface MsPremiumMinute { t: string; net_call_premium: number; net_put_premium: number; net_volume: number }
+
+/** Prima neta de calls y puts MINUTO a MINUTO del día (`net_premium_sentiment`), acumulada. */
+export async function fetchNetPremiumSentiment(ticker: string, expirationDate: string): Promise<MsPremiumMinute[]> {
+  const t = encodeURIComponent(ticker.trim().toUpperCase());
+  const j = await getJson<{ data?: MsPremiumMinute[] }>(
+    `/api/assets/${t}/net_premium_sentiment?period=1d&expiration_date=${encodeURIComponent(expirationDate)}`,
+  );
+  return j?.data ?? [];
+}
+
+export interface MsUnusualTrade {
+  id: number; timestamp: string; symbol: string; side: string; sentiment: string;
+  size: number; price: number; premium: number; score: number; market_alert_priority: string;
+  bid_price: number; ask_price: number; asset_price: number; open_interest: number; volume: number;
+  delta: number; gamma: number; implied_volatility: number; break_even: number;
+}
+
+/** Operaciones inusuales una por una (`unusual_trades`) del vencimiento, con score de MarketSnack. */
+export async function fetchUnusualTrades(ticker: string, expirationDate: string): Promise<MsUnusualTrade[]> {
+  const t = encodeURIComponent(ticker.trim().toUpperCase());
+  const j = await getJson<{ trades?: MsUnusualTrade[] }>(
+    `/api/assets/${t}/unusual_trades?period=1d&interval=5m&expiration_date=${encodeURIComponent(expirationDate)}`,
+  );
+  return j?.trades ?? [];
+}
+
 /**
  * Cadena completa de UNA expiración con greeks REALES (gamma incluida, no
  * estimada) y `premium_breakdown` (bid/mid/ask) por contrato — vía `GET
