@@ -10,6 +10,7 @@ import type { AlertView } from "@/lib/visionFuturaAlertStore";
 import type { AlertOrder, VisionAlert } from "@/lib/visionFuturaAlerts";
 import type { ConvertedLevel } from "@/lib/visionFutura";
 import { toFuture, useFutureFirst, useVisionLabels } from "./visionLabels";
+import StopPts from "./StopPts";
 import { orderSummary, type OrderResult } from "@/lib/visionFuturaAlertOutcome";
 
 const fmt = (n: number | null | undefined, d = 2) =>
@@ -58,6 +59,7 @@ function OrderBox({ o, color }: { o: AlertOrder; color: string }) {
       <div style={{ fontWeight: 700, color, fontSize: 14 }}>
         Orden: {o.side === "largo" ? "LARGO ▲" : "CORTO ▼"} <span style={{ fontWeight: 400, color: "var(--muted)", fontSize: 12 }}>· {o.instrumento}</span>
       </div>
+      <StopPts pts={o.riskPts} />
       {row("Entrada", o.entry)}
       {row("Stop", o.stop, DOWN)}
       {row("Objetivo", o.target, UP)}

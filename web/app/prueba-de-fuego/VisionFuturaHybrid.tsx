@@ -10,6 +10,7 @@ import { HYBRID_TUNING, hybridSummary, resolveHybrid, type HybridDay, type Hybri
 import type { Conversion } from "@/lib/visionFutura";
 import { toFuture, useFutureFirst, useVisionLabels } from "./visionLabels";
 import { FutureFirstNote } from "./VisionFuturaAlerts";
+import StopPts from "./StopPts";
 
 const UP = "var(--green)";
 const DOWN = "var(--red-soft)";
@@ -76,6 +77,7 @@ function Card({ kind, list, conversion }: { kind: "alerta" | "senal"; list: Hybr
             <span style={{ color: DOWN }}>Stop</span><span><b>{px(cur.stop)}</b> <span style={{ color: "var(--faint)" }}>{conv(cur.stop)}</span></span>
             <span style={{ color: UP }}>Objetivo</span><span><b>{px(cur.target)}</b> <span style={{ color: "var(--faint)" }}>{conv(cur.target)}</span></span>
           </div>
+          <StopPts pts={cur.riskPts} />
           <div style={{ fontSize: 12, color: "var(--muted)" }}>Riesgo {cur.riskPts} pts · Recompensa {cur.rewardPts} pts · {cur.note}</div>
           <div style={{ fontSize: 13 }}><Status t={cur} /></div>
           {prev && <div style={{ fontSize: 11, color: "var(--faint)" }}>Reemplaza a la de las {hm(prev.at)} ({prev.side === "largo" ? "largo" : "corto"} {px(prev.entry, prev.futBasis ?? null)} · {prev.outcome ?? "abierta"}{prev.points != null ? ` ${prev.points > 0 ? "+" : ""}${prev.points}` : ""}).</div>}

@@ -7,6 +7,7 @@
 import type { MoneyReading, MoneyTrade } from "@/lib/visionFuturaMoneyFlow";
 import { FutureFirstNote } from "./VisionFuturaAlerts";
 import { toFuture, useFutureFirst } from "./visionLabels";
+import StopPts from "./StopPts";
 
 const UP = "var(--green)";
 const DOWN = "var(--red-soft)";
@@ -131,6 +132,7 @@ export default function VisionFuturaMoney(p: Props) {
                 <span style={{ color: "var(--muted)" }}>🛑 Stop</span><b style={{ color: DOWN }}>{px(sig.stop)} · {sig.stopLabel} · −{sig.riskPts.toFixed(2)} pts{eq(sig.stop)}</b>
                 <span style={{ color: "var(--muted)" }}>Gana / arriesga</span><b>{sig.rb.toFixed(2)} : 1 · {p.mult.bigLabel}: +${Math.round(sig.rewardPts * p.mult.big).toLocaleString("en-US")} / −${Math.round(sig.riskPts * p.mult.big).toLocaleString("en-US")}</b>
               </div>
+              <StopPts pts={sig.riskPts} />
               <div style={{ fontSize: 12, color: "var(--muted)" }}>Cómo: {sig.side === "largo" ? p.instrumentos.largo : p.instrumentos.corto}. Es una lectura del flujo, no una recomendación.</div>
             </div>
           ) : (
@@ -153,7 +155,7 @@ export default function VisionFuturaMoney(p: Props) {
         ) : (
           <div style={{ overflowX: "auto" }}>
             <table className="table" style={{ fontSize: 13, fontVariantNumeric: "tabular-nums", width: "100%" }}>
-              <thead><tr><th>Hora</th><th>Lado</th><th>Entrada</th><th>Objetivo</th><th>Stop</th><th>R:B</th><th>Estado</th><th>Puntos</th></tr></thead>
+              <thead><tr><th>Hora</th><th>Lado</th><th>Entrada</th><th>Objetivo</th><th>Stop</th><th>Stop pts</th><th>R:B</th><th>Estado</th><th>Puntos</th></tr></thead>
               <tbody>
                 {trades.map(({ t, closed, value }) => (
                   <tr key={t.id}>
@@ -162,6 +164,7 @@ export default function VisionFuturaMoney(p: Props) {
                     <td>{px(t.entry, t.futBasis ?? null)}</td>
                     <td>{px(t.target, t.futBasis ?? null)} <span style={{ color: "var(--muted)" }}>{t.targetLabel}</span></td>
                     <td>{px(t.stop, t.futBasis ?? null)}</td>
+                    <td><StopPts pts={t.riskPts} compact /></td>
                     <td>{t.rb.toFixed(2)}</td>
                     <td>{closed ? `${t.outcome === "objetivo" ? "🎯 objetivo" : t.outcome === "stop" ? "🛑 stop" : "⏹ cierre"} ${t.exitAt ? hm(t.exitAt) : ""}` : "abierta"}</td>
                     <td style={{ fontWeight: 700, color: value > 0 ? UP : value < 0 ? DOWN : "var(--muted)" }}>{pts(value)}{!closed && <span style={{ fontWeight: 400, color: "var(--muted)" }}> (va)</span>}</td>
