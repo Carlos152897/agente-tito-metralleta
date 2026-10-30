@@ -5,6 +5,8 @@
 // Muestra las alertas de confluencia que se dispararon hoy (con su orden
 // sugerida sobre el subyacente) y los setups que se están vigilando. El
 // cálculo vive en lib/visionFuturaAlerts.ts; acá solo se pinta.
+// Carlos, 29-oct-2026: como en el Motor híbrido, se muestra UNA operación a la vez (la abierta; si
+// no hay, la última). Todas siguen guardadas por dentro (estado del día, backtest y Excel).
 
 import type { AlertView } from "@/lib/visionFuturaAlertStore";
 import type { AlertOrder, VisionAlert } from "@/lib/visionFuturaAlerts";
@@ -201,11 +203,25 @@ export default function VisionFuturaAlerts({ alerts, watch, marketOpen }: { aler
         );
       })()}
 
-      {alerts.length > 0 ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {alerts.map((a) => <AlertCard key={`${a.id}-${a.firedAt}`} a={a} />)}
-        </div>
-      ) : marketOpen ? (
+      {alerts.length > 0 ? (() => {
+        // Una a la vez: la orden abierta (la más nueva); si no hay, la última que salió.
+        const byTime = [...alerts].sort((x, y) => y.firedAt - x.firedAt);
+        const cur = byTime.find((a) => a.result?.status === "abierta") ?? byTime[0];
+        const prev = byTime.find((a) => a.firedAt < cur.firedAt);
+        const r = prev?.result;
+        return (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <AlertCard key={`${cur.id}-${cur.firedAt}`} a={cur} />
+            {prev && (
+              <div style={{ fontSize: 11, color: "var(--faint)" }}>
+                Reemplaza a la de las {hmNy(prev.firedAt)} ({prev.order.side === "largo" ? "largo" : "corto"} {fmt(prev.order.entry.spx)}
+                {r ? ` · ${r.status}${r.points != null ? ` ${r.points > 0 ? "+" : ""}${fmt(r.points)}` : ""}` : ""}).
+                Se muestra una a la vez; las {alerts.length} de hoy quedan guardadas para el backtest.
+              </div>
+            )}
+          </div>
+        );
+      })() : marketOpen ? (
         <div className="wheel-empty" style={{ fontSize: 13 }}>Todavía no hay alertas hoy. Abajo ves qué se está vigilando.</div>
       ) : null}
 

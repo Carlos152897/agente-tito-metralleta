@@ -3,6 +3,8 @@
 // Sección "🧭 Señal del dinero" de VisionFutura (Carlos, 23-oct-2026): la receta de las 5 preguntas
 // hecha regla (lib/visionFuturaMoneyFlow.ts). Muestra hacia dónde apunta el dinero ahora (4 votos),
 // la señal LONG/SHORT con entrada, objetivo y stop, y las señales del día con su resultado.
+// Carlos, 29-oct-2026: como en el Motor híbrido, UNA operación a la vez (la abierta; si no hay, la
+// señal nueva o la última). Todas siguen guardadas (estado del día, backtest y Excel).
 
 import type { MoneyReading, MoneyTrade } from "@/lib/visionFuturaMoneyFlow";
 import { FutureFirstNote } from "./VisionFuturaAlerts";
@@ -118,13 +120,10 @@ export default function VisionFuturaMoney(p: Props) {
             );
           })()}
 
-          {sig ? (
+          {open ? null : sig ? (
             <div style={{ border: `2px solid ${sig.side === "largo" ? UP : DOWN}`, borderRadius: 12, padding: 12, display: "flex", flexDirection: "column", gap: 6, background: "var(--panel-2)" }}>
               <div style={{ fontSize: 18, fontWeight: 800, color: sig.side === "largo" ? UP : DOWN }}>
                 {sig.side === "largo" ? "🟢 LONG" : "🔴 SHORT"} {futOn ? ff.label : p.main}
-                {open && (open.t.side === sig.side && Math.abs(open.t.entry - sig.entry) < 0.005
-                  ? <span style={{ fontSize: 12, fontWeight: 400, color: "var(--muted)" }}> · ✅ tomada a las {hm(open.t.openedAt)}</span>
-                  : <span style={{ fontSize: 12, fontWeight: 400, color: "var(--muted)" }}> · ya hay una operación abierta: esta señal no se toma</span>)}
               </div>
               <div style={{ fontSize: 14, fontVariantNumeric: "tabular-nums", display: "grid", gridTemplateColumns: "auto 1fr", gap: "2px 12px" }}>
                 <span style={{ color: "var(--muted)" }}>Entrada</span><b>{px(sig.entry)}{eq(sig.entry)}</b>
@@ -136,7 +135,7 @@ export default function VisionFuturaMoney(p: Props) {
               <div style={{ fontSize: 12, color: "var(--muted)" }}>Cómo: {sig.side === "largo" ? p.instrumentos.largo : p.instrumentos.corto}. Es una lectura del flujo, no una recomendación.</div>
             </div>
           ) : (
-            <div style={{ fontSize: 13, color: "var(--muted)" }}>⛔ Sin señal ahora: {reading.blocked}</div>
+            <div style={{ fontSize: 13, color: "var(--muted)" }}>⛔ Sin señal nueva ahora: {reading.blocked}</div>
           )}
         </>
       )}
@@ -152,28 +151,44 @@ export default function VisionFuturaMoney(p: Props) {
         </div>
         {trades.length === 0 ? (
           <div style={{ fontSize: 13, color: "var(--muted)" }}>Ninguna todavía{replay ? " (hasta este momento)" : ""}.</div>
-        ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table className="table" style={{ fontSize: 13, fontVariantNumeric: "tabular-nums", width: "100%" }}>
-              <thead><tr><th>Hora</th><th>Lado</th><th>Entrada</th><th>Objetivo</th><th>Stop</th><th>Stop pts</th><th>R:B</th><th>Estado</th><th>Puntos</th></tr></thead>
-              <tbody>
-                {trades.map(({ t, closed, value }) => (
-                  <tr key={t.id}>
-                    <td>{hm(t.openedAt)}</td>
-                    <td style={{ color: t.side === "largo" ? UP : DOWN, fontWeight: 700 }}>{t.side === "largo" ? "LONG" : "SHORT"}</td>
-                    <td>{px(t.entry, t.futBasis ?? null)}</td>
-                    <td>{px(t.target, t.futBasis ?? null)} <span style={{ color: "var(--muted)" }}>{t.targetLabel}</span></td>
-                    <td>{px(t.stop, t.futBasis ?? null)}</td>
-                    <td><StopPts pts={t.riskPts} compact /></td>
-                    <td>{t.rb.toFixed(2)}</td>
-                    <td>{closed ? `${t.outcome === "objetivo" ? "🎯 objetivo" : t.outcome === "stop" ? "🛑 stop" : "⏹ cierre"} ${t.exitAt ? hm(t.exitAt) : ""}` : "abierta"}</td>
-                    <td style={{ fontWeight: 700, color: value > 0 ? UP : value < 0 ? DOWN : "var(--muted)" }}>{pts(value)}{!closed && <span style={{ fontWeight: 400, color: "var(--muted)" }}> (va)</span>}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        ) : (() => {
+          // Una a la vez: la abierta; si no hay, la última. Las demás quedan guardadas.
+          const cur = open ?? trades[trades.length - 1];
+          const prev = trades.filter((x) => x.t.openedAt < cur.t.openedAt).at(-1);
+          const { t, closed, value } = cur;
+          const col = t.side === "largo" ? UP : DOWN;
+          return (
+            <>
+              <div style={{ borderLeft: `4px solid ${col}`, borderRadius: 8, padding: "8px 10px", background: "var(--panel-2)", display: "flex", flexDirection: "column", gap: 5 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                  <b style={{ color: col }}>{t.side === "largo" ? "🟢 LONG" : "🔴 SHORT"} {futOn ? ff.label : p.main}</b>
+                  <span style={{ fontSize: 12, color: "var(--muted)" }}>{hm(t.openedAt)} NY</span>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "3px 12px", fontSize: 13, fontVariantNumeric: "tabular-nums" }}>
+                  <span style={{ color: "var(--muted)" }}>Entrada</span><b>{px(t.entry, t.futBasis ?? null)}{eq(t.entry)}</b>
+                  <span style={{ color: "var(--muted)" }}>🎯 Objetivo</span><b style={{ color: UP }}>{px(t.target, t.futBasis ?? null)} · {t.targetLabel}</b>
+                  <span style={{ color: "var(--muted)" }}>🛑 Stop</span><b style={{ color: DOWN }}>{px(t.stop, t.futBasis ?? null)}</b>
+                  <span style={{ color: "var(--muted)" }}>Gana / arriesga</span><b>{t.rb.toFixed(2)} : 1</b>
+                </div>
+                <StopPts pts={t.riskPts} />
+                <div style={{ fontSize: 13 }}>
+                  {closed
+                    ? <span style={{ color: value > 0 ? UP : value < 0 ? DOWN : "var(--muted)", fontWeight: 700 }}>
+                        {t.outcome === "objetivo" ? "🎯 objetivo" : t.outcome === "stop" ? "🛑 stop" : "⏹ cierre"} {t.exitAt ? hm(t.exitAt) : ""} · {pts(value)} pts ({usd(value * p.mult.big)})
+                      </span>
+                    : <span style={{ color: "var(--amber-text)", fontWeight: 700 }}>ABIERTA · va {pts(value)} pts</span>}
+                </div>
+                {!closed && <div style={{ fontSize: 12, color: "var(--muted)" }}>Cómo: {t.side === "largo" ? p.instrumentos.largo : p.instrumentos.corto}.</div>}
+              </div>
+              {prev && (
+                <div style={{ fontSize: 11, color: "var(--faint)" }}>
+                  Reemplaza a la de las {hm(prev.t.openedAt)} ({prev.t.side === "largo" ? "LONG" : "SHORT"} {px(prev.t.entry, prev.t.futBasis ?? null)} · {prev.closed ? `${prev.t.outcome} ${pts(prev.value)}` : "abierta"}).
+                  Se muestra una a la vez; las {trades.length} {replay ? "de la repetición" : "de hoy"} quedan guardadas para el backtest.
+                </div>
+              )}
+            </>
+          );
+        })()}
       </div>
     </div>
   );
