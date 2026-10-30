@@ -79,6 +79,8 @@ async function main() {
   if (!takeLock()) return;
   const { runVisionFuturaCycle } = await import("../../lib/visionFuturaAlertStore");
   const { archiveLiveState } = await import("../../lib/visionFuturaLiveStore");
+  // Panel derecho (VIX · SPY · QQQ y Vigía tecnológico): graba los imanes minuto a minuto.
+  const { recordContext } = await import("../../lib/visionFuturaContextData");
 
   const START = 9 * 60 + 29, END = 16 * 60;
   const { date } = ny();
@@ -105,6 +107,14 @@ async function main() {
         const prev = lastErr[inst];
         if (!prev || prev.msg !== msg || Date.now() - prev.at > 10 * 60_000) { log(`${inst}: FALLÓ el ciclo — ${msg}`); lastErr[inst] = { msg, at: Date.now() }; }
       }
+    }
+    try {
+      await recordContext(new Date());
+      delete lastErr.contexto;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const prev = lastErr.contexto;
+      if (!prev || prev.msg !== msg || Date.now() - prev.at > 10 * 60_000) { log(`contexto VIX/SPY/QQQ: FALLÓ — ${msg}`); lastErr.contexto = { msg, at: Date.now() }; }
     }
   };
 

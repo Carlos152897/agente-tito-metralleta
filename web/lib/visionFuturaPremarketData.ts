@@ -78,6 +78,11 @@ export interface PremarketPayload {
 
 const fileOf = (inst: string, date: string) => join(DIR, `${inst}-${date}.json`);
 const readJson = <T>(f: string): T | null => { try { return JSON.parse(readFileSync(f, "utf8")) as T; } catch { return null; } };
+
+/** Pronóstico guardado de un día (sin recalcular): para las zonas sobre la gráfica de VisionFutura. */
+export function readPremarketDay(inst: string, date: string): PremarketDayFile | null {
+  return readJson<PremarketDayFile>(fileOf(inst, date));
+}
 const writeJson = (f: string, v: unknown) => { mkdirSync(DIR, { recursive: true }); writeFileSync(f, JSON.stringify(v), "utf8"); };
 
 // ── Versiones de OI por vencimiento ──

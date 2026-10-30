@@ -31,6 +31,10 @@ import type { SpreadsReport } from "@/lib/visionFuturaSpreads";
 import type { MsPremiumMinute, MsUnusualTrade } from "@/lib/marketsnack";
 import type { DotExit } from "@/lib/visionFuturaUnusualExit";
 import { detectUnusual, mergeUnusual, snapshotOf, UNUSUAL_TUNING, type FlowSnapshot, type UnusualHit } from "@/lib/visionFuturaFlowChanges";
+import VisionFuturaContextPanel from "./VisionFuturaContextPanel";
+import VisionFuturaPremarketZones, { usePremarketZones } from "./VisionFuturaPremarketZones";
+import { useVolumeDelta, VOL_WINDOWS } from "./useVolumeDelta";
+import { detectVolumeSpikes, volDeltaRows } from "@/lib/visionFuturaVolumeDelta";
 import VisionFuturaChart, { DEFAULT_LAYERS, LAYERS, type CandleBar, type HistoryPoint, type LayerKey, type VixStrip } from "./VisionFuturaChart";
 import type { ConvertedLevel, DealerLevel, KeyLevel, KeyLevelKind, VisionFuturaReport, VisionStrikeRow } from "@/lib/visionFutura";
 
@@ -317,6 +321,18 @@ export default function VisionFuturaTab() {
   const [layers, setLayers] = useState<Record<LayerKey, boolean>>(DEFAULT_LAYERS);
   const [showTable, setShowTable] = useState(false);
   const [zoom, setZoom] = useState<number | null>(null);
+  // Ventana del volumen delta (panel derecho): 60 / 300 / 900 s, o null = todo el día.
+  const [volWin, setVolWin] = useState<number | null>(60);
+  useEffect(() => {
+    try {
+      const v = window.localStorage.getItem("visionary.visionFutura.volWin");
+      if (v != null) setVolWin(v === "" ? null : Number(v));
+    } catch { /* sin storage */ }
+  }, []);
+  const pickVolWin = (w: number | null) => {
+    setVolWin(w);
+    try { window.localStorage.setItem("visionary.visionFutura.volWin", w == null ? "" : String(w)); } catch { /* sin storage */ }
+  };
   const [fitHeight, setFitHeight] = useState(false);
   // Compras/ventas del refresco anterior → flechas ▲▼ del panel del agresor.
   const [live, setLive] = useState<LiveQuote | null>(null);
@@ -621,6 +637,22 @@ export default function VisionFuturaTab() {
     </div>
   );
 
+  // Zonas de pre-mercado del MISMO día que muestra la gráfica (en la repetición, el día repetido).
+  const pmLastSec = candles?.bars.at(-1)?.time ?? data?.priceSeries.at(-1)?.time ?? null;
+  const pmDate = NIGHT_IDS.includes(inst) ? null
+    : mode === "repeticion" && replay ? replay.date
+    : pmLastSec != null ? new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(pmLastSec * 1000))
+    : null;
+  const pmReport = usePremarketZones(inst, pmDate);
+  const vol = useVolumeDelta({
+    // En "Repetir sesión": los contratos que vencían ese día (el 0DTE repetido), con el radio de la repetición.
+    inst,
+    expiration: mode === "repeticion" && replay ? replay.expiration || replay.date : data?.expiration ?? null,
+    spot: data?.spot.spx ?? null,
+    radius: mode === "repeticion" && replay ? replay.radius : data?.radius ?? null,
+    enabled: layers.volumen_delta && layers.agresor && !NIGHT_IDS.includes(inst),
+  });
+
   if (loading && !data) return <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-md)" }}>{instrumentBar}<div className="card wheel-empty">Cargando VisionFutura · {inst}…</div></div>;
   if (error && !data) return <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-md)" }}>{instrumentBar}<div className="card" style={{ color: "var(--red-soft)" }}>{error}</div></div>;
   if (!data) return null;
@@ -919,7 +951,9 @@ export default function VisionFuturaTab() {
         </div>
       </div>
 
-      <div className="card" style={{ gap: 12 }}>
+      {/* Escalera a la izquierda + panel VIX · SPY · QQQ y Vigía tecnológico a la derecha (Carlos, 29-oct). */}
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
+      <div className="card" style={{ gap: 12, flex: "1 1 760px", minWidth: 0 }}>
         <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
           <h4 style={{ margin: 0 }}>Escalera en vivo</h4>
           {tick ? (
@@ -993,6 +1027,28 @@ export default function VisionFuturaTab() {
             );
           })}
         </div>
+        {layers.volumen_delta && layers.agresor && !isNightInst && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+            <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600, letterSpacing: 0.5 }}>Δ VOLUMEN</span>
+            {VOL_WINDOWS.map((w) => {
+              const on = volWin === w.sec;
+              return (
+                <button key={w.label} onClick={() => pickVolWin(w.sec)} aria-pressed={on}
+                  title={w.sec ? `Delta de los últimos ${w.label} cerrados (contratos reales al bid/ask)` : "Delta acumulado del día"}
+                  style={{
+                    padding: "4px 12px", borderRadius: 999, fontSize: 12, cursor: "pointer",
+                    border: `1px solid ${on ? "var(--accent)" : "var(--border)"}`,
+                    background: on ? "var(--accent-dim)" : "transparent", color: on ? "var(--text)" : "var(--muted)", fontWeight: on ? 700 : 500,
+                  }}>
+                  {w.label}
+                </button>
+              );
+            })}
+            <span style={{ fontSize: 11, color: "var(--faint)" }}>
+              {vol ? `panel derecho en contratos reales · Δ = (calls compradas − vendidas) − (puts compradas − vendidas) · ◆ naranja = volumen delta inusual en 1 min (se queda 3 min) · click en un strike = minuto a minuto` : "cargando el volumen de cada contrato (la primera vez tarda ~10 s)…"}
+            </span>
+          </div>
+        )}
         {changesToShow.length > 0 && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", fontSize: 12 }}>
             <span style={{ color: "var(--muted)", fontWeight: 600 }}>Niveles que se movieron:</span>
@@ -1004,6 +1060,7 @@ export default function VisionFuturaTab() {
             ))}
           </div>
         )}
+        {layers.premarket && !isNightInst && <VisionFuturaPremarketZones report={pmReport} spot={view.spot.spx} date={pmDate} main={labels.main} />}
         {!tick && data.priceSeriesApprox && chartCandles.length === 0 && (
           <div style={{ fontSize: 12, color: "var(--amber-text)" }}>La línea de precio de hoy sale de {labels.etf} convertido a {labels.main} (MarketSnack no tiene la gráfica intradía del índice); el punto en vivo es el {labels.main} real.</div>
         )}
@@ -1031,11 +1088,24 @@ export default function VisionFuturaTab() {
             unusualMs={tick ? null : data.marketSnack?.unusual ?? null}
             unusualExits={tick ? null : data.marketSnack?.unusualExits ?? null}
             positions={positionsView}
+            volDelta={(() => {
+              if (!vol || !layers.volumen_delta) return null;
+              // Repetición: solo si es el mismo día que trae tastytrade; hasta el paso elegido.
+              const volDate = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(vol.sessionOpen * 1000));
+              if (tick && replay?.date !== volDate) return null;
+              const toT = tick ? Math.floor(tick.time / 60) * 60 : vol.asOfT;
+              const label = VOL_WINDOWS.find((w) => w.sec === volWin)?.label ?? "1 min";
+              return {
+                rows: volDeltaRows(vol.minutes, toT, volWin), minutes: vol.minutes, windowLabel: volWin == null ? "día" : `últ. ${label}`, toT,
+                spikes: detectVolumeSpikes(vol.minutes, toT, vol.sessionOpen),
+              };
+            })()}
+            premarket={pmReport ? { low: pmReport.range.low, high: pmReport.range.high, extLow: pmReport.extended.low, extHigh: pmReport.extended.high } : null}
           />
         )}
         <VisionFuturaPositionLog positions={positionsView} />
         <div style={{ fontSize: 12, color: "var(--faint)" }}>
-          Posicionamiento: verde → se posicionan para arriba (compra de calls + venta de puts); morado ← para abajo (venta de calls + compra de puts).
+          Posicionamiento (en medio de la gráfica, debajo de las velas): verde → se posicionan para arriba (compra de calls + venta de puts); morado ← para abajo (venta de calls + compra de puts).
           Agresor: ← lo vendido pegando al bid, compras → lo comprado pegando al ask; ▲▼ = cambio contra el refresco anterior.
           Cada barra de posicionamiento va partida: tono fuerte pegado al centro = CALLS (C), tono claro afuera = PUTS (P). Verde: C = calls compradas, P = puts vendidas. Morado: C = calls vendidas, P = puts compradas. Haz click en la fila de un strike (posicionamiento o agresor) para ver su detalle; otro click, Esc o click afuera la cierra.
           Posicionamiento: +$ en la orilla = cuánto creció ese lado desde el refresco anterior. Strike en amarillo = compra o venta inusual (salto grande de un refresco a otro; queda encendido 3 min).
@@ -1044,6 +1114,12 @@ export default function VisionFuturaTab() {
           {showTable ? "Ocultar tabla detallada" : "Ver tabla detallada por strike"}
         </button>
         {showTable && view.rows.length > 0 && <Ladder rows={view.rows} spot={view.spot.spx} maxGex={maxGex} />}
+      </div>
+      <VisionFuturaContextPanel
+        zoomMinutes={zoom}
+        replayDate={tick && replay ? replay.date : null}
+        untilSec={tick ? tick.time : null}
+      />
       </div>
 
       <VisionFuturaHybrid

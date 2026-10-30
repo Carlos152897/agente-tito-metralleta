@@ -19,6 +19,7 @@ import type { DotExit } from "@/lib/visionFuturaUnusualExit";
 import type { MsUnusualTrade } from "@/lib/marketsnack";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useVisionLabels } from "./visionLabels";
+import { POSITION_LABEL, type StrikeMinute, type VolDeltaRow, type VolSpike } from "@/lib/visionFuturaVolumeDelta";
 import type { DealerLevel, KeyLevel, KeyLevelKind, VisionStrikeRow, ExpectedMove, Conversion } from "@/lib/visionFutura";
 
 export type LayerKey =
@@ -40,7 +41,9 @@ export type LayerKey =
   | "vix"
   | "spreads"
   | "prima"
-  | "inusuales_ms";
+  | "inusuales_ms"
+  | "premarket"
+  | "volumen_delta";
 
 export const LAYERS: { key: LayerKey; label: string; color: string }[] = [
   { key: "precio", label: "Precio", color: "#2dd4bf" },
@@ -62,12 +65,14 @@ export const LAYERS: { key: LayerKey; label: string; color: string }[] = [
   { key: "vix", label: "Mini VIX", color: "#f97066" },
   { key: "prima", label: "Prima neta", color: "#7aa2ff" },
   { key: "inusuales_ms", label: "Inusuales MarketSnack", color: "#facc15" },
+  { key: "premarket", label: "Premarket", color: "#d4a373" },
+  { key: "volumen_delta", label: "Volumen delta", color: "#38bdf8" },
 ];
 
 export const DEFAULT_LAYERS: Record<LayerKey, boolean> = {
   precio: true, posicionamiento: true, magneto: true, iman_positivo: true, iman_negativo: true,
   resistencia: true, piso: true, gamma_flip: false, max_pain: false, charm: false,
-  dealers: false, rango_vix: false, historial: false, historial_ls: true, agresor: true, vix: true, spreads: true, prima: true, inusuales_ms: true,
+  dealers: false, rango_vix: false, historial: false, historial_ls: true, agresor: true, vix: true, spreads: true, prima: true, inusuales_ms: true, premarket: true, volumen_delta: true,
 };
 
 const COLOR = Object.fromEntries(LAYERS.map((l) => [l.key, l.color])) as Record<LayerKey, string>;
@@ -130,6 +135,14 @@ interface Props {
   unusualExits?: Record<number, DotExit> | null;
   /** Historial Long/Short del día (lib/visionFuturaPositioning.ts): franjas por strike y marcas de presión. */
   positions?: Pick<PosHistory, "segments" | "events"> | null;
+  /** Zonas del pronóstico de pre-mercado (rango principal y extensión) → líneas "Zona pre" / "Extensión". */
+  premarket?: { low: number; high: number; extLow: number; extHigh: number } | null;
+  /**
+   * Volumen DELTA real en contratos (velas de 1 min de cada call/put, al bid y al ask): si viene, el
+   * panel de la derecha muestra el delta de la ventana elegida en vez del $ neto, la posición que
+   * domina en cada strike y, en la tarjeta del strike, el minuto a minuto.
+   */
+  volDelta?: { rows: VolDeltaRow[]; minutes: Map<number, StrikeMinute[]>; windowLabel: string; toT: number; spikes: VolSpike[] } | null;
 }
 
 export interface CandleBar { time: number; open: number; high: number; low: number; close: number }
@@ -148,27 +161,28 @@ export interface VixStrip {
 /** Alto normal de cada fila (strike). Con `fitHeight` la fila crece (ver rowH en el componente). */
 const ROW_H_BASE = 20;
 const ROW_H_MAX = 80;
-const LABEL_W = 150;
-/** Columna propia del posicionamiento, a la izquierda del precio (pedido de
- *  Carlos: dentro del plot se mezclaba con el precio y las etiquetas). */
-const POS_COL_W = 230;
-/** Orilla de cada lado del posicionamiento para el "▲$" de crecimiento. */
-const POS_EDGE = 36;
+
+/** Posicionamiento (Carlos, 29-oct, con captura de referencia): ya no va en una columna a la
+ *  izquierda, va EN MEDIO del plot del precio — eje al centro, morado ← y verde →, debajo de las
+ *  velas. Margen de cada lado para el "▲$" de crecimiento en la punta de la barra. */
+const POS_EDGE = 40;
+/** Transparencia de las barras de posicionamiento (las velas van encima y se tienen que ver). */
+const POS_OPACITY = 0.62;
 /** Panel del agresor (Carlos, 27-oct, captura de referencia del zip): GEX · barra NETA compra−venta
  *  centrada con su monto y ▲▼ afuera · strike. La columna de "inusual"/presión va aparte (UNUSUAL_W). */
-const RIGHT_W = 330;
-const AGG_GEX_W = 56;
-const AGG_TXT_W = 62;
-const AGG_HALF = 48;
-const AGG_STRIKE_W = 52;
+
+
+
+
+
 /** Cuánto se queda marcada en la fila una marca de presión Long/Short. */
 const PRESSURE_LIT_MS = 15 * 60_000;
 /** Columna propia de las etiquetas de niveles, a la derecha del precio (Carlos, 27-oct: las
  *  etiquetas dentro del plot tapaban las velas — "se ve todo amontonado"). */
-const LEVEL_W = 168;
+
 const SPOT_KEY = "__spot";
 /** Ancho mínimo del plot del precio: si no cabe, la gráfica se desliza de lado en vez de aplastarse. */
-const MIN_PLOT = 360;
+
 /** Nombres cortos para las etiquetas (los largos siguen en la tarjeta y en la lista de niveles). */
 const SHORT_LABEL: Record<string, string> = {
   "Resistencia (Call Wall)": "Call Wall",
@@ -179,12 +193,27 @@ const SHORT_LABEL: Record<string, string> = {
   "Gamma flip": "Flip",
 };
 /** Columna extra del agresor para la etiqueta "Compra/Venta inusual". */
-const UNUSUAL_W = 128;
+
 const UNUSUAL = "#facc15";
+/** Volumen delta inusual (contratos en un minuto, lib/visionFuturaVolumeDelta.ts): NARANJA, aparte del amarillo de $. */
+const VOL_SPIKE = "#ff8a1f";
+/** "+C 874" / "−P 2,025": compran (+) o venden (−) calls (C) o puts (P). */
+const spikeTag = (k: VolSpike["kind"]) => `${k.startsWith("compran") ? "+" : "−"}${k.endsWith("calls") ? "C" : "P"}`;
+
+/**
+ * Anchos de las columnas. Si la gráfica no cabe en su caja se usan los compactos, para que se vea
+ * todo sin zoom del navegador (Carlos, 29-oct). Normal: LABEL 150 · niveles 168 · agresor 330+128.
+ */
+function sizesFor(boxW: number) {
+  const compact = boxW < 1150;
+  return compact
+    ? { compact, LABEL_W: 118, LEVEL_W: 120, AGG_GEX_W: 44, AGG_TXT_W: 48, AGG_HALF: 34, AGG_STRIKE_W: 44, RIGHT_W: 252, UNUSUAL_W: 80, MIN_PLOT: 220, LBL_FONT: 10 }
+    : { compact, LABEL_W: 150, LEVEL_W: 168, AGG_GEX_W: 56, AGG_TXT_W: 62, AGG_HALF: 48, AGG_STRIKE_W: 52, RIGHT_W: 330, UNUSUAL_W: 128, MIN_PLOT: 360, LBL_FONT: 11 };
+}
 /** Cruce (compra y venta inusual del mismo tamaño en el strike): gris, no es dirección. */
 const CRUCE = "#9aa5c0";
 const TOP = 8;
-const BOTTOM = 26;
+const BOTTOM = 40;
 /** Franja del mini VIX (Carlos: "cerca de la gráfica del activo, pero pequeña"). */
 const VIX_H = 72;
 const VIX_GAP = 10;
@@ -303,6 +332,7 @@ export default function VisionFuturaChart(props: Props) {
     return () => ro.disconnect();
   }, []);
 
+  const { compact, LABEL_W, LEVEL_W, AGG_GEX_W, AGG_TXT_W, AGG_HALF, AGG_STRIKE_W, RIGHT_W, UNUSUAL_W, MIN_PLOT, LBL_FONT } = sizesFor(boxW);
   const refSec = priceSeries.at(-1)?.time ?? history.at(-1)?.time ?? Date.now() / 1000;
   const session = props.nightSession ? nightBounds(refSec) : sessionBounds(refSec);
   // Zoom: ventana de N min que termina un poco después del último precio (margen ~8% a la derecha
@@ -348,8 +378,7 @@ export default function VisionFuturaChart(props: Props) {
   if (rows.length === 0) return null;
 
   const rightW = layers.agresor ? RIGHT_W + UNUSUAL_W : 0;
-  const posColW = layers.posicionamiento ? POS_COL_W : 0;
-  const plotL = LABEL_W + posColW;
+  const plotL = LABEL_W;
   const width = Math.max(boxW, plotL + MIN_PLOT + LEVEL_W + 12 + rightW);
   const plotR = width - rightW - LEVEL_W - 12;
   /** Columna de etiquetas de niveles: entre el precio y el agresor. */
@@ -436,8 +465,8 @@ export default function VisionFuturaChart(props: Props) {
   // Crecimientos menores al 1% de la barra mayor no se marcan (ruido).
   const minGrowth = maxPos * 0.01;
   // Eje central de la columna: verde hacia la derecha, morado hacia la izquierda.
-  const posX = LABEL_W + POS_COL_W / 2;
-  const POS_SPAN = POS_COL_W / 2 - POS_EDGE - 4;
+  const posX = plotL + plotW / 2;
+  const POS_SPAN = plotW / 2 - POS_EDGE - 4;
 
 
   // ── Chips de niveles (franja derecha del plot, sin taparse) ──
@@ -463,6 +492,13 @@ export default function VisionFuturaChart(props: Props) {
     const kr = rows.find((r) => Math.abs(r.spx - k.spx) <= step / 2) as (VisionStrikeRow & RowMultiExp) | undefined;
     const star = kr?.backing === "respaldado" ? "★ " : "";
     addChip({ key: `${k.label}-${k.spx}`, text: `${star}${SHORT_LABEL[k.label] ?? k.label} ${lvl}`, color, dashed: k.kind === "gamma_flip" || k.kind === "max_pain" }, k.spx);
+  }
+  if (layers.premarket && props.premarket) {
+    const pm = props.premarket;
+    addChip({ key: "pm-hi", text: `Zona pre ${n2(pm.high, 0)}`, color: COLOR.premarket }, pm.high);
+    addChip({ key: "pm-lo", text: `Zona pre ${n2(pm.low, 0)}`, color: COLOR.premarket }, pm.low);
+    addChip({ key: "pm-xhi", text: `Extensión ${n2(pm.extHigh, 0)}`, color: COLOR.premarket, dashed: true }, pm.extHigh);
+    addChip({ key: "pm-xlo", text: `Extensión ${n2(pm.extLow, 0)}`, color: COLOR.premarket, dashed: true }, pm.extLow);
   }
   if (layers.dealers) {
     for (const d of dealerLevels) {
@@ -555,7 +591,13 @@ export default function VisionFuturaChart(props: Props) {
   const aggC = aggX + AGG_GEX_W + AGG_TXT_W + AGG_HALF;
   const strikeX = aggX + RIGHT_W - AGG_STRIKE_W + 4;
   const unusX = aggX + RIGHT_W + 4;
-  const maxNetAgg = Math.max(1, ...rows.map((r) => Math.abs(r.compras - r.ventas)));
+  // Modo volumen delta (contratos reales al bid/ask, por minuto) o el $ neto de siempre.
+  const volOn = !!props.volDelta && layers.volumen_delta;
+  const volBy = new Map((props.volDelta?.rows ?? []).map((v) => [v.strike, v]));
+  const spikeBy = new Map((volOn ? props.volDelta?.spikes ?? [] : []).map((v) => [v.strike, v]));
+  const netOf = (r: VisionStrikeRow) => (volOn ? volBy.get(r.spx)?.delta ?? 0 : r.compras - r.ventas);
+  const maxNetAgg = Math.max(1, ...rows.map((r) => Math.abs(netOf(r))));
+  const fmtNet = (v: number) => (volOn ? (v >= 10_000 ? `${(v / 1000).toFixed(1)}K` : v.toLocaleString("en-US")) : money1(v));
   const spotStrike = rows.reduce((a, b) => (Math.abs(b.spx - spot) < Math.abs(a.spx - spot) ? b : a), rows[0]).spx;
   const pressureLit = new Map(
     (props.positions?.events ?? [])
@@ -585,7 +627,7 @@ export default function VisionFuturaChart(props: Props) {
           return (
             <g key={r.spx}>
               <rect x={0} y={ry} width={width} height={ROW_H} fill={isSpot ? "rgba(47,107,255,0.14)" : i % 2 ? "rgba(255,255,255,0.015)" : "transparent"} />
-              <text x={6} y={ry + rowMid + 14} fontSize={11} fill={isSpot ? "#f5f7fb" : "#9aa5c0"} fontWeight={isSpot ? 700 : 400}>
+              <text x={6} y={ry + rowMid + 14} fontSize={LBL_FONT} fill={isSpot ? "#f5f7fb" : "#9aa5c0"} fontWeight={isSpot ? 700 : 400}>
                 {n2(r.spx, 0)}
                 {(c.spy != null || c.es != null) && (
                   <tspan fill="#6b7591">{c.spy != null ? ` · ${n2(c.spy, 1)}` : ""}{c.es != null ? ` · ${n2(c.es, 0)}` : ""}</tspan>
@@ -601,12 +643,15 @@ export default function VisionFuturaChart(props: Props) {
           <rect key={`unu-${r.spx}`} x={0} y={TOP + i * ROW_H} width={width} height={ROW_H} fill={unusualBy.get(r.spx)?.cruce ? CRUCE : UNUSUAL} opacity={unusualBy.get(r.spx)?.cruce ? 0.07 : 0.13} />
         ))}
 
+        {/* Strikes con volumen delta inusual (naranja), si no tienen ya el amarillo */}
+        {layers.agresor && rows.map((r, i) => spikeBy.has(r.spx) && !unusualBy.has(r.spx) && (
+          <rect key={`vsp-${r.spx}`} x={0} y={TOP + i * ROW_H} width={width} height={ROW_H} fill={VOL_SPIKE} opacity={0.13} />
+        ))}
+
         {/* Columna de posicionamiento */}
         {layers.posicionamiento && (
           <g>
-            <line x1={LABEL_W} x2={LABEL_W} y1={TOP} y2={plotBottom} stroke="#263049" />
-            <line x1={plotL - 1} x2={plotL - 1} y1={TOP} y2={plotBottom} stroke="#263049" />
-            <line x1={posX} x2={posX} y1={TOP} y2={plotBottom} stroke="#263049" strokeDasharray="2 3" />
+            <line x1={posX} x2={posX} y1={TOP} y2={plotBottom} stroke="#3a4560" strokeDasharray="2 3" />
             {pos.map((p) => {
               if (p.up === 0 && p.down === 0) return null;
               const ry = y(p.strike) - 6;
@@ -628,8 +673,8 @@ export default function VisionFuturaChart(props: Props) {
                       const gw = layers.spreads && share != null ? Math.max(0, Math.min(w, w * (1 - share))) : 0;
                       return (
                         <g>
-                          <rect x={x0} y={ry} width={Math.max(1, w)} height={12} fill={fill} opacity={0.9} />
-                          {gw >= 1 && <rect x={outerLeft ? x0 : x0 + w - gw} y={ry} width={gw} height={12} fill={SPREAD_GRAY} opacity={0.95} style={{ pointerEvents: "none" }} />}
+                          <rect x={x0} y={ry} width={Math.max(1, w)} height={12} fill={fill} opacity={POS_OPACITY} />
+                          {gw >= 1 && <rect x={outerLeft ? x0 : x0 + w - gw} y={ry} width={gw} height={12} fill={SPREAD_GRAY} opacity={POS_OPACITY + 0.1} style={{ pointerEvents: "none" }} />}
                           {w >= 38 && <text x={x0 + w / 2} y={ry + 10} fontSize={9} textAnchor="middle" fill={dark ? "#14111f" : "#fff"} style={{ pointerEvents: "none" }}>{label} {txt}</text>}
                         </g>
                       );
@@ -646,13 +691,13 @@ export default function VisionFuturaChart(props: Props) {
                   {gd > 0 && <rect x={posX - wd} y={ry} width={gd} height={12} rx={2} fill="#fff" opacity={0.35} style={{ pointerEvents: "none" }} />}
                   {gu > 0 && <rect x={posX + wu - gu} y={ry} width={gu} height={12} rx={2} fill="#fff" opacity={0.35} style={{ pointerEvents: "none" }} />}
                   {/* "▲$" en la orilla: ese lado está aumentando. */}
-                  {p.dDown > minGrowth && <text x={LABEL_W + 3} y={ry + 10} fontSize={9} fontWeight={700} fill={POS_DOWN}>▲{money(p.dDown)}</text>}
-                  {p.dUp > minGrowth && <text x={plotL - 4} y={ry + 10} fontSize={9} fontWeight={700} fill={COLOR.posicionamiento} textAnchor="end">▲{money(p.dUp)}</text>}
+                  {p.dDown > minGrowth && <text x={posX - wd - 3} y={ry + 10} fontSize={9} fontWeight={700} fill={POS_DOWN} textAnchor="end">▲{money(p.dDown)}</text>}
+                  {p.dUp > minGrowth && <text x={posX + wu + 3} y={ry + 10} fontSize={9} fontWeight={700} fill={COLOR.posicionamiento}>▲{money(p.dUp)}</text>}
                 </g>
               );
             })}
-            <text x={posX - 6} y={height - 8} fontSize={10} textAnchor="end"><tspan fill={POS_DOWN}>← abajo</tspan> <tspan fill="#6b7591">C</tspan><tspan fill={POS_DOWN}>■</tspan><tspan fill="#6b7591">P</tspan><tspan fill={POS_DOWN_PUT}>■</tspan></text>
-            <text x={posX + 6} y={height - 8} fontSize={10}><tspan fill="#6b7591">C</tspan><tspan fill={COLOR.posicionamiento}>■</tspan><tspan fill="#6b7591">P</tspan><tspan fill={POS_UP_PUT}>■</tspan> <tspan fill={COLOR.posicionamiento}>arriba →</tspan>{layers.spreads && pos.some((q) => q.callShare != null || q.putShare != null) && <> <tspan fill={SPREAD_GRAY}>■</tspan><tspan fill="#6b7591"> spreads</tspan></>}</text>
+            <text x={posX - 6} y={height - 24} fontSize={10} textAnchor="end"><tspan fill={POS_DOWN}>← abajo</tspan> <tspan fill="#6b7591">C</tspan><tspan fill={POS_DOWN}>■</tspan><tspan fill="#6b7591">P</tspan><tspan fill={POS_DOWN_PUT}>■</tspan></text>
+            <text x={posX + 6} y={height - 24} fontSize={10}><tspan fill="#6b7591">C</tspan><tspan fill={COLOR.posicionamiento}>■</tspan><tspan fill="#6b7591">P</tspan><tspan fill={POS_UP_PUT}>■</tspan> <tspan fill={COLOR.posicionamiento}>arriba →</tspan>{layers.spreads && pos.some((q) => q.callShare != null || q.putShare != null) && <> <tspan fill={SPREAD_GRAY}>■</tspan><tspan fill="#6b7591"> spreads</tspan></>}</text>
           </g>
         )}
 
@@ -836,12 +881,12 @@ export default function VisionFuturaChart(props: Props) {
               <rect x={0} y={premTop} width={width} height={VIX_H} fill="rgba(255,255,255,0.02)" />
               <line x1={0} x2={width} y1={premTop} y2={premTop} stroke="#263049" />
               <line x1={0} x2={width} y1={premBottom} y2={premBottom} stroke="#263049" />
-              <text x={6} y={premTop + 15} fontSize={10} fill="#9aa5c0" fontWeight={600} letterSpacing={0.5}>PRIMA NETA (por minuto)</text>
-              <text x={6} y={premTop + 31} fontSize={11} fontWeight={600}><tspan fill={CANDLE_UP}>Calls {M(premLast.call)}</tspan><tspan fill="#6b7591"> · </tspan><tspan fill={CANDLE_DOWN}>Puts {M(premLast.put)}</tspan></text>
-              <text x={6} y={premTop + 47} fontSize={10} fill={dir >= 0 ? CANDLE_UP : CANDLE_DOWN}>dinero del día {dir >= 0 ? "hacia ARRIBA" : "hacia ABAJO"} ({M(dir)})</text>
+              <text x={6} y={premTop + 15} fontSize={10} fill="#9aa5c0" fontWeight={600} letterSpacing={0.5}>PRIMA NETA / min</text>
+              <text x={6} y={premTop + 31} fontSize={10} fontWeight={600}><tspan fill={CANDLE_UP}>C {M(premLast.call)}</tspan><tspan fill="#6b7591"> · </tspan><tspan fill={CANDLE_DOWN}>P {M(premLast.put)}</tspan></text>
+              <text x={6} y={premTop + 47} fontSize={10} fill={dir >= 0 ? CANDLE_UP : CANDLE_DOWN}>día {dir >= 0 ? "↑ ARRIBA" : "↓ ABAJO"} {M(dir)}</text>
               {premNew && (
                 <text x={6} y={premTop + 63} fontSize={9.5} fill={premNew.vote > 0 ? CANDLE_UP : premNew.vote < 0 ? CANDLE_DOWN : "#6b7591"}>
-                  últimos 15 min: {premNew.vote > 0 ? "↑ " : premNew.vote < 0 ? "↓ " : "· "}{M(premNew.net)}
+                  15 min: {premNew.vote > 0 ? "↑ " : premNew.vote < 0 ? "↓ " : "· "}{M(premNew.net)}
                 </text>
               )}
               <g clipPath="url(#vf-prem)">
@@ -893,6 +938,16 @@ export default function VisionFuturaChart(props: Props) {
             setCross(Math.min(Math.max(t, open), nowSec));
           }}
           onMouseLeave={() => setCross(null)}
+          // Click en el plot = tarjeta del strike de esa fila (el posicionamiento ahora vive aquí).
+          data-vf-hit=""
+          style={{ cursor: "pointer" }}
+          onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            const idx = Math.floor((e.clientY - r.top) / ROW_H);
+            const row = rows[idx];
+            if (!row) return;
+            setHover((h) => (h?.strike === row.spx ? null : { strike: row.spx, cx: e.clientX, cy: e.clientY }));
+          }}
         />
 
         {/* Panel del agresor: GEX · barra NETA (compras − ventas) centrada · strike · inusual/presión */}
@@ -902,24 +957,27 @@ export default function VisionFuturaChart(props: Props) {
             {rows.map((r, i) => {
               const ry0 = TOP + i * ROW_H;
               const ry = ry0 + rowMid; // contenido centrado en la fila (filas altas con el zoom vertical)
-              const net = r.compras - r.ventas;
-              const show = Math.abs(net) >= 0.01 * maxNetAgg;
+              const net = netOf(r);
+              const vd = volOn ? volBy.get(r.spx) : undefined;
+              const show = Math.abs(net) >= 0.01 * maxNetAgg && net !== 0;
               const buy = net > 0;
               const w = show ? Math.max(3, (Math.abs(net) / maxNetAgg) * AGG_HALF) : 0;
               const prev = prevAggressor?.get(r.spx);
-              const prevNet = prev ? prev.compras - prev.ventas : null;
+              const prevNet = volOn ? vd?.prevDelta ?? null : prev ? prev.compras - prev.ventas : null;
               const grew = prevNet == null ? 0 : Math.sign(net) !== Math.sign(prevNet) ? 1 : Math.sign(Math.abs(net) - Math.abs(prevNet));
               const arrow = !show || prevNet == null || grew === 0 ? "" : grew > 0 ? "▲" : "▼";
               const hit = unusualBy.get(r.spx);
+              const sp = hit ? undefined : spikeBy.get(r.spx);
               const pr = pressureLit.get(r.spx);
               const uCol = hit?.cruce ? CRUCE : UNUSUAL;
-              const col = hit && !hit.cruce ? UNUSUAL : buy ? "#2f6bff" : "#f04438";
+              const col = hit && !hit.cruce ? UNUSUAL : sp ? VOL_SPIKE : buy ? "#2f6bff" : "#f04438";
               const sideCol = buy ? "#7aa2ff" : "#f97066";
               const isSpot = r.spx === spotStrike;
               return (
                 <g key={`agg-${r.spx}`}>
                   {hit && <rect x={aggX + AGG_GEX_W} y={ry0 + 1} width={rightW - AGG_GEX_W - 4} height={ROW_H - 2} rx={4} fill={hit.cruce ? "rgba(154,165,192,0.08)" : "rgba(250,204,21,0.10)"} stroke={uCol} strokeWidth={1.2} strokeDasharray={hit.cruce ? "2 2" : undefined} />}
-                  {!hit && pr && (
+                  {sp && <rect x={aggX + AGG_GEX_W} y={ry0 + 1} width={rightW - AGG_GEX_W - 4} height={ROW_H - 2} rx={4} fill="rgba(255,138,31,0.10)" stroke={VOL_SPIKE} strokeWidth={1.2} />}
+                  {!hit && !sp && pr && (
                     <rect x={aggX + AGG_GEX_W} y={ry0 + 1} width={rightW - AGG_GEX_W - 4} height={ROW_H - 2} rx={4}
                       fill={pr.side === "S" ? "rgba(168,85,247,0.12)" : "rgba(18,183,106,0.12)"} stroke={pr.side === "S" ? POS_DOWN : COLOR.posicionamiento} strokeDasharray="4 3" />
                   )}
@@ -927,7 +985,7 @@ export default function VisionFuturaChart(props: Props) {
                   {show && !buy && (
                     <>
                       <text x={aggC - AGG_HALF - 4} y={ry + 14} fontSize={10} textAnchor="end" fill={arrow === "▼" ? "#9aa5c0" : sideCol}>{arrow}</text>
-                      <text x={aggC - AGG_HALF - 16} y={ry + 14} fontSize={10} fontWeight={700} textAnchor="end" fill={hit && !hit.cruce ? UNUSUAL : "#f5f7fb"}>{money1(-net)}</text>
+                      <text x={aggC - AGG_HALF - 16} y={ry + 14} fontSize={10} fontWeight={700} textAnchor="end" fill={hit && !hit.cruce ? UNUSUAL : sp ? VOL_SPIKE : "#f5f7fb"}>{fmtNet(-net)}</text>
                       <rect x={aggC - w} y={ry + 4} width={w} height={12} rx={2} fill={col} opacity={0.85} />
                     </>
                   )}
@@ -935,16 +993,30 @@ export default function VisionFuturaChart(props: Props) {
                     <>
                       <rect x={aggC} y={ry + 4} width={w} height={12} rx={2} fill={col} opacity={0.85} />
                       <text x={aggC + AGG_HALF + 4} y={ry + 14} fontSize={10} fill={arrow === "▼" ? "#9aa5c0" : sideCol}>{arrow}</text>
-                      <text x={aggC + AGG_HALF + 16} y={ry + 14} fontSize={10} fontWeight={700} fill={hit && !hit.cruce ? UNUSUAL : "#f5f7fb"}>{money1(net)}</text>
+                      <text x={aggC + AGG_HALF + 16} y={ry + 14} fontSize={10} fontWeight={700} fill={hit && !hit.cruce ? UNUSUAL : sp ? VOL_SPIKE : "#f5f7fb"}>{fmtNet(net)}</text>
                     </>
                   )}
                   <text x={strikeX} y={ry + 14} fontSize={10.5} fill={isSpot || hit ? "#f5f7fb" : "#9aa5c0"} fontWeight={isSpot || hit ? 700 : 400}>{n2(r.spx, Number.isInteger(r.spx) ? 0 : 1)}</text>
                   {hit && (
                     <text x={unusX} y={ry + 14} fontSize={10} fontWeight={700} fill={uCol}>
-                      {hit.cruce ? "⇄ Cruce compra/venta" : hit.side === "compra" ? "▲ Compra inusual" : "▼ Venta inusual"} +{money(hit.delta)}
+                      {hit.cruce ? (compact ? "⇄ Cruce" : "⇄ Cruce compra/venta") : hit.side === "compra" ? (compact ? "▲ Compra" : "▲ Compra inusual") : (compact ? "▼ Venta" : "▼ Venta inusual")} +{money(hit.delta)}
                     </text>
                   )}
-                  {!hit && pr && (
+                  {/* Posición que domina en el strike (volumen delta): compran/venden calls/puts, en contratos. */}
+                  {sp && (
+                    <text x={unusX} y={ry + 14} fontSize={10} fontWeight={700} fill={VOL_SPIKE}>
+                      ◆ {spikeTag(sp.kind)} {fmtNet(sp.contracts)} <tspan fill="#9aa5c0" fontWeight={400}>{hm(sp.t)}</tspan>
+                    </text>
+                  )}
+                  {!hit && !sp && vd?.position && (
+                    <text x={unusX} y={ry + 14} fontSize={10} fontWeight={700} fill={vd.position.side === "arriba" ? COLOR.posicionamiento : POS_DOWN}>
+                      {vd.position.side === "arriba" ? "▲ " : "▼ "}
+                      {compact
+                        ? `${vd.position.kind.startsWith("compran") ? "+" : "−"}${vd.position.kind.endsWith("calls") ? "C" : "P"} ${fmtNet(vd.position.contracts)}`
+                        : `${POSITION_LABEL[vd.position.kind]} ${fmtNet(vd.position.contracts)}`}
+                    </text>
+                  )}
+                  {!hit && !vd?.position && pr && (
                     <text x={unusX} y={ry + 14} fontSize={10} fontWeight={700} fill={pr.side === "S" ? POS_DOWN : COLOR.posicionamiento}>
                       <title>{pr.text}</title>
                       {pr.side === "S" ? "● presión ↓" : "● presión ↑"} <tspan fill="#9aa5c0" fontWeight={400}>{hm(pr.t / 1000)}</tspan>
@@ -954,8 +1026,8 @@ export default function VisionFuturaChart(props: Props) {
               );
             })}
             <text x={aggX + AGG_GEX_W - 6} y={height - 8} fontSize={10} textAnchor="end" fill="#6b7591">GEX $M</text>
-            <text x={aggC} y={height - 16} fontSize={10} textAnchor="middle"><tspan fill="#f97066">← venta</tspan><tspan fill="#6b7591"> | </tspan><tspan fill="#7aa2ff">compra →</tspan><tspan fill="#6b7591"> ($ neto)</tspan></text>
-            <text x={aggC} y={height - 4} fontSize={9} textAnchor="middle" fill="#6b7591">▲▼ vs refresco anterior</text>
+            <text x={aggC} y={height - 16} fontSize={10} textAnchor="middle"><tspan fill="#f97066">← venta</tspan><tspan fill="#6b7591"> | </tspan><tspan fill="#7aa2ff">compra →</tspan><tspan fill="#6b7591">{volOn ? ` (Δ contratos · ${props.volDelta!.windowLabel})` : " ($ neto)"}</tspan></text>
+            <text x={aggC} y={height - 4} fontSize={9} textAnchor="middle" fill="#6b7591">{volOn ? "▲▼ vs ventana anterior" : "▲▼ vs refresco anterior"}</text>
             <text x={strikeX} y={height - 8} fontSize={10} fill="#6b7591">Strike</text>
           </g>
         )}
@@ -969,7 +1041,7 @@ export default function VisionFuturaChart(props: Props) {
           const on = hover?.strike === r.spx;
           return (
             <g key={`hov-${r.spx}`}>
-              {on && <rect x={0} y={ry} width={plotL} height={ROW_H} fill="#ffffff" opacity={0.05} style={{ pointerEvents: "none" }} />}
+              {on && <rect x={0} y={ry} width={plotR} height={ROW_H} fill="#ffffff" opacity={0.05} style={{ pointerEvents: "none" }} />}
               {on && layers.agresor && <rect x={aggX} y={ry} width={rightW} height={ROW_H} fill="#ffffff" opacity={0.05} style={{ pointerEvents: "none" }} />}
               <rect data-vf-hit="" x={0} y={ry} width={plotL} height={ROW_H} fill="transparent" style={{ cursor: "pointer" }} onClick={click} />
               {layers.agresor && <rect data-vf-hit="" x={aggX} y={ry} width={rightW} height={ROW_H} fill="transparent" style={{ cursor: "pointer" }} onClick={click} />}
@@ -1055,8 +1127,8 @@ export default function VisionFuturaChart(props: Props) {
           : Math.abs(net) < 0.15 * Math.max(p.up, p.down) ? "parejo: strike en disputa"
           : net > 0 ? `domina ARRIBA por ${money(net)}` : `domina ABAJO por ${money(-net)}`;
         // Fija a la pantalla, junto al cursor, siempre visible (debajo del encabezado de la página, ~80 px).
-        const W = 300;
-        const CARD_H = (hit ? 350 : 330) + ((r as RowWithLegs).legs ? 85 : 0) + ((r as VisionStrikeRow & RowMultiExp).multiExp?.length ? 70 : 0);
+        const W = volOn ? 360 : 300;
+        const CARD_H = (volOn ? 250 : 0) + (hit ? 350 : 330) + ((r as RowWithLegs).legs ? 85 : 0) + ((r as VisionStrikeRow & RowMultiExp).multiExp?.length ? 70 : 0);
         const vw = typeof window !== "undefined" ? window.innerWidth : 1200;
         const vh = typeof window !== "undefined" ? window.innerHeight : 800;
         const left = hover.cx + 16 + W > vw - 8 ? Math.max(8, hover.cx - W - 16) : hover.cx + 16;
@@ -1067,7 +1139,7 @@ export default function VisionFuturaChart(props: Props) {
           </div>
         );
         return (
-          <div data-vf-card="" style={{ position: "fixed", left, top, width: W, zIndex: 50, background: "#0f1522", border: `1px solid ${hit ? UNUSUAL : "#2b3756"}`, borderRadius: 10, padding: "10px 12px", boxShadow: "0 8px 24px rgba(0,0,0,0.45)", fontSize: 12, fontVariantNumeric: "tabular-nums", display: "flex", flexDirection: "column", gap: 4 }}>
+          <div data-vf-card="" style={{ position: "fixed", left, top, width: W, maxHeight: "calc(100vh - 92px)", overflowY: "auto", zIndex: 50, background: "#0f1522", border: `1px solid ${hit ? UNUSUAL : "#2b3756"}`, borderRadius: 10, padding: "10px 12px", boxShadow: "0 8px 24px rgba(0,0,0,0.45)", fontSize: 12, fontVariantNumeric: "tabular-nums", display: "flex", flexDirection: "column", gap: 4 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
               <b style={{ fontSize: 14, color: "#f5f7fb" }}>{n2(r.spx, 0)}</b>
               <span style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
@@ -1127,6 +1199,61 @@ export default function VisionFuturaChart(props: Props) {
                     {me.map((e) => cell(e.expiration.slice(5).replace("-", "/"), e.netGex))}
                   </div>
                   {bk && <div style={{ color: bk === "respaldado" ? "#12b76a" : "#fdb022" }}>{bk === "respaldado" ? "★ Respaldado: los días siguientes tienen el mismo signo" : "⚠ Contrario: los días siguientes van al revés"}</div>}
+                </>
+              );
+            })()}
+            {volOn && (() => {
+              const vd = volBy.get(r.spx);
+              const mins = (props.volDelta!.minutes.get(r.spx) ?? []).filter((m) => m.t < props.volDelta!.toT).slice(-10).reverse();
+              const c = (v: number) => v.toLocaleString("en-US");
+              const dCol = (v: number) => (v > 0 ? COLOR.posicionamiento : v < 0 ? POS_DOWN : "#9aa5c0");
+              const cell: React.CSSProperties = { textAlign: "right", padding: "1px 4px" };
+              return (
+                <>
+                  <div style={{ borderTop: "1px solid #263049", margin: "4px 0 2px" }} />
+                  <div style={{ color: "#c7cede", fontWeight: 700 }}>Volumen real (contratos) · {props.volDelta!.windowLabel}</div>
+                  {(() => {
+                    const sp = spikeBy.get(r.spx);
+                    return sp ? (
+                      <div style={{ color: VOL_SPIKE, fontWeight: 700 }}>
+                        ◆ Volumen delta inusual {hm(sp.t)}: {POSITION_LABEL[sp.kind]} {c(sp.contracts)} en 1 min ({sp.ratio.toFixed(0)}× lo normal de este strike) · para {sp.side.toUpperCase()}
+                      </div>
+                    ) : null;
+                  })()}
+                  {vd && (
+                    <>
+                      {line("  Calls compradas / vendidas", `${c(vd.cA)} / ${c(vd.cB)} (vol ${c(vd.cV)})`, COLOR.posicionamiento)}
+                      {line("  Puts compradas / vendidas", `${c(vd.pA)} / ${c(vd.pB)} (vol ${c(vd.pV)})`, POS_DOWN_PUT)}
+                      {line("  Δ delta", `${vd.delta > 0 ? "+" : ""}${c(vd.delta)}`, dCol(vd.delta))}
+                      {vd.position && <div style={{ color: dCol(vd.position.side === "arriba" ? 1 : -1) }}>→ Posición: {POSITION_LABEL[vd.position.kind]} ({c(vd.position.contracts)} netos) · para {vd.position.side.toUpperCase()}</div>}
+                    </>
+                  )}
+                  <div style={{ color: "#c7cede", fontWeight: 700, marginTop: 4 }}>Minuto a minuto</div>
+                  {mins.length === 0 ? <div style={{ color: "#6b7591" }}>Sin operaciones en este strike.</div> : (
+                    <table style={{ borderCollapse: "collapse", fontSize: 11 }}>
+                      <thead>
+                        <tr style={{ color: "#6b7591" }}>
+                          <th style={{ textAlign: "left", padding: "1px 4px", fontWeight: 500 }}>Hora</th>
+                          <th style={{ ...cell, fontWeight: 500 }}>C compra/venta</th>
+                          <th style={{ ...cell, fontWeight: 500 }}>P compra/venta</th>
+                          <th style={{ ...cell, fontWeight: 500 }}>Δ</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {mins.map((m) => {
+                          const d = (m.cA - m.cB) - (m.pA - m.pB);
+                          return (
+                            <tr key={m.t} style={spikeBy.get(r.spx)?.t === m.t ? { background: "rgba(255,138,31,0.16)", outline: `1px solid ${VOL_SPIKE}` } : undefined}>
+                              <td style={{ padding: "1px 4px", color: "#9aa5c0" }}>{hm(m.t)}</td>
+                              <td style={cell}><span style={{ color: COLOR.posicionamiento }}>{c(m.cA)}</span><span style={{ color: "#6b7591" }}> / </span><span style={{ color: POS_DOWN }}>{c(m.cB)}</span></td>
+                              <td style={cell}><span style={{ color: POS_DOWN_PUT }}>{c(m.pA)}</span><span style={{ color: "#6b7591" }}> / </span><span style={{ color: POS_UP_PUT }}>{c(m.pB)}</span></td>
+                              <td style={{ ...cell, color: dCol(d), fontWeight: 700 }}>{d > 0 ? "+" : ""}{c(d)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
                 </>
               );
             })()}

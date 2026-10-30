@@ -51,7 +51,7 @@ export default function PruebaDeFuegoPage() {
         <NavTabs />
       </div>
 
-      <div className="ideas-body">
+      <div className="ideas-body" style={tab === "VISION_FUTURA" ? { maxWidth: "none" } : undefined}>
         <div className="view-toggle-row">
           <div className="view-toggle">
             <button className={tab === "ODTE_STANDALONE" ? "active" : ""} onClick={() => pickTab("ODTE_STANDALONE")}>
