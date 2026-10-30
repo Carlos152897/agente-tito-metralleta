@@ -17,8 +17,11 @@ interface Props {
   mode: "vivo" | "repeticion";
   onMode: (m: "vivo" | "repeticion") => void;
   replay: ReplayPayload | null;
+  /** Minuto elegido desde la apertura (Carlos, 29-oct: la repetición va minuto a minuto). */
   idx: number;
   onIdx: (i: number) => void;
+  /** Precio del minuto elegido (cierre de la vela de 1 min); si no hay, el del paso de 5 min. */
+  spotNow?: number | null;
   playing: boolean;
   onPlaying: (p: boolean) => void;
   speedMs: number;
@@ -40,14 +43,25 @@ const btn: React.CSSProperties = {
   color: "var(--text)", cursor: "pointer", fontSize: 13, fontVariantNumeric: "tabular-nums",
 };
 
+/** Minuto → hora y paso de 5 min vigente. */
+function minuteView(p: Pick<Props, "replay" | "idx" | "spotNow">) {
+  const ticks = p.replay?.ticks ?? [];
+  const first = ticks[0];
+  const lastMin = ticks.length > 1 ? Math.round((ticks[ticks.length - 1].time - first.time) / 60) : 0;
+  const cur = Math.max(0, Math.min(p.idx, lastMin));
+  const sec = first ? first.time + cur * 60 : 0;
+  let tick = first;
+  for (const t of ticks) { if (t.time <= sec) tick = t; else break; }
+  const spot = p.spotNow ?? tick?.spot.spx ?? null;
+  return { ticks, first, lastMin, cur, sec, tick, spot };
+}
+
 export default function VisionFuturaReplayBar(p: Props) {
   const lb = useVisionLabels();
-  const ticks = p.replay?.ticks ?? [];
-  const last = Math.max(0, ticks.length - 1);
-  const tick = ticks[Math.min(p.idx, last)];
-  const first = ticks[0];
-  const move = tick && first ? tick.spot.spx - first.spot.spx : 0;
-  const go = (i: number) => { p.onPlaying(false); p.onIdx(Math.max(0, Math.min(last, i))); };
+  const { ticks, first, lastMin, cur, sec, tick, spot } = minuteView(p);
+  const last = lastMin;
+  const move = tick && first && spot != null ? spot - first.spot.spx : 0;
+  const go = (i: number) => { p.onPlaying(false); p.onIdx(Math.max(0, Math.min(lastMin, i))); };
 
   return (
     <div className="card" style={{ gap: 12, padding: 16 }}>
@@ -69,7 +83,7 @@ export default function VisionFuturaReplayBar(p: Props) {
                 <option key={d.date} value={d.date}>{d.date}</option>
               ))}
             </select>
-            <span>{p.replay.partial ? "en curso, hasta ahora · " : ""}{ticks.length} momentos de 5 min</span>
+            <span>{p.replay.partial ? "en curso, hasta ahora · " : ""}minuto a minuto · niveles cada 5 min</span>
             <a
               href="/api/vision-futura/backtest/excel"
               download
@@ -93,35 +107,37 @@ export default function VisionFuturaReplayBar(p: Props) {
       {p.mode === "repeticion" && p.replay && tick && !p.loading && (
         <>
           <div style={{ display: "flex", alignItems: "baseline", gap: 14, flexWrap: "wrap" }}>
-            <span style={{ fontSize: 28, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{hmNy(tick.time)} <span style={{ fontSize: 13, color: "var(--muted)", fontWeight: 400 }}>NY</span></span>
+            <span style={{ fontSize: 28, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{hmNy(sec)} <span style={{ fontSize: 13, color: "var(--muted)", fontWeight: 400 }}>NY</span></span>
             <span style={{ fontSize: 15, fontVariantNumeric: "tabular-nums" }}>
-              {lb.main} <b>{tick.spot.spx.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</b>{" "}
+              {lb.main} <b>{(spot ?? tick.spot.spx).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</b>{" "}
               <span style={{ color: move >= 0 ? "var(--green)" : "var(--red-soft)" }}>{move >= 0 ? "+" : ""}{move.toFixed(2)} desde la apertura</span>
             </span>
-            <span style={{ fontSize: 12, color: "var(--muted)" }}>momento {Math.min(p.idx, last) + 1} de {ticks.length}</span>
+            <span style={{ fontSize: 12, color: "var(--muted)" }}>minuto {cur + 1} de {lastMin + 1} · niveles del corte de las {hmNy(tick.time)}</span>
           </div>
 
           <input
-            type="range" min={0} max={last} step={1} value={Math.min(p.idx, last)}
+            type="range" min={0} max={last} step={1} value={cur}
             onChange={(e) => go(Number(e.target.value))}
             style={{ width: "100%", accentColor: "var(--accent)" }}
             aria-label="Hora de la repetición"
           />
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--faint)", marginTop: -6 }}>
             <span>{first ? hmNy(first.time) : ""}</span>
-            <span>{ticks[last] ? hmNy(ticks[last].time) : ""}</span>
+            <span>{ticks.length ? hmNy(ticks[ticks.length - 1].time) : ""}</span>
           </div>
 
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
             <button style={btn} onClick={() => go(0)} title="Ir a la apertura">⏮</button>
-            <button style={btn} onClick={() => go(p.idx - 1)}>−5 min</button>
+            <button style={btn} onClick={() => go(cur - 5)}>−5 min</button>
+            <button style={btn} onClick={() => go(cur - 1)}>−1 min</button>
             <button
               style={{ ...btn, background: "var(--accent)", borderColor: "var(--accent)", minWidth: 92, fontWeight: 600 }}
-              onClick={() => { if (p.idx >= last) p.onIdx(0); p.onPlaying(!p.playing); }}
+              onClick={() => { if (cur >= last) p.onIdx(0); p.onPlaying(!p.playing); }}
             >
               {p.playing ? "⏸ Pausa" : "▶ Reproducir"}
             </button>
-            <button style={btn} onClick={() => go(p.idx + 1)}>+5 min</button>
+            <button style={btn} onClick={() => go(cur + 1)}>+1 min</button>
+            <button style={btn} onClick={() => go(cur + 5)}>+5 min</button>
             <button style={btn} onClick={() => go(last)} title="Ir al cierre">⏭</button>
             <span style={{ fontSize: 12, color: "var(--muted)", marginLeft: 8 }}>Velocidad:</span>
             {p.speeds.map((s) => (
@@ -158,6 +174,53 @@ export default function VisionFuturaReplayBar(p: Props) {
           </details>
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * Controles compactos de la repetición DEBAJO de la gráfica (Carlos, 29-oct-2026: "que el botón de
+ * pausar y reproducir salga debajo de la gráfica para no tener que ir hasta arriba"). Usan el mismo
+ * estado que la barra de arriba: moverse en una mueve la otra.
+ */
+export function ReplayMiniControls(p: Pick<Props, "replay" | "idx" | "onIdx" | "playing" | "onPlaying" | "speedMs" | "onSpeed" | "speeds" | "spotNow">) {
+  const lb = useVisionLabels();
+  const { lastMin: last, cur, sec, tick, spot } = minuteView(p);
+  if (!tick) return null;
+  const go = (i: number) => { p.onPlaying(false); p.onIdx(Math.max(0, Math.min(last, i))); };
+  const sm: React.CSSProperties = { ...btn, padding: "4px 10px", fontSize: 12 };
+  return (
+    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", padding: "8px 10px", borderRadius: 10, border: "1px solid var(--border)", background: "var(--panel-2)" }}>
+      <span style={{ fontWeight: 700, fontVariantNumeric: "tabular-nums", minWidth: 52 }}>{hmNy(sec)}</span>
+      <span style={{ fontSize: 12, color: "var(--muted)", fontVariantNumeric: "tabular-nums" }}>
+        {lb.main} {(spot ?? tick.spot.spx).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+      </span>
+      <button style={sm} onClick={() => go(0)} title="Ir a la apertura">⏮</button>
+      <button style={sm} onClick={() => go(cur - 5)}>−5 min</button>
+      <button style={sm} onClick={() => go(cur - 1)}>−1 min</button>
+      <button
+        style={{ ...sm, background: "var(--accent)", borderColor: "var(--accent)", minWidth: 96, fontWeight: 600 }}
+        onClick={() => { if (cur >= last) p.onIdx(0); p.onPlaying(!p.playing); }}
+      >
+        {p.playing ? "⏸ Pausa" : "▶ Reproducir"}
+      </button>
+      <button style={sm} onClick={() => go(cur + 1)}>+1 min</button>
+      <button style={sm} onClick={() => go(cur + 5)}>+5 min</button>
+      <button style={sm} onClick={() => go(last)} title="Ir al cierre">⏭</button>
+      <input
+        type="range" min={0} max={last} step={1} value={cur}
+        onChange={(e) => go(Number(e.target.value))}
+        style={{ flex: "1 1 160px", minWidth: 120, accentColor: "var(--accent)" }}
+        aria-label="Hora de la repetición (abajo de la gráfica)"
+      />
+      <span style={{ display: "flex", gap: 4 }}>
+        {p.speeds.map((s) => (
+          <button key={s.ms} onClick={() => p.onSpeed(s.ms)}
+            style={{ ...sm, padding: "4px 8px", borderColor: p.speedMs === s.ms ? "var(--accent)" : "var(--border)", fontWeight: p.speedMs === s.ms ? 700 : 400 }}>
+            {s.label}
+          </button>
+        ))}
+      </span>
     </div>
   );
 }

@@ -12,7 +12,7 @@ import VisionFuturaSpreads from "./VisionFuturaSpreads";
 import VisionFuturaAmiga from "./VisionFuturaAmiga";
 import VisionFuturaLottos from "./VisionFuturaLottos";
 import VisionFuturaMoney from "./VisionFuturaMoney";
-import VisionFuturaReplayBar from "./VisionFuturaReplayBar";
+import VisionFuturaReplayBar, { ReplayMiniControls } from "./VisionFuturaReplayBar";
 import VisionFuturaPremarket from "./VisionFuturaPremarket";
 import VisionFuturaPositionLog from "./VisionFuturaPositionLog";
 import VisionFuturaTickerSearch from "./VisionFuturaTickerSearch";
@@ -60,13 +60,17 @@ interface LiveQuote {
 
 interface LevelChange { at: number; label: string; from: number; to: number }
 
-/** Velocidades de "Repetir sesión": ms por cada tick de 5 min. */
+/** Velocidades de "Repetir sesión": ms por cada MINUTO (Carlos, 29-oct: "minuto a minuto"). */
 const REPLAY_SPEEDS = [
-  { label: "1x", ms: 2000 },
-  { label: "2x", ms: 1000 },
-  { label: "5x", ms: 400 },
-  { label: "10x", ms: 200 },
+  { label: "1x", ms: 1000 },
+  { label: "2x", ms: 500 },
+  { label: "5x", ms: 200 },
+  { label: "10x", ms: 100 },
 ];
+
+/** Minutos de la repetición: del primer paso (apertura) al último. */
+const replayLastMin = (r: { ticks: { time: number }[] } | null) =>
+  r && r.ticks.length > 1 ? Math.round((r.ticks[r.ticks.length - 1].time - r.ticks[0].time) / 60) : 0;
 
 function levelMap(keyLevels: { label: string; spx: number }[], vixMagnet: number | null) {
   const m = new Map<string, number>();
@@ -354,7 +358,9 @@ export default function VisionFuturaTab() {
   // Motor híbrido de la repetición (las mismas alertas/señales del día con sus filtros).
   const replayHybrid = useMemo(() => (replay ? hybridFromReplay(replay) : null), [replay]);
   const replayHybridPrices = useMemo(() => (replay ? replay.priceSeries.map((p) => ({ t: p.time * 1000, v: p.value })) : null), [replay]);
-  const [replayIdx, setReplayIdx] = useState(0);
+  // Cursor de la repetición en MINUTOS desde la apertura. Los niveles/flujo salen del último paso de
+  // 5 min ≤ cursor (MarketSnack no da más fino); velas, precio, volumen delta y alertas van por minuto.
+  const [replayMin, setReplayMin] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speedMs, setSpeedMs] = useState(REPLAY_SPEEDS[0].ms);
   const [replayLoading, setReplayLoading] = useState(false);
@@ -428,7 +434,7 @@ export default function VisionFuturaTab() {
     // La repetición es por instrumento: se descarta la anterior y, si se estaba viendo, se arma la nueva.
     setReplay(null);
     setReplayDays([]);
-    setReplayIdx(0);
+    setReplayMin(0);
     setPlaying(false);
     setReplayError(null);
     instRef.current = id;
@@ -487,7 +493,7 @@ export default function VisionFuturaTab() {
       if (instRef.current !== forInst) return; // se cambió de instrumento mientras cargaba
       if (!res.ok || json.error) throw new Error(json.error ?? `Error ${res.status}`);
       setReplay(json as ReplayPayload);
-      setReplayIdx(0);
+      setReplayMin(0);
     } catch (e) {
       setReplayError(e instanceof Error ? e.message : "No se pudo reconstruir la sesión.");
     } finally {
@@ -503,15 +509,15 @@ export default function VisionFuturaTab() {
     if (m === "repeticion" && !replay && !replayLoading) loadReplay(false);
   };
 
-  // Reproducción: avanza un tick (5 min) cada `speedMs`.
+  // Reproducción: avanza UN MINUTO cada `speedMs`.
   useEffect(() => {
     if (!playing || !replay) return;
-    const id = window.setInterval(() => setReplayIdx((i) => Math.min(i + 1, replay.ticks.length - 1)), speedMs);
+    const id = window.setInterval(() => setReplayMin((i) => Math.min(i + 1, replayLastMin(replay))), speedMs);
     return () => window.clearInterval(id);
   }, [playing, replay, speedMs]);
   useEffect(() => {
-    if (playing && replay && replayIdx >= replay.ticks.length - 1) setPlaying(false);
-  }, [playing, replay, replayIdx]);
+    if (playing && replay && replayMin >= replayLastMin(replay)) setPlaying(false);
+  }, [playing, replay, replayMin]);
 
   // Precio en vivo (tastytrade). Se pausa con la pestaña del navegador oculta.
   const marketOpen = data?.marketOpen ?? false;
@@ -678,11 +684,26 @@ export default function VisionFuturaTab() {
     : data;
 
   // Vista de la repetición: todo como estaba en el tick elegido.
-  const tick = mode === "repeticion" && replay ? replay.ticks[Math.min(replayIdx, replay.ticks.length - 1)] : null;
-  const tickMs = tick ? tick.time * 1000 : 0;
+  // Minuto elegido → paso de 5 min vigente (el último que ya pasó).
+  const lastMin = replayLastMin(replay);
+  const curMin = Math.min(replayMin, lastMin);
+  const cursorSec = replay && replay.ticks.length ? replay.ticks[0].time + curMin * 60 : 0;
+  let replayIdx = 0;
+  if (replay) for (let i = 0; i < replay.ticks.length; i++) { if (replay.ticks[i].time <= cursorSec) replayIdx = i; else break; }
+  const atReplayEnd = curMin >= lastMin;
+  const tick = mode === "repeticion" && replay ? replay.ticks[replayIdx] ?? null : null;
+  const tickMs = tick ? cursorSec * 1000 : 0;
+  // Precio del minuto: cierre de la vela de 1 min de ese minuto (si ya llegaron las velas del día).
+  const cursorClose = (() => {
+    if (!tick || !replay || candles?.key !== `${inst}|${replay.date}`) return null;
+    let c: number | null = null;
+    for (const b of candles.bars) { if (b.time <= cursorSec) c = b.close; else break; }
+    return c;
+  })();
   const view: VisionData = tick && replay
     ? {
         ...tick,
+        spot: cursorClose != null ? { ...tick.spot, spx: cursorClose } : tick.spot,
         lottos: undefined, // los candidatos del paso van aparte (tick.lottos); este campo es el de "en vivo"
         money: undefined, // idem: la lectura del paso es tick.money
         asOf: new Date(tickMs).toISOString(),
@@ -690,8 +711,8 @@ export default function VisionFuturaTab() {
         expiration: replay.date,
         esSymbol: null,
         radius: replay.radius,
-        priceSeries: replay.priceSeries.filter((p) => p.time <= tick.time),
-        history: replay.history.filter((h) => h.time <= tick.time),
+        priceSeries: replay.priceSeries.filter((p) => p.time <= cursorSec),
+        history: replay.history.filter((h) => h.time <= cursorSec),
         alerts: (() => {
           // Resultado de cada orden con el precio hasta este momento: la vieja se cierra cuando sale la nueva.
           const shown = replay.alerts.filter((a) => a.firedAt <= tickMs);
@@ -699,7 +720,7 @@ export default function VisionFuturaTab() {
             shown.map((a) => ({ at: a.firedAt, side: a.order.side, entry: a.order.entry.spx, stop: a.order.stop.spx, target: a.order.target?.spx ?? null })),
             replay.priceSeries.map((p) => ({ t: p.time * 1000, v: p.value })),
             tickMs,
-            replayIdx >= replay.ticks.length - 1 && !replay.partial,
+            atReplayEnd && !replay.partial,
           );
           return shown
             .map((a, i) => ({ ...a, lastSeenAt: Math.min(a.lastSeenAt, tickMs), activa: tick.activeIds.includes(a.id), result: results[i] }))
@@ -765,7 +786,7 @@ export default function VisionFuturaTab() {
   const baseBars = candles?.key === candleKey ? candles.bars : [];
   let chartCandles: CandleBar[] = baseBars;
   if (tick) {
-    chartCandles = baseBars.filter((b) => b.time <= tick.time);
+    chartCandles = baseBars.filter((b) => b.time <= cursorSec);
   } else if (baseBars.length > 0 && (data.marketOpen || isNightInst)) {
     const out = baseBars.slice();
     for (const p of livePoints) {
@@ -789,7 +810,7 @@ export default function VisionFuturaTab() {
       list.map((a) => ({ at: a.firedAt, side: a.order.side, entry: a.order.entry.spx, stop: a.order.stop.spx, target: a.order.target?.spx ?? null })),
       bars,
       tick ? tickMs : Date.now(),
-      tick ? replayIdx >= (replay?.ticks.length ?? 0) - 1 && !replay?.partial : !view.marketOpen,
+      tick ? atReplayEnd && !replay?.partial : !view.marketOpen,
     );
     return list.map((a, i) => (tick || !a.result ? { ...a, result: res[i] } : a));
   })();
@@ -820,8 +841,9 @@ export default function VisionFuturaTab() {
         mode={mode}
         onMode={pickMode}
         replay={replay}
-        idx={replayIdx}
-        onIdx={setReplayIdx}
+        idx={curMin}
+        onIdx={setReplayMin}
+        spotNow={tick ? view.spot.spx : null}
         playing={playing}
         onPlaying={setPlaying}
         speedMs={speedMs}
@@ -1093,7 +1115,7 @@ export default function VisionFuturaTab() {
               // Repetición: solo si es el mismo día que trae tastytrade; hasta el paso elegido.
               const volDate = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(vol.sessionOpen * 1000));
               if (tick && replay?.date !== volDate) return null;
-              const toT = tick ? Math.floor(tick.time / 60) * 60 : vol.asOfT;
+              const toT = tick ? Math.floor(cursorSec / 60) * 60 : vol.asOfT;
               const label = VOL_WINDOWS.find((w) => w.sec === volWin)?.label ?? "1 min";
               return {
                 rows: volDeltaRows(vol.minutes, toT, volWin), minutes: vol.minutes, windowLabel: volWin == null ? "día" : `últ. ${label}`, toT,
@@ -1101,6 +1123,12 @@ export default function VisionFuturaTab() {
               };
             })()}
             premarket={pmReport ? { low: pmReport.range.low, high: pmReport.range.high, extLow: pmReport.extended.low, extHigh: pmReport.extended.high } : null}
+          />
+        )}
+        {tick && replay && (
+          <ReplayMiniControls
+            replay={replay} idx={curMin} onIdx={setReplayMin} playing={playing} onPlaying={setPlaying} spotNow={view.spot.spx}
+            speedMs={speedMs} onSpeed={setSpeedMs} speeds={REPLAY_SPEEDS}
           />
         )}
         <VisionFuturaPositionLog positions={positionsView} />
@@ -1118,7 +1146,7 @@ export default function VisionFuturaTab() {
       <VisionFuturaContextPanel
         zoomMinutes={zoom}
         replayDate={tick && replay ? replay.date : null}
-        untilSec={tick ? tick.time : null}
+        untilSec={tick ? cursorSec : null}
       />
       </div>
 
@@ -1134,7 +1162,7 @@ export default function VisionFuturaTab() {
       <VisionFuturaMoney
         reading={tick ? tick.money ?? null : view.money?.reading ?? null}
         trades={tick ? replay?.moneyTrades ?? [] : view.money?.trades ?? []}
-        replay={tick && replay ? { tickMs, spot: tick.spot.spx, isLastTick: replayIdx >= replay.ticks.length - 1, partial: replay.partial } : null}
+        replay={tick && replay ? { tickMs, spot: view.spot.spx, isLastTick: atReplayEnd, partial: replay.partial } : null}
         spot={view.spot.spx}
         marketOpen={view.marketOpen}
         night={isNightInst}
@@ -1159,8 +1187,8 @@ export default function VisionFuturaTab() {
         replayTrades={tick && replay?.spreadTrades ? {
           trades: replay.spreadTrades,
           tickMs,
-          spot: tick.spot.spx,
-          isLastTick: replayIdx >= replay.ticks.length - 1,
+          spot: view.spot.spx,
+          isLastTick: atReplayEnd,
           partial: replay.partial,
           atClose: !!replay.expiration && replay.expiration !== replay.date,
         } : null}
@@ -1174,8 +1202,8 @@ export default function VisionFuturaTab() {
             ideas: tick.lottos,
             trades: replay.lottoTrades ?? [],
             tickMs,
-            spot: tick.spot.spx,
-            isLastTick: replayIdx >= replay.ticks.length - 1,
+            spot: view.spot.spx,
+            isLastTick: atReplayEnd,
             partial: replay.partial,
           } : null}
         />

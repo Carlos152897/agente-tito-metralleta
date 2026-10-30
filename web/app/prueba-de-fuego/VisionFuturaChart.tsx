@@ -333,7 +333,14 @@ export default function VisionFuturaChart(props: Props) {
   }, []);
 
   const { compact, LABEL_W, LEVEL_W, AGG_GEX_W, AGG_TXT_W, AGG_HALF, AGG_STRIKE_W, RIGHT_W, UNUSUAL_W, MIN_PLOT, LBL_FONT } = sizesFor(boxW);
-  const refSec = priceSeries.at(-1)?.time ?? history.at(-1)?.time ?? Date.now() / 1000;
+  // "Ahora" = lo más reciente entre la línea de precio y la última vela (en la repetición minuto a
+  // minuto la vela va adelante del punto de 5 min).
+  const refSec = Math.max(
+    priceSeries.at(-1)?.time ?? -Infinity,
+    props.candles?.at(-1)?.time ?? -Infinity,
+  ) > -Infinity
+    ? Math.max(priceSeries.at(-1)?.time ?? -Infinity, props.candles?.at(-1)?.time ?? -Infinity)
+    : history.at(-1)?.time ?? Date.now() / 1000;
   const session = props.nightSession ? nightBounds(refSec) : sessionBounds(refSec);
   // Zoom: ventana de N min que termina un poco después del último precio (margen ~8% a la derecha
   // para que la vela actual no quede pegada a la orilla), sin salirse de la sesión.
