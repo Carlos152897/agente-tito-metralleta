@@ -35,6 +35,8 @@ import VisionFuturaContextPanel from "./VisionFuturaContextPanel";
 import VisionFuturaPremarketZones, { usePremarketZones } from "./VisionFuturaPremarketZones";
 import { useVolumeDelta, VOL_WINDOWS } from "./useVolumeDelta";
 import { detectVolumeSpikes, volDeltaRows } from "@/lib/visionFuturaVolumeDelta";
+import { gridStepFor, nativeStep } from "@/lib/visionFuturaGrid";
+import { FLOW_MAGNET_TUNING, flowMagnetHistory, flowMagnetsAt } from "@/lib/visionFuturaFlowMagnets";
 import VisionFuturaChart, { DEFAULT_LAYERS, LAYERS, type CandleBar, type HistoryPoint, type LayerKey, type VixStrip } from "./VisionFuturaChart";
 import type { ConvertedLevel, DealerLevel, KeyLevel, KeyLevelKind, VisionFuturaReport, VisionStrikeRow } from "@/lib/visionFutura";
 
@@ -571,6 +573,26 @@ export default function VisionFuturaTab() {
     return () => { stop = true; window.clearInterval(id); };
   }, [inst, mode, replayDate]);
 
+  // Bolas de inusuales en la repetición: las guardadas de ese día (data/vision-futura/marketsnack/),
+  // solo si son del mismo vencimiento que se repite.
+  const replayExp = mode === "repeticion" ? replay?.expiration || replay?.date || null : null;
+  const [replayMs, setReplayMs] = useState<{ key: string; unusual: MsUnusualTrade[]; exits: Record<number, DotExit> } | null>(null);
+  useEffect(() => {
+    if (!replayDate) return;
+    const key = `${inst}|${replayDate}|${replayExp}`;
+    let stop = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/vision-futura/inusuales?${new URLSearchParams({ inst, date: replayDate })}`, { cache: "no-store" });
+        const json = await res.json();
+        if (stop || !res.ok || json.error) return;
+        const same = !json.expiration || !replayExp || json.expiration === replayExp;
+        setReplayMs({ key, unusual: same ? json.unusual ?? [] : [], exits: same ? json.unusualExits ?? {} : {} });
+      } catch { /* sin bolas en esta repetición */ }
+    })();
+    return () => { stop = true; };
+  }, [inst, replayDate, replayExp]);
+
   const pickRadius = (r: number) => {
     setRadius(r);
     try { window.localStorage.setItem(KEY_RADIUS, String(r)); } catch { /* ignorar */ }
@@ -656,7 +678,7 @@ export default function VisionFuturaTab() {
     expiration: mode === "repeticion" && replay ? replay.expiration || replay.date : data?.expiration ?? null,
     spot: data?.spot.spx ?? null,
     radius: mode === "repeticion" && replay ? replay.radius : data?.radius ?? null,
-    enabled: layers.volumen_delta && layers.agresor && !NIGHT_IDS.includes(inst),
+    enabled: ((layers.volumen_delta && layers.agresor) || layers.iman_flujo) && !NIGHT_IDS.includes(inst),
   });
 
   if (loading && !data) return <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-md)" }}>{instrumentBar}<div className="card wheel-empty">Cargando VisionFutura · {inst}…</div></div>;
@@ -693,6 +715,12 @@ export default function VisionFuturaTab() {
   const atReplayEnd = curMin >= lastMin;
   const tick = mode === "repeticion" && replay ? replay.ticks[replayIdx] ?? null : null;
   const tickMs = tick ? cursorSec * 1000 : 0;
+  // Bolas hasta el minuto del cursor; una salida solo se ve si ya había pasado a esa hora.
+  const replayMsOk = !!tick && !!replay && replayMs?.key === `${inst}|${replay.date}|${replay.expiration || replay.date}`;
+  const replayUnusualMs = replayMsOk ? replayMs!.unusual.filter((u) => Date.parse(u.timestamp) <= tickMs) : null;
+  const replayUnusualExits = replayMsOk
+    ? Object.fromEntries(Object.entries(replayMs!.exits).filter(([, e]) => e.at <= cursorSec))
+    : null;
   // Precio del minuto: cierre de la vela de 1 min de ese minuto (si ya llegaron las velas del día).
   const cursorClose = (() => {
     if (!tick || !replay || candles?.key !== `${inst}|${replay.date}`) return null;
@@ -779,6 +807,8 @@ export default function VisionFuturaTab() {
   const scale = (tick ? replay?.scale : data.scale) ?? 1;
   const isSpx = labels.main === "SPX";
   const isNightInst = NIGHT_IDS.includes(inst);
+  // Filas parejas en la gráfica: NQ ≈ 20 pts por fila (como 5 pts de SPX); SPX/ES quedan en 5.
+  const gridStep = gridStepFor(nativeStep(view.rows.map((r) => r.spx)), scale);
 
   // Velas para la gráfica. Repetición: hasta el paso elegido. En vivo: las de tastytrade + la
   // vela del minuto actual armada con cada precio en vivo (cada 3 s), sin esperar al próximo pedido.
@@ -818,6 +848,30 @@ export default function VisionFuturaTab() {
   // Ventana real de cada botón (misma regla que el servidor: 10/20/30 strikes por lado fuera de SPX).
   const step = (tick ? replay?.strikeStep : data.strikeStep) ?? 5;
   const windowFor = (r: number) => (isSpx || inst === "ESN" ? r : (r <= 30 ? 10 : r <= 60 ? 20 : 30) * step);
+
+  // Imanes por FLUJO (últimos 15 min, ±70 pts × escala) y dónde estuvieron en el día.
+  const flowMagnets = (() => {
+    if (!vol || !layers.iman_flujo || isNightInst) return null;
+    const volDate = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(vol.sessionOpen * 1000));
+    if (tick && replay?.date !== volDate) return null;
+    const toT = tick ? Math.floor(cursorSec / 60) * 60 : vol.asOfT;
+    const radius = FLOW_MAGNET_TUNING.radiusPts * scale;
+    const closes = new Map(chartCandles.map((b) => [b.time, b.close]));
+    let lastClose: number | null = null;
+    const spotAt = (t: number) => {
+      const c = closes.get(t - 60);
+      if (c != null) lastClose = c;
+      return lastClose ?? (closes.size === 0 ? view.spot.spx : null);
+    };
+    const history = flowMagnetHistory(vol.minutes, vol.sessionOpen, toT, spotAt, { radius });
+    // Mismo precio que el último minuto del historial (cierre de la vela), para que no se contradigan.
+    const spotNow = closes.get(toT - 60) ?? view.spot.spx;
+    return {
+      now: flowMagnetsAt(vol.minutes, toT, spotNow, { radius }),
+      history,
+      windowLabel: "15 min",
+    };
+  })();
 
   return (
     <VisionLabelsContext.Provider value={labels}>
@@ -1094,6 +1148,7 @@ export default function VisionFuturaTab() {
             spot={view.spot.spx}
             priceSeries={view.priceSeries}
             candles={chartCandles}
+            gridStep={gridStep}
             zoomMinutes={zoom}
             fitHeight={fitHeight}
             nightSession={isNightInst && !tick}
@@ -1107,9 +1162,10 @@ export default function VisionFuturaTab() {
             unusual={tick ? replayUnusual : liveUnusual}
             vix={vixStrip}
             premium={tick ? null : data.marketSnack?.premium ?? null}
-            unusualMs={tick ? null : data.marketSnack?.unusual ?? null}
-            unusualExits={tick ? null : data.marketSnack?.unusualExits ?? null}
+            unusualMs={tick ? replayUnusualMs : data.marketSnack?.unusual ?? null}
+            unusualExits={tick ? replayUnusualExits : data.marketSnack?.unusualExits ?? null}
             positions={positionsView}
+            flowMagnets={flowMagnets}
             volDelta={(() => {
               if (!vol || !layers.volumen_delta) return null;
               // Repetición: solo si es el mismo día que trae tastytrade; hasta el paso elegido.

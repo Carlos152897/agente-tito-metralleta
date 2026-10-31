@@ -15,6 +15,8 @@ import type { RowWithLegs } from "@/lib/visionFuturaLegs";
 import type { MsPremiumMinute } from "@/lib/marketsnack";
 import { premiumNewMoney, premiumSeries } from "@/lib/visionFuturaPremium";
 import { unusualDots, type RowMultiExp, type UnusualDot } from "@/lib/visionFuturaMultiExp";
+import { fmtFuerza, type FlowMagnetSegment, type FlowMagnets } from "@/lib/visionFuturaFlowMagnets";
+import { bucketOf, gridMinutes, gridRows, gridSnapshot, gridSpikes, gridUnusual, gridVolRows } from "@/lib/visionFuturaGrid";
 import type { DotExit } from "@/lib/visionFuturaUnusualExit";
 import type { MsUnusualTrade } from "@/lib/marketsnack";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -43,7 +45,8 @@ export type LayerKey =
   | "prima"
   | "inusuales_ms"
   | "premarket"
-  | "volumen_delta";
+  | "volumen_delta"
+  | "iman_flujo";
 
 export const LAYERS: { key: LayerKey; label: string; color: string }[] = [
   { key: "precio", label: "Precio", color: "#2dd4bf" },
@@ -67,16 +70,21 @@ export const LAYERS: { key: LayerKey; label: string; color: string }[] = [
   { key: "inusuales_ms", label: "Inusuales MarketSnack", color: "#facc15" },
   { key: "premarket", label: "Premarket", color: "#d4a373" },
   { key: "volumen_delta", label: "Volumen delta", color: "#38bdf8" },
+  { key: "iman_flujo", label: "Imanes de flujo", color: "#3b82f6" },
 ];
 
 export const DEFAULT_LAYERS: Record<LayerKey, boolean> = {
   precio: true, posicionamiento: true, magneto: true, iman_positivo: true, iman_negativo: true,
   resistencia: true, piso: true, gamma_flip: false, max_pain: false, charm: false,
   dealers: false, rango_vix: false, historial: false, historial_ls: true, agresor: true, vix: true, spreads: true, prima: true, inusuales_ms: true, premarket: true, volumen_delta: true,
+  iman_flujo: true,
 };
 
 const COLOR = Object.fromEntries(LAYERS.map((l) => [l.key, l.color])) as Record<LayerKey, string>;
 const POS_DOWN = "#a855f7"; // morado: se posicionan para abajo
+/** Imanes de flujo (lib/visionFuturaFlowMagnets.ts): azul = Imán +, rojo = Imán −, como la app de referencia. */
+const FLOW_POS = "#3b82f6";
+const FLOW_NEG = "#ef4444";
 // Tono claro de cada lado = la parte que viene de PUTS (el fuerte = CALLS).
 const POS_UP_PUT = "#86efac";
 // Parte de la barra que viene de spreads (varias patas): no dice dirección.
@@ -113,6 +121,11 @@ interface Props {
    * mueve poco (Carlos, 26-oct). Los niveles que quedan fuera se marcan en la orilla con flecha.
    */
   fitHeight?: boolean;
+  /**
+   * Tamaño de cada fila en puntos (cuadrícula pareja, lib/visionFuturaGrid.ts). NQ ≈ 20 pts para que
+   * se vea como SPX (Carlos, 30-oct: "ajústame la pantalla para el NQ, se ve fea"). null = sin agrupar.
+   */
+  gridStep?: number | null;
   /** 🌙 Modo noche: eje X desde la apertura de futuros (6 pm NY) hasta ahora, no 9:30–16:00. */
   nightSession?: boolean;
   history: HistoryPoint[];
@@ -143,6 +156,11 @@ interface Props {
    * domina en cada strike y, en la tarjeta del strike, el minuto a minuto.
    */
   volDelta?: { rows: VolDeltaRow[]; minutes: Map<number, StrikeMinute[]>; windowLabel: string; toT: number; spikes: VolSpike[] } | null;
+  /**
+   * Imanes por FLUJO de los últimos 15 min (compra calls + venta puts vs venta calls + compra puts) y
+   * dónde estuvieron durante el día (Carlos, 30-oct: "imán positivo y negativo con su fuerza").
+   */
+  flowMagnets?: { now: FlowMagnets; history: FlowMagnetSegment[]; windowLabel: string } | null;
 }
 
 export interface CandleBar { time: number; open: number; high: number; low: number; close: number }
@@ -269,7 +287,48 @@ const gexM = (v: number) => {
 
 interface Chip { y: number; text: string; color: string; dashed?: boolean; key: string; offscreen?: boolean }
 
-export default function VisionFuturaChart(props: Props) {
+/**
+ * Cuadrícula pareja (lib/visionFuturaGrid.ts): filas del mismo tamaño, huecos rellenos y todo lo que
+ * va por strike sumado en su fila. Sin `gridStep` (o igual al paso nativo y sin huecos) no cambia nada.
+ */
+/** Rango del precio del día (velas, o la línea) + el spot, para que las velas no se salgan de la escalera. */
+function priceRange(p: Props): { lo: number; hi: number } | null {
+  const vals = (p.candles?.length ? p.candles.flatMap((c) => [c.high, c.low]) : p.priceSeries.map((x) => x.value))
+    .filter((v) => Number.isFinite(v) && v > 0);
+  if (Number.isFinite(p.spot) && p.spot > 0) vals.push(p.spot);
+  return vals.length ? { lo: Math.min(...vals), hi: Math.max(...vals) } : null;
+}
+
+function griddedProps(p: Props): Props {
+  const g = p.gridStep;
+  if (!g || p.rows.length === 0) return p;
+  const remap = <T extends { strike: number }>(x: T): T => ({ ...x, strike: bucketOf(x.strike, g) });
+  return {
+    ...p,
+    rows: gridRows(p.rows, g, priceRange(p)),
+    prevAggressor: gridSnapshot(p.prevAggressor, g),
+    unusual: gridUnusual(p.unusual, g),
+    volDelta: p.volDelta
+      ? { ...p.volDelta, rows: gridVolRows(p.volDelta.rows, g), minutes: gridMinutes(p.volDelta.minutes, g), spikes: gridSpikes(p.volDelta.spikes, g) }
+      : p.volDelta,
+    positions: p.positions
+      ? { segments: p.positions.segments.map(remap), events: p.positions.events.map(remap) }
+      : p.positions,
+    flowMagnets: p.flowMagnets
+      ? {
+          ...p.flowMagnets,
+          now: {
+            pos: p.flowMagnets.now.pos && remap(p.flowMagnets.now.pos),
+            neg: p.flowMagnets.now.neg && remap(p.flowMagnets.now.neg),
+          },
+          history: p.flowMagnets.history.map(remap),
+        }
+      : p.flowMagnets,
+  };
+}
+
+export default function VisionFuturaChart(rawProps: Props) {
+  const props = griddedProps(rawProps);
   const lb = useVisionLabels();
   const { rows: allRows, spot, priceSeries, history, keyLevels, dealerLevels, expectedMove, conversion, layers, prevAggressor } = props;
   const unusualBy = new Map<number, UnusualHit>();
@@ -499,6 +558,11 @@ export default function VisionFuturaChart(props: Props) {
     const kr = rows.find((r) => Math.abs(r.spx - k.spx) <= step / 2) as (VisionStrikeRow & RowMultiExp) | undefined;
     const star = kr?.backing === "respaldado" ? "★ " : "";
     addChip({ key: `${k.label}-${k.spx}`, text: `${star}${SHORT_LABEL[k.label] ?? k.label} ${lvl}`, color, dashed: k.kind === "gamma_flip" || k.kind === "max_pain" }, k.spx);
+  }
+  if (layers.iman_flujo && props.flowMagnets) {
+    const { pos, neg } = props.flowMagnets.now;
+    if (pos) addChip({ key: `fm-pos-${pos.strike}`, text: `Imán + flujo (${fmtFuerza(pos.fuerza)}) ${n2(pos.strike, 0)}`, color: FLOW_POS }, pos.strike);
+    if (neg) addChip({ key: `fm-neg-${neg.strike}`, text: `Imán − flujo (${fmtFuerza(neg.fuerza)}) ${n2(neg.strike, 0)}`, color: FLOW_NEG }, neg.strike);
   }
   if (layers.premarket && props.premarket) {
     const pm = props.premarket;
@@ -738,6 +802,25 @@ export default function VisionFuturaChart(props: Props) {
               <path d={stepPath((h) => h.putWall)} fill="none" stroke={COLOR.piso} strokeWidth={2.5} opacity={0.45} />
               <path d={stepPath((h) => h.gammaFlip)} fill="none" stroke={COLOR.gamma_flip} strokeWidth={1.5} strokeDasharray="4 3" opacity={0.6} />
             </>
+          )}
+
+          {/* Imanes de flujo: líneas gruesas azul (Imán +) / roja (Imán −) desde cuándo estuvo en cada strike;
+              el tramo vigente llega hasta "ahora" y va más fuerte. */}
+          {layers.iman_flujo && props.flowMagnets && (
+            <g style={{ pointerEvents: "none" }}>
+              {props.flowMagnets.history.filter((sg) => inView(sg.strike)).map((sg, i) => {
+                const cur = props.flowMagnets!.now[sg.kind];
+                const live = !!cur && cur.strike === sg.strike && sg.end >= refSec - 120;
+                const x0 = x(sg.start - 60);
+                const x1 = live ? nowX : x(sg.end);
+                return x1 > x0 ? (
+                  <line key={`fm-${i}`} x1={x0} x2={x1} y1={y(sg.strike)} y2={y(sg.strike)}
+                    stroke={sg.kind === "pos" ? FLOW_POS : FLOW_NEG} strokeWidth={live ? 3 : 2.5} opacity={live ? 0.9 : 0.45} strokeLinecap="round">
+                    <title>{`${sg.kind === "pos" ? "Imán +" : "Imán −"} flujo ${n2(sg.strike, 0)} · ${hm(sg.start - 60)}–${hm(sg.end)} · fuerza máx ${fmtFuerza(sg.fuerza)}`}</title>
+                  </line>
+                ) : null;
+              })}
+            </g>
           )}
 
           {/* Historial Long/Short: desde cuándo cada strike está Long (verde) o Short (morado);
