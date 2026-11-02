@@ -82,6 +82,8 @@ export function scoreLiveDay(input: {
   date: string;
   fired: LiveFired[];
   candles: LiveCandle[];
+  /** De dónde salieron las velas (tastytrade o yahoo). */
+  candleSource?: string | null;
   /** Respaldo si no hubo velas: precio de 5 min de la repetición. */
   fallbackPrices?: { time: number; value: number }[];
   money?: MoneyTrade[];
@@ -91,7 +93,7 @@ export function scoreLiveDay(input: {
   const candles: LiveCandle[] = input.candles.length > 0
     ? [...input.candles].sort((a, b) => a.time - b.time)
     : (input.fallbackPrices ?? []).map((p) => ({ time: p.time, high: p.value, low: p.value, close: p.value }));
-  const priceSource = input.candles.length > 0 ? "velas 1 min (tastytrade)" : "precio 5 min (sin velas de 1 min)";
+  const priceSource = input.candles.length > 0 ? (input.candleSource ? `velas 1 min (${input.candleSource})` : "velas 1 min") : "precio 5 min (sin velas de 1 min)";
   const lastClose = candles.at(-1)?.close ?? null;
 
   const trades: BacktestTrade[] = [...input.fired]

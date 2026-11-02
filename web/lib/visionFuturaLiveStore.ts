@@ -11,7 +11,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { loadAlertStateFor, type AlertState } from "./visionFuturaAlertStore";
 import { loadBacktestDay, saveBacktestDay } from "./visionFuturaBacktestStore";
-import { fetchFutureCandles } from "./futuresCandles";
+import { fetchSessionMinutes } from "./yahooCandles";
 import { instrumentOf } from "./visionFuturaInstruments";
 import { minutesWatched, scoreLiveDay, type LiveDay, type LiveFired } from "./visionFuturaLive";
 
@@ -53,7 +53,9 @@ export async function attachLiveDay(inst: string, date: string): Promise<LiveDay
   const cfg = instrumentOf(inst);
   const sym = cfg.tastyMain.index ?? cfg.tastyMain.equity ?? cfg.main;
   const open = sessionOpenMs(date);
-  const bars = await fetchFutureCandles(sym, open, "1m", 12_000, 0).catch(() => []);
+  // tastytrade DXLink y, si falla, Yahoo (respaldo).
+  const got = await fetchSessionMinutes(sym, open);
+  const bars = got.bars;
   const candles = bars.filter((b) => b.time * 1000 >= open && b.time * 1000 < open + 390 * 60_000);
 
   let fallbackPrices: { time: number; value: number }[] = [];
@@ -73,6 +75,7 @@ export async function attachLiveDay(inst: string, date: string): Promise<LiveDay
     date,
     fired: state.fired as LiveFired[],
     candles,
+    candleSource: got.source,
     fallbackPrices,
     money: (state.moneyTrades ?? []).filter((m) => m.openedAt >= open),
     lottos: state.lottos ?? [],

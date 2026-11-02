@@ -5,7 +5,7 @@
 
 import { readFileSync } from "fs";
 import { join } from "path";
-import { fetchFutureCandles } from "./futuresCandles";
+import { fetchSessionMinutes } from "./yahooCandles";
 import { instrumentOf } from "./visionFuturaInstruments";
 import { loadBacktestDay, saveBacktestDay } from "./visionFuturaBacktestStore";
 import { loadAlertStateFor } from "./visionFuturaAlertStore";
@@ -29,12 +29,14 @@ export async function attachHybridDay(inst: string, date: string, replay: Hybrid
   const cfg = instrumentOf(inst);
   const sym = cfg.tastyMain.index ?? cfg.tastyMain.equity ?? cfg.main;
   const open = sessionOpenMs(date);
-  const bars = (await fetchFutureCandles(sym, open, "1m", 12_000, 0).catch(() => []))
+  // tastytrade DXLink y, si falla, Yahoo (respaldo).
+  const got = await fetchSessionMinutes(sym, open);
+  const bars = got.bars
     .filter((b) => b.time * 1000 >= open && b.time * 1000 < open + 390 * 60_000);
   const prices = bars.length
     ? bars.map((b) => ({ t: b.time * 1000, high: b.high, low: b.low, close: b.close })) // t = inicio: solo cuentan las velas que empiezan DESPUÉS de la entrada
     : replay.priceSeries.map((p) => ({ t: p.time * 1000, v: p.value }));
-  const priceSource = bars.length ? "velas 1 min (tastytrade)" : "precio 5 min (sin velas de 1 min)";
+  const priceSource = bars.length ? `velas 1 min (${got.source})` : "precio 5 min (sin velas de 1 min)";
   const score = (d: HybridDay): HybridDay => ({
     alerts: d.alerts.map((t) => resolveHybrid(t, prices, true)),
     money: d.money.map((t) => resolveHybrid(t, prices, true)),

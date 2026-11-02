@@ -3,7 +3,7 @@
 // gráfica se quedaba sin velas). Sin clave. Yahoo guarda velas de 1 min de los últimos ~7 días.
 // Solo servidor.
 
-import type { Candle } from "./futuresCandles";
+import { fetchFutureCandles, type Candle } from "./futuresCandles";
 
 /** Símbolo de tastytrade/DXLink → símbolo de Yahoo. */
 export function yahooSymbolFor(sym: string): string {
@@ -88,3 +88,17 @@ export async function fetchYahooQuote(sym: string, cacheMs = 5_000): Promise<Yah
     return c?.q ?? null;
   }
 }
+
+/**
+ * Velas de 1 min de la sesión para CALIFICAR (backtest, en vivo, híbrido): tastytrade DXLink y,
+ * si no da nada, Yahoo. Nunca lanza. `source` dice de dónde salieron.
+ */
+export async function fetchSessionMinutes(sym: string, openMs: number): Promise<{ bars: Candle[]; source: "tastytrade" | "yahoo" | null }> {
+  const close = openMs + 390 * 60_000;
+  const inSession = (b: Candle) => b.time * 1000 >= openMs && b.time * 1000 < close;
+  const dx = (await fetchFutureCandles(sym, openMs, "1m", 12_000, 0).catch(() => [])).filter(inSession);
+  if (dx.length > 0) return { bars: dx, source: "tastytrade" };
+  const yb = (await fetchYahooCandles(sym, openMs, close, 0).catch(() => [])).filter(inSession);
+  return { bars: yb, source: yb.length ? "yahoo" : null };
+}
+
