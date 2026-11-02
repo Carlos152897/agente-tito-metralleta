@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { magnetsInBand, stepAt, techCompany, techReading, upsertMinute } from "./visionFuturaContext";
+import { fillMagnets, magnetsInBand, stepAt, techCompany, techReading, upsertMinute } from "./visionFuturaContext";
 
 const gex = (pairs: [number, number][]) => new Map(pairs.map(([s, g]) => [s, { netGex: g }]));
 
@@ -42,5 +42,26 @@ describe("upsertMinute / stepAt", () => {
     expect(s).toEqual([{ t: 60, v: 2 }, { t: 120, v: 3 }]);
     expect(stepAt(s, 100)?.v).toBe(2);
     expect(stepAt(s, 30)).toBeNull();
+  });
+});
+
+describe("fillMagnets (imanes reconstruidos)", () => {
+  const chain = [
+    { strike: 100, type: "call" as const, oi: 5000, iv: 0.2 },
+    { strike: 99, type: "put" as const, oi: 8000, iv: 0.2 },
+    { strike: 101, type: "call" as const, oi: 100, iv: 0.2 },
+  ];
+  const close = 10_000 * 60;
+  it("llena los minutos sin grabación y respeta lo grabado", () => {
+    const line = [{ t: 60, v: 100 }, { t: 120, v: 100.2 }, { t: 180, v: 99.9 }];
+    const rec = [{ t: 120, price: 100.2, pos: 101, neg: 98 }];
+    const out = fillMagnets(rec, line, chain, 0.02, close);
+    expect(out.map((p) => p.t)).toEqual([60, 120, 180]);
+    expect(out[1]).toEqual(rec[0]);
+    expect(out[0]).toMatchObject({ pos: 100, neg: 99, rebuilt: true });
+  });
+  it("sin cadena válida devuelve lo grabado tal cual", () => {
+    const rec = [{ t: 60, price: 1, pos: null, neg: null }];
+    expect(fillMagnets(rec, [{ t: 120, v: 1 }], [], 0.01, close)).toBe(rec);
   });
 });

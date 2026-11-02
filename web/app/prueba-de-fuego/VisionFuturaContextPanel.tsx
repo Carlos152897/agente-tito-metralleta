@@ -137,11 +137,12 @@ export default function VisionFuturaContextPanel({ zoomMinutes, replayDate, unti
               <span><span style={{ color: PRICE }}>—</span> Precio</span>
               <span><span style={{ color: MAG_POS }}>—</span> Imán +</span>
               <span><span style={{ color: MAG_NEG }}>—</span> Imán −</span>
-              <span>▲▼ imán fuera de la escala</span>
+              <span>▲▼ imán fuera de la escala (línea en la orilla)</span>
             </div>
             <div style={{ fontSize: 11, color: "var(--faint)", lineHeight: 1.45 }}>
               Imán +: mayor gamma positiva; imán −: mayor gamma negativa; a ±25 % del precio en el VIX y ±1 % en SPY y QQQ.
               Al minuto cerrado, con la misma hora que la gráfica principal. Contexto visual. En vivo: grabación del día
+              {data.symbols.some((s) => s.magnets.some((m) => m.rebuilt)) ? "; los minutos sin grabación se reconstruyen con el OI del día y la gamma al precio de ese minuto" : ""}
               {data.symbols.every((s) => s.magnets.length === 0) ? " (los imanes empiezan a dibujarse cuando se graba con el mercado abierto)" : ""}.
             </div>
           </>
@@ -161,7 +162,10 @@ function MiniChart({ s, win, until, showAxis }: { s: ContextSymbolView; win: { o
   const [ref, W] = useWidth<HTMLDivElement>();
   const H = 64, AX = showAxis ? 16 : 0, PADR = 10;
   const pts = s.line.filter((p) => p.t >= win.open && p.t <= win.close && p.t <= until);
-  const mags = s.magnets.filter((p) => p.t <= win.close && p.t <= until);
+  const magsAll = s.magnets.filter((p) => p.t <= win.close && p.t <= until);
+  // Con zoom: el último imán de antes de la ventana arranca en la orilla izquierda.
+  const firstIn = magsAll.findIndex((p) => p.t >= win.open);
+  const mags = firstIn > 0 ? magsAll.slice(firstIn - 1) : firstIn === -1 ? magsAll.slice(-1) : magsAll;
   const lastMag = mags.at(-1) ?? null;
   // En vivo (sin límite) el imán actual es la lectura en vivo; en la repetición, el grabado a esa hora.
   const posNow = Number.isFinite(until) ? lastMag?.pos ?? null : s.pos;
@@ -182,22 +186,20 @@ function MiniChart({ s, win, until, showAxis }: { s: ContextSymbolView; win: { o
   const inScale = (v: number) => v >= lo && v <= hi;
 
   const pricePath = pts.map((p, i) => `${i ? "L" : "M"}${x(p.t).toFixed(1)},${y(p.v).toFixed(1)}`).join("");
+  // Fuera de la escala, el imán va pegado a la orilla (arriba o abajo) en vez de desaparecer.
+  const yEdge = (v: number) => (v > hi ? 1.5 : v < lo ? H - 1.5 : y(v));
   const stepPath = (k: "pos" | "neg") => {
     let d = "", prev: number | null = null;
     for (const m of mags) {
       const v = m[k];
-      if (v == null || !inScale(v)) { prev = null; continue; }
-      d += prev == null ? `M${x(m.t).toFixed(1)},${y(v).toFixed(1)}` : `H${x(m.t).toFixed(1)}V${y(v).toFixed(1)}`;
+      if (v == null) { prev = null; continue; }
+      d += prev == null ? `M${x(m.t).toFixed(1)},${yEdge(v).toFixed(1)}` : `H${x(m.t).toFixed(1)}V${yEdge(v).toFixed(1)}`;
       prev = v;
     }
     const endT = Math.min(until, pts.at(-1)?.t ?? win.close);
     if (prev != null) d += `H${x(endT).toFixed(1)}`;
     return d;
   };
-  // Marcas ▲▼ cuando el imán del minuto quedó fuera de la escala.
-  const offMarks = (k: "pos" | "neg") => mags
-    .filter((m, i) => m[k] != null && !inScale(m[k] as number) && (i === 0 || mags[i - 1][k] !== m[k]))
-    .map((m) => ({ t: m.t, up: (m[k] as number) > hi }));
 
   const dist = (v: number | null) => (v != null && price ? ` (${pct(((v - price) / price) * 100)})` : "");
   const chg = price != null && s.prevClose ? ((price - s.prevClose) / s.prevClose) * 100 : null;
@@ -208,9 +210,9 @@ function MiniChart({ s, win, until, showAxis }: { s: ContextSymbolView; win: { o
 
   return (
     <div ref={ref} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-      <div style={{ fontSize: 12, fontVariantNumeric: "tabular-nums", display: "flex", gap: 6, flexWrap: "wrap", alignItems: "baseline" }}>
+      <div title={chg != null ? `${s.sym} ${pct(chg)} en el día` : undefined}
+        style={{ fontSize: 12, fontVariantNumeric: "tabular-nums", display: "flex", gap: 5, flexWrap: "nowrap", whiteSpace: "nowrap", alignItems: "baseline", overflow: "hidden" }}>
         <b style={{ color: "var(--text)" }}>{s.sym} {fx(price, s.digits)}</b>
-        {chg != null && <span style={{ color: chg >= 0 ? "var(--green)" : "var(--red-soft)", fontSize: 11 }}>{pct(chg)}</span>}
         <span style={{ color: "var(--faint)" }}>·</span>
         <span style={{ color: MAG_POS }}>+ {fx(posNow, s.digits)}{dist(posNow)}</span>
         <span style={{ color: "var(--faint)" }}>·</span>
@@ -224,13 +226,11 @@ function MiniChart({ s, win, until, showAxis }: { s: ContextSymbolView; win: { o
         )}
         <path d={stepPath("pos")} fill="none" stroke={MAG_POS} strokeWidth={1.4} opacity={0.9} />
         <path d={stepPath("neg")} fill="none" stroke={MAG_NEG} strokeWidth={1.4} opacity={0.9} />
-        {offMarks("pos").map((m) => <text key={`p${m.t}`} x={x(m.t)} y={m.up ? 9 : H - 2} fontSize={8} fill={MAG_POS} textAnchor="middle">{m.up ? "▲" : "▼"}</text>)}
-        {offMarks("neg").map((m) => <text key={`n${m.t}`} x={x(m.t)} y={m.up ? 9 : H - 2} fontSize={8} fill={MAG_NEG} textAnchor="middle">{m.up ? "▲" : "▼"}</text>)}
         <path d={pricePath} fill="none" stroke={PRICE} strokeWidth={1.4} />
         {/* Imanes actuales en la orilla derecha: punta de flecha (▲▼ si están fuera de la escala) */}
         {([[posNow, MAG_POS], [negNow, MAG_NEG]] as const).map(([v, col], i) => v == null ? null : inScale(v)
           ? <polygon key={i} points={`${W - PADR + 1},${y(v)} ${W - 1},${y(v) - 4} ${W - 1},${y(v) + 4}`} fill={col} />
-          : <text key={i} x={W - 5} y={v > hi ? 9 : H - 2} fontSize={9} fill={col} textAnchor="middle">{v > hi ? "▲" : "▼"}</text>)}
+          : <text key={i} x={W - 5} y={v > hi ? 9 : H - 1} fontSize={9} fill={col} textAnchor="middle">{v > hi ? "▲" : "▼"}</text>)}
         {pts.length > 0 && <circle cx={x(pts[pts.length - 1].t)} cy={y(pts[pts.length - 1].v)} r={2.2} fill={PRICE} />}
         {showAxis && ticks.map((t) => <text key={`l${t}`} x={x(t)} y={H + 12} fontSize={9.5} fill="#6b7591" textAnchor="middle">{hm(t)}</text>)}
       </svg>

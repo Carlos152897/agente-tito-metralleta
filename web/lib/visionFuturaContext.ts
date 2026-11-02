@@ -100,7 +100,11 @@ export function techReading(companies: TechCompany[], index: TechIndex): TechRea
 }
 
 /** Punto por minuto de VIX/SPY/QQQ (t = inicio del minuto, en segundos). */
-export interface ContextPoint { t: number; price: number; pos: number | null; neg: number | null }
+export interface ContextPoint {
+  t: number; price: number; pos: number | null; neg: number | null;
+  /** true = reconstruido (no grabado en vivo): OI del día + gamma Black-Scholes al precio de ese minuto. */
+  rebuilt?: boolean;
+}
 export interface TechPoint extends TechReading { t: number }
 
 /** Mete el punto en la serie: si ya hay uno del mismo minuto lo reemplaza (el minuto se cierra con el último). */
@@ -117,3 +121,54 @@ export function stepAt<T extends { t: number }>(series: T[], t: number): T | nul
   for (const p of series) { if (p.t <= t) r = p; else break; }
   return r;
 }
+
+// ── Imanes reconstruidos (2-nov-2026: "así quiero que se vea", con imanes desde las 9:30) ──
+// Los imanes solo se graban con la página o la vigilancia abiertas. Para los minutos sin grabación se
+// reconstruyen: el OI no cambia durante el día, así que GEX(strike, minuto) = gamma BS(precio del
+// minuto, strike, tiempo al vencimiento, IV del contrato) × OI × 100 × precio² × 0.01.
+
+export interface RebuildContract { strike: number; type: "call" | "put"; oi: number; iv: number }
+
+function gammaBS(spot: number, strike: number, T: number, iv: number): number {
+  if (!(spot > 0 && strike > 0 && T > 0 && iv > 0)) return 0;
+  const sq = Math.sqrt(T);
+  const d1 = (Math.log(spot / strike) + 0.5 * iv * iv * T) / (iv * sq);
+  return Math.exp(-0.5 * d1 * d1) / Math.sqrt(2 * Math.PI) / (spot * iv * sq);
+}
+
+/** GEX neto por strike a un precio y un tiempo al vencimiento (años). */
+export function gexAt(chain: RebuildContract[], spot: number, T: number): Map<number, StrikeGex> {
+  const out = new Map<number, StrikeGex>();
+  for (const c of chain) {
+    if (!(c.oi > 0)) continue;
+    const g = gammaBS(spot, c.strike, T, c.iv) * c.oi * 100 * spot * spot * 0.01;
+    if (!g) continue;
+    const e = out.get(c.strike) ?? { netGex: 0 };
+    e.netGex += c.type === "call" ? g : -g;
+    out.set(c.strike, e);
+  }
+  return out;
+}
+
+/**
+ * Llena los minutos de `line` que no tienen grabación con imanes reconstruidos y devuelve la serie
+ * completa ordenada. Lo grabado siempre manda. `expCloseSec` = cierre del vencimiento (segundos).
+ */
+export function fillMagnets(
+  recorded: ContextPoint[], line: { t: number; v: number }[], chain: RebuildContract[], band: number, expCloseSec: number,
+): ContextPoint[] {
+  const have = new Set(recorded.map((p) => p.t));
+  const valid = chain.filter((c) => c.oi > 0 && c.iv > 0.01 && c.iv < 5);
+  if (valid.length === 0) return recorded;
+  const out: ContextPoint[] = [...recorded];
+  const MIN_T = 15 * 60; // nunca menos de 15 min al vencimiento (la gamma explota)
+  for (const p of line) {
+    const t = Math.floor(p.t / 60) * 60;
+    if (have.has(t) || !(p.v > 0)) continue;
+    const T = Math.max(expCloseSec - t, MIN_T) / (365 * 86_400);
+    const m = magnetsInBand(gexAt(valid, p.v, T), p.v, band);
+    out.push({ t, price: p.v, pos: m.pos, neg: m.neg, rebuilt: true });
+  }
+  return out.sort((a, b) => a.t - b.t);
+}
+

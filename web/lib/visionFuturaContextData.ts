@@ -12,9 +12,10 @@ import { fetchOptionChainExtended } from "./marketsnack";
 import { fetchLiveQuotes, fetchNestedOptionChain } from "./tastytrade";
 import { computeStrikeGex, type ExtendedChainContract } from "./spxLevels";
 import { fetchFutureCandles } from "./futuresCandles";
+import { fetchYahooCandles } from "./yahooCandles";
 import { isMarketOpen } from "./marketHours";
 import {
-  CONTEXT_SYMBOLS, TECH_TICKERS, magnetsInBand, techCompany, techReading, upsertMinute,
+  CONTEXT_SYMBOLS, TECH_TICKERS, fillMagnets, magnetsInBand, techCompany, techReading, upsertMinute,
   type ContextPoint, type ContextSymbol, type StrikeGex, type TechCompany, type TechIndex, type TechPoint,
 } from "./visionFuturaContext";
 
@@ -189,12 +190,42 @@ export async function recordContext(now = new Date()): Promise<LiveRead> {
   return r;
 }
 
-/** Velas de 1 min (cierre) de la sesión `date`. */
+/** Si DXLink no dio velas, no se le vuelve a esperar hasta esta hora (respaldo Yahoo). */
+let dxDownUntil = 0;
+
+/** Velas de 1 min (cierre) de la sesión `date`: tastytrade DXLink y, si falla, Yahoo. */
 async function dayLine(sym: string, date: string): Promise<{ t: number; v: number }[]> {
   const from = openMs(date);
   if (from > Date.now()) return [];
-  const bars = await fetchFutureCandles(sym, from, "1m", 10_000, 30_000).catch(() => []);
-  return bars.filter((b) => b.time * 1000 < from + 390 * 60_000).map((b) => ({ t: b.time, v: b.close }));
+  const to = from + 390 * 60_000;
+  let bars = Date.now() >= dxDownUntil ? await fetchFutureCandles(sym, from, "1m", 10_000, 30_000).catch(() => []) : [];
+  if (bars.length === 0) {
+    if (Date.now() >= dxDownUntil) dxDownUntil = Date.now() + 2 * 60_000;
+    bars = await fetchYahooCandles(sym, from, to, 30_000).catch(() => []);
+  }
+  return bars.filter((b) => b.time * 1000 < to).map((b) => ({ t: b.time, v: b.close }));
+}
+
+/** 16:00 NY del día de vencimiento, en segundos. */
+const expCloseSec = (exp: string) => (openMs(exp) + 390 * 60_000) / 1000;
+
+/** Imanes de los minutos sin grabación, reconstruidos con la cadena del día (caché 60 s por símbolo). */
+const rebuildCache = new Map<string, { at: number; key: string; out: ContextPoint[] }>();
+async function withRebuilt(sym: ContextSymbol, band: number, date: string, rec: ContextPoint[], line: { t: number; v: number }[]): Promise<ContextPoint[]> {
+  if (line.length === 0) return rec;
+  const key = `${date}|${rec.length}|${line.length}`;
+  const hit = rebuildCache.get(sym);
+  if (hit && hit.key === key && Date.now() - hit.at < 60_000) return hit.out;
+  const ch = await nearestChain(sym, date);
+  if (!ch.exp || ch.c.length === 0) return rec;
+  const lo = Math.min(...line.map((p) => p.v)) * (1 - band * 1.5);
+  const hi = Math.max(...line.map((p) => p.v)) * (1 + band * 1.5);
+  const chain = ch.c
+    .filter((c) => c.strike >= lo && c.strike <= hi && c.implied_volatility != null)
+    .map((c) => ({ strike: c.strike, type: c.type, oi: c.open_interest, iv: c.implied_volatility as number }));
+  const out = fillMagnets(rec, line, chain, band, expCloseSec(ch.exp));
+  rebuildCache.set(sym, { at: Date.now(), key, out });
+  return out;
 }
 
 /**
@@ -213,6 +244,12 @@ export async function loadContext(dateWanted: string | null, now = new Date()): 
   }
   const day = loadContextDay(date);
   const lines = await Promise.all(CONTEXT_SYMBOLS.map((c) => (c.sym === "SPY" ? Promise.resolve(spyLine) : dayLine(c.sym, date))));
+  // En vivo (hoy): los minutos sin grabación se reconstruyen (OI del día + gamma BS al precio de cada minuto).
+  const today = nyParts(now.getTime()).date;
+  const mags = await Promise.all(CONTEXT_SYMBOLS.map((cfg, i) =>
+    !dateWanted && date === today
+      ? withRebuilt(cfg.sym, cfg.band, date, day.series[cfg.sym], lines[i]).catch(() => day.series[cfg.sym])
+      : Promise.resolve(day.series[cfg.sym])));
   const symbols: ContextSymbolView[] = CONTEXT_SYMBOLS.map((cfg, i) => {
     const l = live?.symbols.find((s) => s.sym === cfg.sym);
     const rec = day.series[cfg.sym];
@@ -225,7 +262,7 @@ export async function loadContext(dateWanted: string | null, now = new Date()): 
       neg: l ? l.neg : last?.neg ?? null,
       expiration: l?.expiration ?? null,
       line: lines[i].length ? lines[i] : rec.map((p) => ({ t: p.t, v: p.price })),
-      magnets: rec,
+      magnets: mags[i],
     };
   });
   return {
