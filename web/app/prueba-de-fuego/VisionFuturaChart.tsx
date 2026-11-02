@@ -343,7 +343,7 @@ export default function VisionFuturaChart(rawProps: Props) {
   // Cruz de lectura (pasar el mouse por el precio o el VIX): hora + precio + VIX en ese momento.
   const [cross, setCross] = useState<number | null>(null);
   // Punto de operación inusual de MarketSnack elegido (click): tarjeta con el detalle.
-  const [dotSel, setDotSel] = useState<{ d: UnusualDot; cx: number; cy: number } | null>(null);
+  const [dotSel, setDotSel] = useState<{ d: UnusualDot & { px?: number }; cx: number; cy: number } | null>(null);
   useEffect(() => {
     if (!dotSel) return;
     const onDown = (e: MouseEvent) => {
@@ -1138,9 +1138,20 @@ export default function VisionFuturaChart(rawProps: Props) {
             </g>
           );
         })}
-        {/* Operaciones inusuales de MarketSnack: punto en la hora y el strike; tamaño = prima; color = dirección. */}
+        {/* Operaciones inusuales de MarketSnack: punto en la hora y SOBRE EL PRECIO de ese minuto (Carlos, 2-nov-2026:
+            "que salga en el momento que se da, encima del precio"; antes iba en la fila del strike del contrato y
+            las de strikes lejanos salían arriba/abajo de todo). El strike va en la tarjeta. Tamaño = prima; color = dirección. */}
         {layers.inusuales_ms && !props.nightSession && (() => {
-          const dots = unusualDots(props.unusualMs ?? []).filter((d) => d.time >= open && d.time <= close && inView(d.strike));
+          const allBars = props.candles ?? [];
+          const priceAtDot = (t: number): number | null => {
+            let r: CandleBar | null = null;
+            for (const b of allBars) { if (b.time <= t) r = b; else break; }
+            if (r && t - r.time < 120) return r.close;
+            return at(priceSeries, t) ?? (Number.isFinite(spot) ? spot : null);
+          };
+          const dots = unusualDots(props.unusualMs ?? [])
+            .map((d) => ({ ...d, px: priceAtDot(d.time) }))
+            .filter((d): d is UnusualDot & { px: number } => d.px != null && d.time >= open && d.time <= close && inView(d.px));
           if (!dots.length) return null;
           const maxP = Math.max(...dots.map((d) => d.premium), 1);
           return (
@@ -1152,11 +1163,11 @@ export default function VisionFuturaChart(rawProps: Props) {
                 const sel = dotSel?.d.id === d.id;
                 // Ya salieron (estimado): círculo vacío y tenue del color de su dirección; siguen dentro: bola llena.
                 return out ? (
-                  <circle key={d.id} data-vf-dot="" data-vf-dot-out="" cx={x(d.time)} cy={y(d.strike)} r={r} fill="transparent"
+                  <circle key={d.id} data-vf-dot="" data-vf-dot-out="" cx={x(d.time)} cy={y(d.px)} r={r} fill="transparent"
                     stroke={fill} strokeOpacity={sel ? 0.9 : 0.4} strokeWidth={sel ? 2 : 1.2} strokeDasharray={out.kind === "estimada" ? "2 2" : undefined}
                     style={{ cursor: "pointer" }} onClick={(e) => setDotSel(sel ? null : { d, cx: e.clientX, cy: e.clientY })} />
                 ) : (
-                  <circle key={d.id} data-vf-dot="" cx={x(d.time)} cy={y(d.strike)} r={r} fill={fill} fillOpacity={0.85}
+                  <circle key={d.id} data-vf-dot="" cx={x(d.time)} cy={y(d.px)} r={r} fill={fill} fillOpacity={0.85}
                     stroke={UNUSUAL} strokeWidth={sel ? 2.5 : 1.2} style={{ cursor: "pointer" }}
                     onClick={(e) => setDotSel(sel ? null : { d, cx: e.clientX, cy: e.clientY })} />
                 );
@@ -1181,6 +1192,7 @@ export default function VisionFuturaChart(rawProps: Props) {
             </div>
             <div style={{ color: "#f5f7fb", fontWeight: 700 }}>{d.type === "call" ? "CALL" : "PUT"} {n2(d.strike, 0)} · {d.size} contratos @ ${d.price.toFixed(2)}</div>
             <div>Prima <b style={{ color: "#f5f7fb" }}>${money(d.premium)}</b> · {side}</div>
+            {d.px != null && <div style={{ color: "#9aa5c0" }}>Precio en ese minuto {n2(d.px, 2)} · strike a {n2(Math.abs(d.strike - d.px), 1)} pts {d.strike >= d.px ? "arriba" : "abajo"}</div>}
             <div style={{ color }}>{d.dir ? `Apunta hacia ${d.dir.toUpperCase()}` : "Sin dirección clara (a mitad: puede ser spread o cruce)"}</div>
             {(() => {
               const out = props.unusualExits?.[d.id];
