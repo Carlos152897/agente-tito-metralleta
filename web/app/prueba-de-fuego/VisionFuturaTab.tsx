@@ -927,7 +927,8 @@ export default function VisionFuturaTab() {
           const list = [
             ...(view.backups ?? []),
             ...(candles?.source === "yahoo" ? ["Velas 1 min: Yahoo (tastytrade DXLink no respondió)"] : []),
-            ...(vol && vol.minutes.size === 0 && layers.volumen_delta ? ["Agresor: $ neto compras − ventas (sin volumen por contrato de tastytrade)"] : []),
+            ...(vol && vol.minutes.size === 0 && layers.volumen_delta ? ["Agresor: $ neto compras − ventas (sin volumen por contrato de tastytrade ni MarketSnack)"] : []),
+            ...(vol && vol.minutes.size > 0 && vol.source === "marketsnack" && layers.volumen_delta ? ["Volumen delta: MarketSnack en tramos de 5 min (tastytrade DXLink no respondió)"] : []),
           ];
           return list.length > 0 ? (
             <div style={{ fontSize: 12, color: "var(--amber-text)", border: "1px solid var(--amber)", borderRadius: 8, padding: "6px 10px" }}>
@@ -1136,7 +1137,7 @@ export default function VisionFuturaTab() {
               );
             })}
             <span style={{ fontSize: 11, color: "var(--faint)" }}>
-              {vol && vol.minutes.size === 0 ? "tastytrade no está mandando el volumen de cada contrato ahora mismo — el panel derecho muestra el $ neto (compras − ventas) mientras tanto" : vol ? `panel derecho en contratos reales · Δ = (calls compradas − vendidas) − (puts compradas − vendidas) · ◆ naranja = volumen delta inusual en 1 min (se queda 3 min) · click en un strike = minuto a minuto` : "cargando el volumen de cada contrato (la primera vez tarda ~10 s)…"}
+              {vol && vol.minutes.size === 0 ? "ni tastytrade ni MarketSnack están mandando el volumen de cada contrato ahora mismo — el panel derecho muestra el $ neto (compras − ventas) mientras tanto" : vol?.source === "marketsnack" ? "respaldo: volumen de cada contrato de MarketSnack en tramos de 5 min (tastytrade no responde) · Δ = (calls compradas − vendidas) − (puts compradas − vendidas) · ventanas menores a 5 min muestran el tramo en curso" : vol ? `panel derecho en contratos reales · Δ = (calls compradas − vendidas) − (puts compradas − vendidas) · ◆ naranja = volumen delta inusual en 1 min (se queda 3 min) · click en un strike = minuto a minuto` : "cargando el volumen de cada contrato (la primera vez tarda ~10 s)…"}
             </span>
           </div>
         )}
@@ -1187,6 +1188,14 @@ export default function VisionFuturaTab() {
               // Repetición: solo si es el mismo día que trae tastytrade; hasta el paso elegido.
               const volDate = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(vol.sessionOpen * 1000));
               if (tick && replay?.date !== volDate) return null;
+              const res = vol.resolutionSec;
+              if (res > 60) {
+                // Respaldo MarketSnack (tramos de 5 min): ventana mínima = el tramo, incluido el que va en curso.
+                const toT5 = (tick ? Math.floor(cursorSec / 60) * 60 : vol.asOfT) + 60;
+                const win = volWin == null ? null : Math.max(volWin, res);
+                const lbl = win == null ? "día" : win === res ? "tramo de 5 min (MarketSnack)" : `últ. ${VOL_WINDOWS.find((w) => w.sec === win)?.label ?? `${win / 60} min`} (MarketSnack)`;
+                return { rows: volDeltaRows(vol.minutes, toT5, win), minutes: vol.minutes, windowLabel: lbl, toT: toT5, spikes: [] };
+              }
               const toT = tick ? Math.floor(cursorSec / 60) * 60 : vol.asOfT;
               const label = VOL_WINDOWS.find((w) => w.sec === volWin)?.label ?? "1 min";
               return {

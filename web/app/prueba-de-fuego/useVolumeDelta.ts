@@ -12,6 +12,9 @@ export interface VolumeDeltaState {
   sessionOpen: number;
   asOfT: number;
   minutes: Map<number, StrikeMinute[]>;
+  /** tastytrade (1 min) o marketsnack (respaldo, tramos de 5 min). */
+  source: string;
+  resolutionSec: number;
 }
 
 export const VOL_WINDOWS: { sec: number | null; label: string }[] = [
@@ -48,7 +51,10 @@ export function useVolumeDelta(p: { inst: string; expiration: string | null; spo
         const res = await fetch(`/api/vision-futura/volumen?${qs}`, { cache: "no-store" });
         const j = await res.json();
         if (!alive || !res.ok || j.error) return;
-        const minutes = new Map<number, StrikeMinute[]>(full ? [] : [...(prev?.minutes ?? [])].map(([k, v]) => [k, [...v]]));
+        const source = String(j.source ?? "tastytrade");
+        // Cambió la fuente (tastytrade ↔ MarketSnack): no se mezclan, se arranca de cero.
+        const fresh = full || (prev != null && prev.source !== source);
+        const minutes = new Map<number, StrikeMinute[]>(fresh ? [] : [...(prev?.minutes ?? [])].map(([k, v]) => [k, [...v]]));
         for (const [k, rows] of Object.entries(j.strikes as Record<string, number[][]>)) {
           const strike = Number(k);
           const byT = new Map((minutes.get(strike) ?? []).map((m) => [m.t, m]));
@@ -56,7 +62,7 @@ export function useVolumeDelta(p: { inst: string; expiration: string | null; spo
           minutes.set(strike, [...byT.values()].sort((a, b) => a.t - b.t));
         }
         if (full) lastFull = Date.now();
-        setState({ key, sessionOpen: j.sessionOpen, asOfT: j.asOfT, minutes });
+        setState({ key, sessionOpen: j.sessionOpen, asOfT: j.asOfT, minutes, source, resolutionSec: Number(j.resolutionSec) || 60 });
       } catch { /* sin red: se reintenta en el próximo ciclo */ }
     };
     load();

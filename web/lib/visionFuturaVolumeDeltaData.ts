@@ -7,6 +7,7 @@
 import { DXLinkWebSocketClient } from "@dxfeed/dxlink-websocket-client";
 import { DXLinkFeed, FeedContract } from "@dxfeed/dxlink-feed";
 import { fetchQuoteToken, type NestedChainStrike } from "./tastytrade";
+import { fetchContractTradeSummary } from "./marketsnack";
 import { nestedFor } from "./visionFuturaData";
 import { instrumentOf } from "./visionFuturaInstruments";
 import { bareSymbol, strikeMinutes, type OptBar, type StrikeMinute } from "./visionFuturaVolumeDelta";
@@ -14,6 +15,40 @@ import { bareSymbol, strikeMinutes, type OptBar, type StrikeMinute } from "./vis
 /** Velas en memoria por símbolo de DXLink (".SPXW261029C7720"), por minuto. */
 const store = new Map<string, { bars: Map<number, OptBar>; pulledAt: number }>();
 const REPULL_MS = 15_000;
+/** Si DXLink no dio nada, no se le vuelve a esperar hasta esta hora (mientras, respaldo de MarketSnack). */
+let dxDownUntil = 0;
+const DX_RETRY_MS = 2 * 60_000;
+
+/**
+ * RESPALDO (Carlos, 2-nov-2026: "se supone que debe haber respaldo"): volumen al ask / bid por
+ * contrato de MarketSnack (`trade_summaries`), en tramos de 5 min. Cache 60 s por contrato.
+ */
+const MS_BUCKET_SEC = 300;
+const MS_CACHE_MS = 60_000;
+const msStore = new Map<string, { at: number; bars: OptBar[] }>();
+async function msBars(occ: string, open: number): Promise<OptBar[]> {
+  const c = msStore.get(occ);
+  if (c && Date.now() - c.at < MS_CACHE_MS) return c.bars;
+  const buckets = await fetchContractTradeSummary(occ);
+  const bars = buckets
+    .map((b) => ({ t: Math.floor(Date.parse(b.t) / 1000), a: b.ask_volume ?? 0, b: b.bid_volume ?? 0, v: (b.ask_volume ?? 0) + (b.bid_volume ?? 0) + (b.mid_volume ?? 0) }))
+    .filter((b) => Number.isFinite(b.t) && b.t * 1000 >= open);
+  msStore.set(occ, { at: Date.now(), bars });
+  return bars;
+}
+async function msStrikes(strikes: { k: number; callOcc: string; putOcc: string }[], open: number, fromT: number): Promise<Record<string, number[][]>> {
+  const out: Record<string, number[][]> = {};
+  const CONC = 8;
+  for (let i = 0; i < strikes.length; i += CONC) {
+    await Promise.all(strikes.slice(i, i + CONC).map(async (s) => {
+      const [c, p] = await Promise.all([msBars(s.callOcc, open).catch(() => []), msBars(s.putOcc, open).catch(() => [])]);
+      const mins = strikeMinutes(c.filter((b) => b.t >= fromT), p.filter((b) => b.t >= fromT));
+      if (mins.length) out[String(s.k)] = mins.map((m) => [m.t, m.cA, m.cB, m.cV, m.pA, m.pB, m.pV]);
+    }));
+  }
+  return out;
+}
+const occOf = (s: string | undefined | null) => (s ? s.replace(/\s+/g, "") : "");
 
 function nyParts(ms: number): { date: string; min: number; dow: number } {
   const d = new Date(ms);
@@ -96,6 +131,10 @@ export interface VolumeDeltaPayload {
   asOfT: number;
   /** Minutos por strike: [t, cA, cB, cV, pA, pB, pV] desde `since` (incremental). */
   strikes: Record<string, number[][]>;
+  /** De dónde salió: tastytrade (velas de 1 min) o MarketSnack (respaldo, tramos de 5 min). */
+  source?: "tastytrade" | "marketsnack";
+  /** Segundos que cubre cada fila de `strikes` (60 tastytrade, 300 MarketSnack). */
+  resolutionSec?: number;
 }
 
 const inflight = new Map<string, Promise<void>>();
@@ -111,7 +150,7 @@ export async function loadVolumeDelta(inst: string, expiration: string, spot: nu
   const now = Date.now();
   const open = sessionOpenMs(now);
   const strikes = exp.strikes
-    .map((s) => ({ k: Number(s["strike-price"]), call: streamerOf(s, "call"), put: streamerOf(s, "put") }))
+    .map((s) => ({ k: Number(s["strike-price"]), call: streamerOf(s, "call"), put: streamerOf(s, "put"), callOcc: occOf(s.call), putOcc: occOf(s.put) }))
     .filter((s) => Number.isFinite(s.k) && Math.abs(s.k - spot) <= radius && s.call && s.put);
 
   // Pide lo que falta: lo nunca pedido desde la apertura, el resto solo los últimos 3 min.
@@ -124,7 +163,7 @@ export async function loadVolumeDelta(inst: string, expiration: string, spot: nu
     }
   }
   const key = `${cfg.id}|${expiration}`;
-  if (reqs.length > 0) {
+  if (reqs.length > 0 && now >= dxDownUntil) {
     let p = inflight.get(key);
     if (!p) {
       p = pullMany(reqs).then((got) => {
@@ -135,7 +174,8 @@ export async function loadVolumeDelta(inst: string, expiration: string, spot: nu
           st.pulledAt = at;
           store.set(r.sym, st);
         }
-      }).finally(() => inflight.delete(key));
+        if (got.size === 0) dxDownUntil = at + DX_RETRY_MS;
+      }).catch(() => { dxDownUntil = Date.now() + DX_RETRY_MS; }).finally(() => inflight.delete(key));
       inflight.set(key, p);
     }
     await p;
@@ -148,5 +188,14 @@ export async function loadVolumeDelta(inst: string, expiration: string, spot: nu
     const mins: StrikeMinute[] = strikeMinutes(bars(s.call!), bars(s.put!));
     if (mins.length) out[String(s.k)] = mins.map((m) => [m.t, m.cA, m.cB, m.cV, m.pA, m.pB, m.pV]);
   }
-  return { inst: cfg.id, expiration, sessionOpen: open / 1000, asOfT: Math.floor(now / 60_000) * 60, strikes: out };
+  const asOfT = Math.floor(now / 60_000) * 60;
+  // tastytrade no dio nada (DXLink caído): respaldo de MarketSnack. 
+  if (Object.keys(out).length === 0 && now < dxDownUntil) {
+    // Siempre el día completo (está en caché 60 s): si el navegador venía de tastytrade, rearma todo.
+    const ms = await msStrikes(strikes.filter((s) => s.callOcc && s.putOcc), open, open / 1000).catch(() => ({}));
+    if (Object.keys(ms).length > 0) {
+      return { inst: cfg.id, expiration, sessionOpen: open / 1000, asOfT, strikes: ms, source: "marketsnack", resolutionSec: MS_BUCKET_SEC };
+    }
+  }
+  return { inst: cfg.id, expiration, sessionOpen: open / 1000, asOfT, strikes: out, source: "tastytrade", resolutionSec: 60 };
 }
