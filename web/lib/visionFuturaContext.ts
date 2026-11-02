@@ -105,7 +105,7 @@ export interface ContextPoint {
   /** true = reconstruido (no grabado en vivo): OI del día + gamma Black-Scholes al precio de ese minuto. */
   rebuilt?: boolean;
 }
-export interface TechPoint extends TechReading { t: number }
+export interface TechPoint extends TechReading { t: number; rebuilt?: boolean }
 
 /** Mete el punto en la serie: si ya hay uno del mismo minuto lo reemplaza (el minuto se cierra con el último). */
 export function upsertMinute<T extends { t: number }>(series: T[], p: T): T[] {
@@ -170,5 +170,53 @@ export function fillMagnets(
     out.push({ t, price: p.v, pos: m.pos, neg: m.neg, rebuilt: true });
   }
   return out.sort((a, b) => a.t - b.t);
+}
+
+export interface TechRebuildInput {
+  ticker: string;
+  /** Cierre de cada vela de 1 min del día. */
+  line: { t: number; v: number }[];
+  chain: RebuildContract[];
+  expCloseSec: number;
+}
+
+/**
+ * Vigía tecnológico reconstruido: en cada minuto sin grabación, el Imán + mayor a ±5% de cada
+ * empresa (gamma BS al precio de ese minuto) → conteo / balance / jalón de SPX y NDX. Lo grabado manda.
+ * Los minutos salen de la línea de la empresa con más velas.
+ */
+export function fillTech(recorded: Record<TechIndex, TechPoint[]>, inputs: TechRebuildInput[]): Record<TechIndex, TechPoint[]> {
+  const usable = inputs
+    .map((c) => ({ ...c, chain: c.chain.filter((x) => x.oi > 0 && x.iv > 0.01 && x.iv < 5) }))
+    .filter((c) => c.line.length > 0 && c.chain.length > 0);
+  if (usable.length === 0) return recorded;
+  const ref = usable.reduce((a, b) => (b.line.length > a.line.length ? b : a));
+  const minutes = ref.line.map((p) => Math.floor(p.t / 60) * 60);
+  const have: Record<TechIndex, Set<number>> = { SPX: new Set(recorded.SPX.map((p) => p.t)), NDX: new Set(recorded.NDX.map((p) => p.t)) };
+  const out: Record<TechIndex, TechPoint[]> = { SPX: [...recorded.SPX], NDX: [...recorded.NDX] };
+  const MIN_T = 15 * 60;
+  const idxPos = new Map(usable.map((c) => [c.ticker, 0]));
+  for (const t of minutes) {
+    if (have.SPX.has(t) && have.NDX.has(t)) continue;
+    const companies: TechCompany[] = [];
+    for (const c of usable) {
+      // Último cierre ≤ t de esa empresa (las líneas van ordenadas: se avanza un puntero).
+      let i = idxPos.get(c.ticker)!;
+      while (i + 1 < c.line.length && c.line[i + 1].t <= t + 59) i++;
+      idxPos.set(c.ticker, i);
+      const px = c.line[i].t <= t + 59 ? c.line[i].v : null;
+      if (!px) continue;
+      const T = Math.max(c.expCloseSec - t, MIN_T) / (365 * 86_400);
+      companies.push(techCompany(c.ticker, px, null, gexAt(c.chain, px, T), null));
+    }
+    for (const idx of ["SPX", "NDX"] as TechIndex[]) {
+      if (have[idx].has(t)) continue;
+      const rd = techReading(companies, idx);
+      if (rd) out[idx].push({ t, ...rd, rebuilt: true });
+    }
+  }
+  out.SPX.sort((a, b) => a.t - b.t);
+  out.NDX.sort((a, b) => a.t - b.t);
+  return out;
 }
 

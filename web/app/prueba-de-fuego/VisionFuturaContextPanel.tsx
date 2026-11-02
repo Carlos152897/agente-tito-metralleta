@@ -256,7 +256,9 @@ function TechWatch({ data, win, until, index, measure, setIndex, setMeasure }: {
 
   const val = (p: { count: number; balance: number; pull: number } | null) => (p ? p[measure] : null);
   const n = now?.n ?? 11;
-  const range = measure === "count" ? { lo: 0, hi: n, mid: n / 2 }
+  // La escala del conteo llega al máximo de empresas con lectura en el día (de mañana pueden ser más que ahora).
+  const nMax = Math.max(n, ...series.map((p) => p.n));
+  const range = measure === "count" ? { lo: 0, hi: nMax, mid: nMax / 2 }
     : measure === "balance" ? { lo: -100, hi: 100, mid: 0 }
     : (() => { const m = Math.max(1, ...series.map((p) => Math.abs(p.pull)), Math.abs(now?.pull ?? 0)); return { lo: -m, hi: m, mid: 0 }; })();
   const fmtVal = (v: number | null) => v == null ? "—" : measure === "count" ? `${v} de ${n}` : measure === "balance" ? `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(0)} %` : pct(v);
@@ -269,7 +271,8 @@ function TechWatch({ data, win, until, index, measure, setIndex, setMeasure }: {
   const step = span > 3 * 3600 ? 3600 : span > 3600 ? 1800 : 900;
   for (let t = Math.ceil(win.open / step) * step; t <= win.close; t += step) ticks.push(t);
   const v = val(now);
-  const frac = v == null ? 0.5 : (v - range.lo) / (range.hi - range.lo || 1);
+  // La barra de arriba es la lectura de ahora: sobre las empresas con lectura ahora (n), no el máximo del día.
+  const frac = v == null ? 0.5 : measure === "count" ? v / (n || 1) : (v - range.lo) / (range.hi - range.lo || 1);
 
   const explain: Record<Measure, string> = {
     count: `Conteo de imanes: cuántas de las ${n} empresas tienen su imán + mayor (su mayor gamma positiva a ±5 % del precio) ARRIBA del precio. Sin pesos: cada empresa cuenta igual.`,
@@ -304,6 +307,7 @@ function TechWatch({ data, win, until, index, measure, setIndex, setMeasure }: {
         </div>
       </div>
       {!hasThisMinute && <div style={{ fontSize: 11, color: "var(--muted)" }}>Sin lectura grabada en este minuto{live ? " (arriba: lectura en vivo)" : ""}.</div>}
+      {series.some((p) => p.rebuilt) && <div style={{ fontSize: 11, color: "var(--faint)" }}>Los minutos sin grabación se reconstruyen con el OI del día y la gamma al precio de cada empresa en ese minuto.</div>}
       <div ref={ref}>
         <svg width={W} height={H + 16} style={{ display: "block" }}>
           <defs>
@@ -313,7 +317,7 @@ function TechWatch({ data, win, until, index, measure, setIndex, setMeasure }: {
           <rect x={PADL} y={0} width={W - PADL - PADR} height={H} fill="rgba(255,255,255,0.02)" stroke={GRID} strokeWidth={0.6} />
           {ticks.map((t) => <line key={t} x1={x(t)} x2={x(t)} y1={0} y2={H} stroke={GRID} strokeWidth={0.5} />)}
           <line x1={PADL} x2={W - PADR} y1={y(range.mid)} y2={y(range.mid)} stroke="#6b7591" strokeDasharray="3 3" />
-          <text x={PADL - 4} y={10} fontSize={9} fill="#6b7591" textAnchor="end">{measure === "count" ? n : measure === "balance" ? "100" : range.hi.toFixed(1)}</text>
+          <text x={PADL - 4} y={10} fontSize={9} fill="#6b7591" textAnchor="end">{measure === "count" ? nMax : measure === "balance" ? "100" : range.hi.toFixed(1)}</text>
           <text x={PADL - 4} y={H - 2} fontSize={9} fill="#6b7591" textAnchor="end">{measure === "count" ? 0 : measure === "balance" ? "−100" : range.lo.toFixed(1)}</text>
           <path d={path} fill="none" stroke={UP} strokeWidth={1.6} clipPath={`url(#tw-up-${index})`} />
           <path d={path} fill="none" stroke={DOWN} strokeWidth={1.6} clipPath={`url(#tw-dn-${index})`} />

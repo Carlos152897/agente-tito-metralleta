@@ -15,7 +15,7 @@ import { fetchFutureCandles } from "./futuresCandles";
 import { fetchYahooCandles } from "./yahooCandles";
 import { isMarketOpen } from "./marketHours";
 import {
-  CONTEXT_SYMBOLS, TECH_TICKERS, fillMagnets, magnetsInBand, techCompany, techReading, upsertMinute,
+  CONTEXT_SYMBOLS, TECH_BAND, TECH_TICKERS, fillMagnets, fillTech, magnetsInBand, techCompany, techReading, upsertMinute,
   type ContextPoint, type ContextSymbol, type StrikeGex, type TechCompany, type TechIndex, type TechPoint,
 } from "./visionFuturaContext";
 
@@ -209,6 +209,26 @@ async function dayLine(sym: string, date: string): Promise<{ t: number; v: numbe
 /** 16:00 NY del día de vencimiento, en segundos. */
 const expCloseSec = (exp: string) => (openMs(exp) + 390 * 60_000) / 1000;
 
+/** Vigía tecnológico reconstruido para los minutos sin grabación (caché 60 s). */
+let techCache: { at: number; key: string; out: Record<TechIndex, TechPoint[]> } | null = null;
+async function techWithRebuilt(date: string, rec: Record<TechIndex, TechPoint[]>): Promise<Record<TechIndex, TechPoint[]>> {
+  const key = `${date}|${rec.SPX.length}|${rec.NDX.length}`;
+  if (techCache && techCache.key === key && Date.now() - techCache.at < 60_000) return techCache.out;
+  const inputs = await pool(TECH_TICKERS, 4, async (ticker) => {
+    const [line, ch] = await Promise.all([dayLine(ticker, date).catch(() => []), nearestChain(ticker, date)]);
+    if (!ch.exp || line.length === 0) return { ticker, line: [], chain: [], expCloseSec: 0 };
+    const lo = Math.min(...line.map((p) => p.v)) * (1 - TECH_BAND * 1.5);
+    const hi = Math.max(...line.map((p) => p.v)) * (1 + TECH_BAND * 1.5);
+    const chain = ch.c
+      .filter((c) => c.strike >= lo && c.strike <= hi && c.implied_volatility != null)
+      .map((c) => ({ strike: c.strike, type: c.type, oi: c.open_interest, iv: c.implied_volatility as number }));
+    return { ticker, line, chain, expCloseSec: expCloseSec(ch.exp) };
+  });
+  const out = fillTech(rec, inputs);
+  techCache = { at: Date.now(), key, out };
+  return out;
+}
+
 /** Imanes de los minutos sin grabación, reconstruidos con la cadena del día (caché 60 s por símbolo). */
 const rebuildCache = new Map<string, { at: number; key: string; out: ContextPoint[] }>();
 async function withRebuilt(sym: ContextSymbol, band: number, date: string, rec: ContextPoint[], line: { t: number; v: number }[]): Promise<ContextPoint[]> {
@@ -250,6 +270,7 @@ export async function loadContext(dateWanted: string | null, now = new Date()): 
     !dateWanted && date === today
       ? withRebuilt(cfg.sym, cfg.band, date, day.series[cfg.sym], lines[i]).catch(() => day.series[cfg.sym])
       : Promise.resolve(day.series[cfg.sym])));
+  const techSeries = !dateWanted && date === today ? await techWithRebuilt(date, day.tech).catch(() => day.tech) : day.tech;
   const symbols: ContextSymbolView[] = CONTEXT_SYMBOLS.map((cfg, i) => {
     const l = live?.symbols.find((s) => s.sym === cfg.sym);
     const rec = day.series[cfg.sym];
@@ -271,6 +292,6 @@ export async function loadContext(dateWanted: string | null, now = new Date()): 
     marketOpen: isMarketOpen(now),
     past: !!dateWanted,
     symbols,
-    tech: { companies: live?.companies ?? [], series: day.tech },
+    tech: { companies: live?.companies ?? [], series: techSeries },
   };
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fillMagnets, magnetsInBand, stepAt, techCompany, techReading, upsertMinute } from "./visionFuturaContext";
+import { fillMagnets, fillTech, magnetsInBand, stepAt, techCompany, techReading, upsertMinute } from "./visionFuturaContext";
 
 const gex = (pairs: [number, number][]) => new Map(pairs.map(([s, g]) => [s, { netGex: g }]));
 
@@ -63,5 +63,22 @@ describe("fillMagnets (imanes reconstruidos)", () => {
   it("sin cadena válida devuelve lo grabado tal cual", () => {
     const rec = [{ t: 60, price: 1, pos: null, neg: null }];
     expect(fillMagnets(rec, [{ t: 120, v: 1 }], [], 0.01, close)).toBe(rec);
+  });
+});
+
+describe("fillTech (Vigía reconstruido)", () => {
+  // Imán + muy arriba del precio para NVDA (call grande en 105) y abajo para AAPL (call grande en 95).
+  const close = 10_000 * 60;
+  const inputs = [
+    { ticker: "NVDA", line: [{ t: 60, v: 100 }, { t: 120, v: 100 }], chain: [{ strike: 103, type: "call" as const, oi: 9000, iv: 0.3 }], expCloseSec: close },
+    { ticker: "AAPL", line: [{ t: 60, v: 100 }, { t: 120, v: 100 }], chain: [{ strike: 97, type: "call" as const, oi: 9000, iv: 0.3 }], expCloseSec: close },
+  ];
+  it("arma conteo por minuto y respeta lo grabado", () => {
+    const rec = { SPX: [{ t: 120, count: 2, n: 2, balance: 100, pull: 1 }], NDX: [] };
+    const out = fillTech(rec, inputs);
+    expect(out.SPX.map((p) => p.t)).toEqual([60, 120]);
+    expect(out.SPX[0]).toMatchObject({ count: 1, n: 2, rebuilt: true });
+    expect(out.SPX[1]).toEqual(rec.SPX[0]);
+    expect(out.NDX).toHaveLength(2);
   });
 });
