@@ -18,8 +18,10 @@ import {
 } from "./visionFuturaInstruments";
 import { isMarketOpen } from "./marketHours";
 import { marketDateStr } from "./occ";
-import type { ExtendedChainContract } from "./spxLevels";
-import { loadNightVisionFutura } from "./visionFuturaNight";
+import type { ExtendedChainContract, GexStatsBucket } from "./spxLevels";
+import { loadNightVisionFutura, nightGexStats } from "./visionFuturaNight";
+import { fetchYahooCandles, fetchYahooQuote } from "./yahooCandles";
+import type { ZRow } from "./zerodteTypes";
 import { captureChainsForReplay } from "./visionFuturaReplay";
 import { captureMsDay, loadMsDay, type MsDay, type MsPressureSnap } from "./visionFuturaMsStore";
 import { withSingleLeg } from "./visionFuturaLegs";
@@ -89,6 +91,11 @@ export interface VisionFuturaPayload extends VisionFuturaReport {
     /** Inusuales que (estimado) ya salieron, por id (lib/visionFuturaUnusualExit.ts). */
     unusualExits?: Record<number, DotExit>;
   } | null;
+  /**
+   * Respaldos en uso en esta carga (Carlos, 2-nov-2026: "siempre que haya un fallo quiero que siempre
+   * haya respaldo"). Vacío = todo salió de la fuente normal.
+   */
+  backups: string[];
   /** Sección "Spreads": ideas de crédito/débito/iron condor con cotización real de tastytrade. */
   spreads: SpreadsReport | null;
   spreadsError: string | null;
@@ -160,6 +167,55 @@ async function futureQuote(product: string): Promise<{ symbol: string; price: nu
   return price != null ? { symbol: active.symbol, price } : null;
 }
 
+/**
+ * RESPALDO de la cadena de MarketSnack: cotizaciones reales de tastytrade (OI, volumen, griegos,
+ * bid/ask) del vencimiento a ±`range` del precio. Sin flujo al bid/ask (compras/ventas en 0).
+ */
+async function tastyChainContracts(chainSymbol: string, expiration: string, spot: number, range: number): Promise<ExtendedChainContract[]> {
+  const exp = (await nestedFor(chainSymbol)).find((e) => e["expiration-date"] === expiration);
+  if (!exp) return [];
+  const strikes = exp.strikes.filter((s) => Math.abs(Number(s["strike-price"]) - spot) <= range);
+  const quotes = await fetchOptionQuotesByType(strikes.flatMap((s) => [s.call, s.put]).filter(Boolean));
+  const n = (v: string | number | undefined | null) => (v != null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null);
+  const out: ExtendedChainContract[] = [];
+  for (const s of strikes) {
+    const strike = Number(s["strike-price"]);
+    for (const [type, sym] of [["call", s.call], ["put", s.put]] as const) {
+      const q = sym ? quotes.get(sym) : undefined;
+      if (!q) continue;
+      const bid = n(q.bid), ask = n(q.ask);
+      const mid = bid != null && ask != null && bid > 0 && ask > 0 ? (bid + ask) / 2 : null;
+      out.push({
+        symbol: sym, strike, type, expiration,
+        open_interest: n(q["open-interest"]) ?? 0, volume: n(q.volume) ?? 0, price: mid,
+        greeks: { delta: n(q.delta) ?? 0, gamma: n(q.gamma) ?? 0, theta: n(q.theta) ?? 0, vega: n(q.vega) ?? 0 },
+        implied_volatility: n(q.volatility),
+        premium_breakdown: { bid: 0, mid: 0, ask: 0 },
+      });
+    }
+  }
+  return out;
+}
+
+/** RESPALDO del GEX de MarketSnack: niveles propios con gamma × OI de la cadena (mismo método del modo noche). */
+function ownGexBucket(contracts: ExtendedChainContract[], spot: number, now: Date): GexStatsBucket | null {
+  const rows: ZRow[] = contracts.map((c) => ({
+    optionTicker: c.symbol, contractType: c.type, expiration: c.expiration, strike: c.strike,
+    openInterest: c.open_interest, volume: c.volume,
+    bid: c.premium_breakdown.bid || null, ask: c.premium_breakdown.ask || null,
+    greeks: { delta: c.greeks.delta, gamma: c.greeks.gamma, theta: c.greeks.theta, vega: c.greeks.vega, iv: c.implied_volatility },
+  }));
+  return nightGexStats(rows, spot, now);
+}
+
+/** Apertura de la sesión regular de hoy (9:30 NY) en ms. */
+function todayOpenMs(now: Date): number {
+  const date = marketDateStr(now);
+  const guess = Date.parse(`${date}T13:30:00Z`);
+  const hm = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(guess));
+  return hm === "09:30" ? guess : guess + 3_600_000;
+}
+
 /** IV ATM: promedio de la IV de call y put de los 2 strikes más cercanos al precio. */
 function atmIvOf(contracts: ExtendedChainContract[], spot: number): number | null {
   const strikes = [...new Set(contracts.map((c) => c.strike))].sort((a, b) => Math.abs(a - spot) - Math.abs(b - spot)).slice(0, 2);
@@ -193,9 +249,9 @@ export async function loadVisionFutura(
   const expirations = await expirationsFor(cfg, now).catch(() => [] as ExpirationChip[]);
   const expiration = expirations[Math.min(Math.max(0, expIndex), Math.max(0, expirations.length - 1))]?.date ?? marketDateStr(now);
 
-  const [spotMs, gexBuckets, contracts, etfPx, fut, vixQuote, chartMain, chartEtf, vixGexBuckets, mainTasty, spxRef, vixRef, chartVix] = await Promise.all([
+  const [spotMs, gexBuckets, contracts, etfPxRaw, futRaw, vixQuoteRaw, chartMain, chartEtf, vixGexBuckets, mainTasty, spxRefRaw, vixRefRaw, chartVix] = await Promise.all([
     fetchAssetPrice(cfg.msTicker).catch(() => null),
-    fetchGexStats(cfg.msTicker, { period: "1d" }),
+    fetchGexStats(cfg.msTicker, { period: "1d" }).catch(() => [] as GexStatsBucket[]),
     fetchOptionChainExtended(cfg.msTicker, expiration).catch(() => [] as ExtendedChainContract[]),
     cfg.etf ? fetchUnderlyingQuote(cfg.etf, false).catch(() => null) : Promise.resolve(null),
     cfg.future ? futureQuote(cfg.future).catch(() => null) : Promise.resolve(null),
@@ -211,12 +267,63 @@ export async function loadVisionFutura(
     fetchAssetPriceChart("VIX").catch(() => []),
   ]);
 
+  // ── Respaldos: cada dato que falte se busca en otra fuente (MarketSnack ↔ tastytrade ↔ Yahoo). ──
+  const backups: string[] = [];
+  const yq = (sym: string) => fetchYahooQuote(sym).catch(() => null);
+  let spot = (spotMs && spotMs > 0 ? spotMs : null) ?? (mainTasty && mainTasty > 0 ? mainTasty : null) ?? gexBuckets.at(-1)?.asset_price ?? null;
+  if (!spot || spot <= 0) {
+    spot = (await yq(cfg.main))?.last ?? null;
+    if (spot) backups.push("Precio: Yahoo (MarketSnack y tastytrade no respondieron)");
+  }
+  if (!spot || spot <= 0) throw new VisionFuturaError(`Sin precio en vivo para ${cfg.main} (MarketSnack, tastytrade y Yahoo fallaron).`);
+
+  if (contracts.length === 0) {
+    const tc = await tastyChainContracts(cfg.tastyChain, expiration, spot, spot * 0.06).catch(() => [] as ExtendedChainContract[]);
+    if (tc.length > 0) {
+      contracts.push(...tc);
+      backups.push("Cadena de opciones: tastytrade (MarketSnack no respondió; sin compras/ventas por strike)");
+    }
+  }
+  if (gexBuckets.length === 0 && contracts.length > 0) {
+    const own = ownGexBucket(contracts, spot, now);
+    if (own) {
+      gexBuckets.push(own);
+      backups.push("GEX / niveles: cálculo propio gamma × OI (MarketSnack no respondió)");
+    }
+  }
+
   // MarketSnack a veces deja `gamma_flip` en null en el bucket más reciente — se usa el último real.
   const latestBucket = gexBuckets.at(-1) ?? null;
   const lastFlip = [...gexBuckets].reverse().find((b) => b.gamma_flip != null)?.gamma_flip ?? null;
   const gexStats = latestBucket ? { ...latestBucket, gamma_flip: latestBucket.gamma_flip ?? lastFlip } : null;
-  const spot = (spotMs && spotMs > 0 ? spotMs : null) ?? (mainTasty && mainTasty > 0 ? mainTasty : null) ?? gexStats?.asset_price ?? null;
-  if (!spot || spot <= 0) throw new VisionFuturaError(`Sin precio en vivo para ${cfg.main}.`);
+
+  let etfPx = etfPxRaw;
+  if (cfg.etf && !(etfPx && etfPx > 0)) {
+    etfPx = (await yq(cfg.etf))?.last ?? null;
+    if (etfPx) backups.push(`${cfg.etf}: Yahoo`);
+  }
+  let fut = futRaw;
+  if (cfg.future && !fut) {
+    const q = await yq(`/${cfg.future}`);
+    if (q) {
+      fut = { symbol: `/${cfg.future}`, price: q.last };
+      backups.push(`/${cfg.future}: Yahoo (contrato continuo)`);
+    }
+  }
+  let vixQuote = vixQuoteRaw;
+  if (cfg.volIndex && !vixQuote) {
+    const q = await yq(cfg.volIndex);
+    if (q) {
+      vixQuote = { symbol: cfg.volIndex, last: q.last, prevClose: q.prevClose, dayHigh: null, dayLow: null };
+      backups.push(`${cfg.volIndex}: Yahoo`);
+    }
+  }
+  const spxRef = spxRefRaw ?? (cfg.id === "SPX" ? null : (await yq("SPX"))?.last ?? null);
+  let vixRef = vixRefRaw;
+  if (cfg.id !== "SPX" && !vixRef) {
+    const q = await yq("VIX");
+    if (q) vixRef = { symbol: "VIX", last: q.last, prevClose: q.prevClose, dayHigh: null, dayLow: null };
+  }
 
   const atmIv = atmIvOf(contracts, spot);
   const scale = scaleFor(cfg, spot, { spxSpot: spxRef, vix: vixRef?.last ?? null, atmIv });
@@ -251,6 +358,15 @@ export async function loadVisionFutura(
       ? chartMain.map((p) => ({ time: toSec(p.t), value: p.v }))
       : gexBuckets.map((b) => ({ time: toSec(b.t), value: b.asset_price }));
   }
+  if (rawPrice.length < 2) {
+    const open = todayOpenMs(now);
+    const bars = open <= now.getTime() ? await fetchYahooCandles(cfg.main, open, open + 390 * 60_000).catch(() => []) : [];
+    if (bars.length > 0) {
+      rawPrice = bars.map((b) => ({ time: b.time, value: b.close }));
+      priceSeriesApprox = false;
+      backups.push("Gráfica del día: Yahoo (MarketSnack no respondió)");
+    }
+  }
   // El /chart de un ETF trae también el pre/post-market de varios días: solo la última sesión.
   const lastDay = marketDateStr(new Date((rawPrice.at(-1)?.time ?? 0) * 1000));
   const priceSeries = rawPrice
@@ -262,7 +378,14 @@ export async function loadVisionFutura(
   if (isMarketOpen(now) && (!last || nowSec - last.time > 30)) priceSeries.push({ time: nowSec, value: spot });
   // Mini VIX: misma sesión que el precio + el último VIX en vivo con mercado abierto.
   const vixLast = cfg.volIndex === "VIX" ? vixQuote : vixRef;
-  const vixSeries = chartVix
+  let vixChart = chartVix;
+  if (vixChart.length === 0) {
+    const open = todayOpenMs(now);
+    const bars = open <= now.getTime() ? await fetchYahooCandles("VIX", open, open + 390 * 60_000).catch(() => []) : [];
+    vixChart = bars.map((b) => ({ t: new Date(b.time * 1000).toISOString(), v: b.close }));
+    if (bars.length > 0) backups.push("Mini gráfica VIX: Yahoo");
+  }
+  const vixSeries = vixChart
     .map((p) => ({ time: toSec(p.t), value: p.v }))
     .filter((p) => Number.isFinite(p.time) && Number.isFinite(p.value) && p.value > 0 && marketDateStr(new Date(p.time * 1000)) === lastDay)
     .sort((a, b) => a.time - b.time);
@@ -341,6 +464,7 @@ export async function loadVisionFutura(
     spreads,
     spreadsError,
     optionQuotes,
+    backups,
     asOf: now.toISOString(),
     gexAsOf: gexStats?.t ?? null,
     marketOpen: isMarketOpen(now),

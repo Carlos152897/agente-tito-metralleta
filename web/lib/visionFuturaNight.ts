@@ -24,6 +24,7 @@ import { marketDateStr } from "./occ";
 import { maxPainStrike, zeroDteGex } from "./zerodte";
 import { loadNativeFuture, nativeFresh } from "./futuresNative";
 import type { ExtendedChainContract, GexStatsBucket } from "./spxLevels";
+import { fetchYahooCandles } from "./yahooCandles";
 import type { ZRow } from "./zerodteTypes";
 import { fetchFutureCandles, fetchFutureFlowCandles } from "./futuresCandles";
 import { NIGHT_TUNING, type NightConfirm } from "./visionFuturaAlerts";
@@ -250,7 +251,13 @@ export async function loadNightVisionFutura(cfg: InstrumentConfig, now: Date, ra
 
   recordNightPrice(cfg.id, now.getTime(), spot);
   // Gráfica: cierres de las velas de 5 min + las muestras propias posteriores a la última vela.
-  const candles = await candlesP;
+  const backups: string[] = [];
+  let candles = await candlesP;
+  if (candles.length === 0) {
+    // Respaldo (DXLink caído): velas de 1 min del futuro continuo en Yahoo (ES=F / NQ=F).
+    candles = await fetchYahooCandles(`/${night.product}`, sessionStartMs(now), now.getTime() + 60_000).catch(() => []);
+    if (candles.length > 0) backups.push(`Gráfica: Yahoo /${night.product} continuo (tastytrade DXLink no respondió)`);
+  }
   const { confirm: nightConfirm, bars: nightBars } = await nightConfirmFor(night.product, now).catch(() => ({ confirm: null, bars: [] }));
   const lastCandle = candles.at(-1)?.time ?? 0;
   const priceSeries = [
@@ -285,6 +292,7 @@ export async function loadNightVisionFutura(cfg: InstrumentConfig, now: Date, ra
   return {
     ...report,
     resumen,
+    backups,
     instrument: cfg.id,
     labels: labelsOf(cfg, futSymbol),
     scale,

@@ -115,6 +115,8 @@ interface VisionData extends VisionFuturaReport {
   marketSnack?: { premium: MsPremiumMinute[]; unusual: MsUnusualTrade[]; unusualExits?: Record<number, DotExit> } | null;
   spreads?: SpreadsReport | null;
   spreadsError?: string | null;
+  /** Respaldos en uso (fuente normal caída). */
+  backups?: string[];
   alerts: AlertView[];
   watch: VisionAlert[];
   lottos?: LottoLive;
@@ -344,7 +346,7 @@ export default function VisionFuturaTab() {
   const [live, setLive] = useState<LiveQuote | null>(null);
   const [livePoints, setLivePoints] = useState<{ time: number; value: number }[]>([]);
   // Velas de 1 min (tastytrade): se piden cada CANDLES_MS y la última se mueve con el precio en vivo.
-  const [candles, setCandles] = useState<{ key: string; bars: CandleBar[] } | null>(null);
+  const [candles, setCandles] = useState<{ key: string; bars: CandleBar[]; source?: string } | null>(null);
   const [levelChanges, setLevelChanges] = useState<LevelChange[]>([]);
   const prevLevelsRef = useRef<Map<string, number> | null>(null);
   const [, setTick] = useState(0); // para que "hace Xs" avance solo
@@ -564,7 +566,7 @@ export default function VisionFuturaTab() {
         const res = await fetch(`/api/vision-futura/candles?${qs}`, { cache: "no-store" });
         const json = await res.json();
         if (stop || !res.ok || json.error || !Array.isArray(json.candles)) return;
-        setCandles({ key, bars: json.candles });
+        setCandles({ key, bars: json.candles, source: json.source });
       } catch { /* el próximo intento lo reintenta */ }
     };
     pull(true);
@@ -920,6 +922,19 @@ export default function VisionFuturaTab() {
           </div>
         </div>
         {error && !tick && <div style={{ fontSize: 12, color: "var(--amber-text)" }}>Último refresco falló: {error} (mostrando datos anteriores)</div>}
+        {!tick && (() => {
+          // Respaldos activos (Carlos, 2-nov-2026: "siempre que haya un fallo quiero que siempre haya respaldo").
+          const list = [
+            ...(view.backups ?? []),
+            ...(candles?.source === "yahoo" ? ["Velas 1 min: Yahoo (tastytrade DXLink no respondió)"] : []),
+            ...(vol && vol.minutes.size === 0 && layers.volumen_delta ? ["Agresor: $ neto compras − ventas (sin volumen por contrato de tastytrade)"] : []),
+          ];
+          return list.length > 0 ? (
+            <div style={{ fontSize: 12, color: "var(--amber-text)", border: "1px solid var(--amber)", borderRadius: 8, padding: "6px 10px" }}>
+              🛟 Respaldo activo: {list.join(" · ")}
+            </div>
+          ) : null;
+        })()}
         {!tick && <div style={{ fontSize: 12, color: "var(--muted)", display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
           <span style={{ width: 8, height: 8, borderRadius: 999, background: liveAgo != null && liveAgo <= 10 ? "var(--green)" : "var(--amber)" }} />
           Precio en vivo (tastytrade): {liveAgo == null ? "conectando…" : `hace ${liveAgo} s`} · cada {view.marketOpen ? "3" : "15"} s
@@ -1121,7 +1136,7 @@ export default function VisionFuturaTab() {
               );
             })}
             <span style={{ fontSize: 11, color: "var(--faint)" }}>
-              {vol ? `panel derecho en contratos reales · Δ = (calls compradas − vendidas) − (puts compradas − vendidas) · ◆ naranja = volumen delta inusual en 1 min (se queda 3 min) · click en un strike = minuto a minuto` : "cargando el volumen de cada contrato (la primera vez tarda ~10 s)…"}
+              {vol && vol.minutes.size === 0 ? "tastytrade no está mandando el volumen de cada contrato ahora mismo — el panel derecho muestra el $ neto (compras − ventas) mientras tanto" : vol ? `panel derecho en contratos reales · Δ = (calls compradas − vendidas) − (puts compradas − vendidas) · ◆ naranja = volumen delta inusual en 1 min (se queda 3 min) · click en un strike = minuto a minuto` : "cargando el volumen de cada contrato (la primera vez tarda ~10 s)…"}
             </span>
           </div>
         )}
@@ -1167,7 +1182,8 @@ export default function VisionFuturaTab() {
             positions={positionsView}
             flowMagnets={flowMagnets}
             volDelta={(() => {
-              if (!vol || !layers.volumen_delta) return null;
+              // Sin volumen por contrato (tastytrade no lo manda): el panel cae al $ neto compras − ventas.
+              if (!vol || vol.minutes.size === 0 || !layers.volumen_delta) return null;
               // Repetición: solo si es el mismo día que trae tastytrade; hasta el paso elegido.
               const volDate = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(vol.sessionOpen * 1000));
               if (tick && replay?.date !== volDate) return null;

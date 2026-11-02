@@ -8,6 +8,7 @@
 // El navegador la pide cada ~20 s y mueve la última vela con el precio en vivo entre pedidos.
 
 import { fetchFutureCandles, type Candle } from "@/lib/futuresCandles";
+import { fetchYahooCandles } from "@/lib/yahooCandles";
 import { instrumentOf } from "@/lib/visionFuturaInstruments";
 import { activeStreamerSymbol, sessionStartMs } from "@/lib/visionFuturaNight";
 
@@ -17,11 +18,26 @@ export const dynamic = "force-dynamic";
 const LIVE_CACHE_MS = 15_000;
 const CLOSED_CACHE_MS = 10 * 60_000;
 const cache = new Map<string, { at: number; ttl: number; body: CandlesResponse }>();
+/** Si DXLink (tastytrade) no dio velas cuando debía, no se le vuelve a esperar (~10 s) hasta esta hora. */
+let dxDownUntil = 0;
+const DX_RETRY_MS = 2 * 60_000;
+
+/** Velas de tastytrade y, si no llegan, de Yahoo (respaldo, 2-nov-2026: DXLink devolvía 502). */
+async function candlesWithFallback(sym: string, fromMs: number, toMs: number, now: number): Promise<{ bars: Candle[]; source: "tastytrade" | "yahoo" }> {
+  if (now >= dxDownUntil) {
+    const dx = (await fetchFutureCandles(sym, fromMs, "1m", 10_000, LIVE_CACHE_MS)).filter((b) => b.time * 1000 < toMs);
+    if (dx.length > 0) return { bars: dx, source: "tastytrade" };
+    dxDownUntil = now + DX_RETRY_MS;
+  }
+  return { bars: await fetchYahooCandles(sym, fromMs, toMs, LIVE_CACHE_MS), source: "yahoo" };
+}
 
 interface CandlesResponse {
   instrument: string;
   date: string | null;
   symbol: string;
+  /** De dónde salieron las velas: tastytrade (DXLink) o Yahoo (respaldo). */
+  source?: "tastytrade" | "yahoo";
   candles: Pick<Candle, "time" | "open" | "high" | "low" | "close">[];
 }
 
@@ -63,25 +79,27 @@ export async function GET(req: Request) {
     if (cfg.night) {
       const sym = await activeStreamerSymbol(cfg.night.product);
       if (!sym) return Response.json({ error: `tastytrade no devolvió el futuro activo de /${cfg.night.product}.` }, { status: 502 });
-      const bars = await fetchFutureCandles(sym, sessionStartMs(new Date(now)), "1m", 10_000, LIVE_CACHE_MS);
-      body = { instrument: cfg.id, date: null, symbol: sym, candles: slim(bars) };
+      const got = await candlesWithFallback(sym, sessionStartMs(new Date(now)), now + 60_000, now);
+      body = { instrument: cfg.id, date: null, symbol: sym, source: got.source, candles: slim(got.bars) };
     } else {
       const sym = cfg.tastyMain.index ?? cfg.tastyMain.equity ?? cfg.main;
       // Sesión pedida, o la de hoy; si no tiene velas (fin de semana, antes de abrir), la anterior.
       let date = wanted ?? nyParts(now).date;
       let bars: Candle[] = [];
+      let source: CandlesResponse["source"];
       for (let i = 0; i < (wanted ? 1 : 5); i++) {
         const from = openMs(date);
         if (from <= now) {
-          const all = await fetchFutureCandles(sym, from, "1m", 10_000, LIVE_CACHE_MS);
-          bars = all.filter((b) => b.time * 1000 < from + 390 * 60_000);
+          const got = await candlesWithFallback(sym, from, from + 390 * 60_000, now);
+          bars = got.bars;
+          source = got.source;
           if (bars.length > 0) break;
         }
         date = prevDay(date);
       }
       const sessionDone = now >= openMs(date) + 390 * 60_000;
       if (sessionDone) ttl = CLOSED_CACHE_MS;
-      body = { instrument: cfg.id, date, symbol: sym, candles: slim(bars) };
+      body = { instrument: cfg.id, date, symbol: sym, source, candles: slim(bars) };
     }
     if (body.candles.length > 0) cache.set(key, { at: now, ttl, body });
     return Response.json(body);
