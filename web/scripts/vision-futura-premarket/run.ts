@@ -30,7 +30,7 @@ function log(msg: string) {
 async function main() {
   const { loadPremarket } = await import("../../lib/visionFuturaPremarketData");
   let fallas = 0;
-  for (const inst of ["SPX", "NQ", "TSLA"]) {
+  for (const inst of ["SPX", "SPY", "NQ", "QQQ", "TSLA"]) {
     try {
       const p = await loadPremarket(inst, new Date(), { force: true });
       const r = p.day?.report;

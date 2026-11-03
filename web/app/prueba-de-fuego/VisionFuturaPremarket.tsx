@@ -26,7 +26,7 @@ const MARK_COLOR: Record<PremarketMark["kind"], string> = {
 const KEY_OPEN = "visionary.visionFutura.premarketOpen";
 
 interface Props {
-  inst: "SPX" | "NQ" | "TSLA";
+  inst: "SPX" | "SPY" | "NQ" | "QQQ" | "TSLA";
   /** Precio en vivo del instrumento (para ubicarlo dentro del rango durante la sesión). */
   livePrice: number | null;
   marketOpen: boolean;
@@ -73,7 +73,7 @@ export default function VisionFuturaPremarket({ inst, livePrice, marketOpen, fut
   // En sesión manda el pronóstico congelado antes de la apertura.
   const r: PremarketReport | null = day ? (inSession ? day.frozen ?? day.report : day.report) : null;
   const price = inSession && marketOpen && livePrice ? livePrice : r?.spot ?? null;
-  const fmt = (v: number | null | undefined, d = inst === "TSLA" ? 2 : 0) =>
+  const fmt = (v: number | null | undefined, d = inst === "TSLA" || inst === "SPY" || inst === "QQQ" ? 2 : 0) =>
     v == null || !Number.isFinite(v) ? "—" : v.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
   const fut = (v: number) => (r?.futBasis != null && futLabel ? ` · ${futLabel} ${fmt(v + r.futBasis)}` : "");
 
@@ -104,7 +104,7 @@ export default function VisionFuturaPremarket({ inst, livePrice, marketOpen, fut
                   sub={inSession && marketOpen ? `abrió con gap ${signed(r.gap)} pts` : `${signed(r.gap)} pts (${r.gapPct > 0 ? "+" : ""}${r.gapPct}%) vs cierre ${fmt(r.prevClose, 2)}`}
                   color={r.gap > 0 ? UP : r.gap < 0 ? DOWN : undefined}
                 />
-                <Stat label="Movimiento esperado" value={`±${fmt(r.sigma, inst === "TSLA" ? 2 : 1)}`} sub={r.sigmaSource} />
+                <Stat label="Movimiento esperado" value={`±${fmt(r.sigma, inst === "TSLA" || inst === "SPY" || inst === "QQQ" ? 2 : 1)}`} sub={r.sigmaSource} />
                 <Stat
                   label="Rango probable"
                   value={`${fmt(r.range.low)} – ${fmt(r.range.high)}`}

@@ -19,7 +19,7 @@ import VisionFuturaTickerSearch from "./VisionFuturaTickerSearch";
 import VisionFuturaHybrid from "./VisionFuturaHybrid";
 import { orderResultsFromPrices } from "@/lib/visionFuturaAlertOutcome";
 import { hybridFromReplay, type HybridDay } from "@/lib/visionFuturaHybrid";
-import { isEquityTicker } from "@/lib/visionFuturaInstruments";
+import { instrumentOf, isEquityTicker } from "@/lib/visionFuturaInstruments";
 import { historyAt, positionsFromTicks, type PosHistory } from "@/lib/visionFuturaPositioning";
 import { DEFAULT_LABELS, FutureFirstContext, VisionLabelsContext, useVisionLabels } from "./visionLabels";
 import type { InstrumentId, InstrumentLabels } from "@/lib/visionFuturaInstruments";
@@ -36,7 +36,7 @@ import VisionFuturaPremarketZones, { usePremarketZones } from "./VisionFuturaPre
 import { useVolumeDelta, VOL_WINDOWS } from "./useVolumeDelta";
 import { detectVolumeSpikes, volDeltaRows } from "@/lib/visionFuturaVolumeDelta";
 import { gridStepFor, nativeStep } from "@/lib/visionFuturaGrid";
-import { FLOW_MAGNET_TUNING, flowMagnetHistory, flowMagnetsAt } from "@/lib/visionFuturaFlowMagnets";
+import { FLOW_MAGNET_TUNING, SOFIA_MAGNET_TUNING, flowMagnetHistory, flowMagnetsAt } from "@/lib/visionFuturaFlowMagnets";
 import VisionFuturaChart, { DEFAULT_LAYERS, LAYERS, type CandleBar, type HistoryPoint, type LayerKey, type VixStrip } from "./VisionFuturaChart";
 import type { ConvertedLevel, DealerLevel, KeyLevel, KeyLevelKind, VisionFuturaReport, VisionStrikeRow } from "@/lib/visionFutura";
 
@@ -293,9 +293,10 @@ function FragmentRow({ showSpot, spot, children }: { showSpot: boolean; spot: nu
 }
 
 const INSTRUMENT_OPTIONS: { id: InstrumentId; label: string; sub: string }[] = [
-  { id: "SPX", label: "SPX", sub: "SPY · /ES" },
-  { id: "NQ", label: "NQ", sub: "NDX · QQQ · /NQ" },
-  { id: "TSLA", label: "TSLA", sub: "acción" },
+  { id: "SPX", label: "SPX", sub: "/ES" },
+  { id: "SPY", label: "SPY", sub: "ETF · 0DTE" },
+  { id: "NQ", label: "NQ", sub: "NDX · /NQ" },
+  { id: "QQQ", label: "QQQ", sub: "ETF · 0DTE" },
   { id: "ESN", label: "🌙 /ES", sub: "noche · opciones CME" },
   { id: "NQN", label: "🌙 /NQ", sub: "noche · opciones CME" },
 ];
@@ -316,7 +317,7 @@ function expLabel(date: string, dte: number): string {
 export default function VisionFuturaTab() {
   const [radius, setRadius] = useState<number>(60);
   const [inst, setInst] = useState<InstrumentId>("SPX");
-  const [recientes, setRecientes] = useState<string[]>([]);
+  const [recientes, setRecientes] = useState<string[]>(["TSLA"]);
   const [expIdx, setExpIdx] = useState(0);
   // Lo elegido AHORA: una respuesta que llega tarde de otro instrumento/vencimiento se descarta.
   const paramsRef = useRef("");
@@ -378,7 +379,12 @@ export default function VisionFuturaTab() {
       const savedInst = window.localStorage.getItem(KEY_INST);
       if (savedInst && (isFixedInst(savedInst) || isEquityTicker(savedInst))) setInst(savedInst as InstrumentId);
       const savedRecent = JSON.parse(window.localStorage.getItem(KEY_RECENT) ?? "[]");
-      if (Array.isArray(savedRecent)) setRecientes(savedRecent.filter((x): x is string => typeof x === "string" && isEquityTicker(x)).slice(0, 6));
+      // TSLA ya no tiene botón (Carlos, 3-nov-2026: "sácame TSLA, tenemos la barra de buscar acción"):
+      // queda siempre entre los recientes para abrirla con un click.
+      if (Array.isArray(savedRecent)) {
+        const rec = savedRecent.filter((x): x is string => typeof x === "string" && isEquityTicker(x));
+        setRecientes((rec.includes("TSLA") ? rec : ["TSLA", ...rec]).slice(0, 6));
+      }
       const savedLayers = JSON.parse(window.localStorage.getItem(KEY_LAYERS) ?? "null");
       if (savedLayers && typeof savedLayers === "object") setLayers({ ...DEFAULT_LAYERS, ...savedLayers });
       const savedZoom = Number(window.localStorage.getItem(KEY_ZOOM));
@@ -680,7 +686,7 @@ export default function VisionFuturaTab() {
     expiration: mode === "repeticion" && replay ? replay.expiration || replay.date : data?.expiration ?? null,
     spot: data?.spot.spx ?? null,
     radius: mode === "repeticion" && replay ? replay.radius : data?.radius ?? null,
-    enabled: ((layers.volumen_delta && layers.agresor) || layers.iman_flujo) && !NIGHT_IDS.includes(inst),
+    enabled: ((layers.volumen_delta && layers.agresor) || layers.iman_flujo || layers.imanes_sofia) && !NIGHT_IDS.includes(inst),
   });
 
   if (loading && !data) return <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-md)" }}>{instrumentBar}<div className="card wheel-empty">Cargando VisionFutura · {inst}…</div></div>;
@@ -851,13 +857,15 @@ export default function VisionFuturaTab() {
   const step = (tick ? replay?.strikeStep : data.strikeStep) ?? 5;
   const windowFor = (r: number) => (isSpx || inst === "ESN" ? r : (r <= 30 ? 10 : r <= 60 ? 20 : 30) * step);
 
-  // Imanes por FLUJO (últimos 15 min, ±70 pts × escala) y dónde estuvieron en el día.
-  const flowMagnets = (() => {
-    if (!vol || !layers.iman_flujo || isNightInst) return null;
+  // Imanes por FLUJO (últimos 15 min, ±70 pts × escala) y dónde estuvieron en el día. El mismo cálculo
+  // con 1 min y ±75 pts = modelo "imanesSofia" (copia del imán de la app SofIA).
+  const magnetsFor = (on: boolean, tune: { windowSec: number; radiusPts: number; minContracts: number }, windowLabel: string) => {
+    if (!vol || !on || isNightInst) return null;
     const volDate = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(vol.sessionOpen * 1000));
     if (tick && replay?.date !== volDate) return null;
     const toT = tick ? Math.floor(cursorSec / 60) * 60 : vol.asOfT;
-    const radius = FLOW_MAGNET_TUNING.radiusPts * scale;
+    const radius = tune.radiusPts * scale;
+    const o = { radius, windowSec: tune.windowSec, minContracts: tune.minContracts };
     const closes = new Map(chartCandles.map((b) => [b.time, b.close]));
     let lastClose: number | null = null;
     const spotAt = (t: number) => {
@@ -865,15 +873,17 @@ export default function VisionFuturaTab() {
       if (c != null) lastClose = c;
       return lastClose ?? (closes.size === 0 ? view.spot.spx : null);
     };
-    const history = flowMagnetHistory(vol.minutes, vol.sessionOpen, toT, spotAt, { radius });
+    const history = flowMagnetHistory(vol.minutes, vol.sessionOpen, toT, spotAt, o);
     // Mismo precio que el último minuto del historial (cierre de la vela), para que no se contradigan.
     const spotNow = closes.get(toT - 60) ?? view.spot.spx;
     return {
-      now: flowMagnetsAt(vol.minutes, toT, spotNow, { radius }),
+      now: flowMagnetsAt(vol.minutes, toT, spotNow, o),
       history,
-      windowLabel: "15 min",
+      windowLabel,
     };
-  })();
+  };
+  const flowMagnets = magnetsFor(layers.iman_flujo, FLOW_MAGNET_TUNING, "15 min");
+  const sofiaMagnets = magnetsFor(layers.imanes_sofia, SOFIA_MAGNET_TUNING, "1 min");
 
   return (
     <VisionLabelsContext.Provider value={labels}>
@@ -974,8 +984,8 @@ export default function VisionFuturaTab() {
       </div>
 
       {/* Pre-mercado: rango probable del día y posiciones importantes (no en repetición ni de noche). */}
-      {!tick && (inst === "SPX" || inst === "NQ" || inst === "TSLA") && (
-        <VisionFuturaPremarket inst={inst as "SPX" | "NQ" | "TSLA"} livePrice={view.spot.spx} marketOpen={view.marketOpen} futLabel={labels.future} />
+      {!tick && (inst === "SPX" || inst === "SPY" || inst === "NQ" || inst === "QQQ" || inst === "TSLA") && (
+        <VisionFuturaPremarket inst={inst as "SPX" | "SPY" | "NQ" | "QQQ" | "TSLA"} livePrice={view.spot.spx} marketOpen={view.marketOpen} futLabel={labels.future} />
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 460px), 1fr))", gap: "var(--space-md)" }}>
@@ -1154,7 +1164,7 @@ export default function VisionFuturaTab() {
         )}
         {layers.premarket && !isNightInst && <VisionFuturaPremarketZones report={pmReport} spot={view.spot.spx} date={pmDate} main={labels.main} />}
         {!tick && data.priceSeriesApprox && chartCandles.length === 0 && (
-          <div style={{ fontSize: 12, color: "var(--amber-text)" }}>La línea de precio de hoy sale de {labels.etf} convertido a {labels.main} (MarketSnack no tiene la gráfica intradía del índice); el punto en vivo es el {labels.main} real.</div>
+          <div style={{ fontSize: 12, color: "var(--amber-text)" }}>La línea de precio de hoy sale de {instrumentOf(inst).chartEtf ?? labels.etf} convertido a {labels.main} (MarketSnack no tiene la gráfica intradía del índice); el punto en vivo es el {labels.main} real.</div>
         )}
         {view.rows.length === 0 ? (
           <div className="wheel-empty">{levelsSrc} no devolvió contratos para {view.expiration}.</div>
@@ -1182,6 +1192,7 @@ export default function VisionFuturaTab() {
             unusualExits={tick ? replayUnusualExits : data.marketSnack?.unusualExits ?? null}
             positions={positionsView}
             flowMagnets={flowMagnets}
+            sofiaMagnets={sofiaMagnets}
             volDelta={(() => {
               // Sin volumen por contrato (tastytrade no lo manda): el panel cae al $ neto compras − ventas.
               if (!vol || vol.minutes.size === 0 || !layers.volumen_delta) return null;
@@ -1254,7 +1265,7 @@ export default function VisionFuturaTab() {
         conv={(x) => ({ spy: spyRatio != null ? x * spyRatio : null, es: esBasis != null ? x + esBasis : null })}
         etfLabel={labels.etf}
         futLabel={labels.future}
-        mult={inst === "NQ" ? { big: 20, bigLabel: "$ por 1 /NQ" } : inst === "TSLA" ? { big: 100, bigLabel: "$ por 100 acciones" } : { big: 50, bigLabel: "$ por 1 /ES" }}
+        mult={inst === "NQ" ? { big: 20, bigLabel: "$ por 1 /NQ" } : inst === "SPX" || inst === "ESN" ? { big: 50, bigLabel: "$ por 1 /ES" } : { big: 100, bigLabel: "$ por 100 acciones" }}
       />
 
       <VisionFuturaAlerts alerts={alertsWithResults} watch={view.watch ?? []} marketOpen={view.marketOpen} />

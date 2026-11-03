@@ -63,7 +63,7 @@ async function main() {
     const today = marketDateStr(now);
     const dow = new Date(`${today}T12:00:00Z`).getUTCDay();
     if (dow >= 1 && dow <= 5) {
-      for (const inst of ["SPX", "NQ", "TSLA"]) {
+      for (const inst of ["SPX", "SPY", "NQ", "QQQ", "TSLA"]) {
         try {
           const cfg = instrumentOf(inst);
           const exp = loadMsDay(inst, today)?.expiration ?? (await nearestExpirationFrom(inst, today));
@@ -80,7 +80,7 @@ async function main() {
     }
   }
 
-  for (const inst of ["SPX", "NQ", "TSLA"]) {
+  for (const inst of ["SPX", "SPY", "NQ", "QQQ", "TSLA"]) {
     try {
       const replay = await buildReplay(now, { inst });
       if (replay.partial) {

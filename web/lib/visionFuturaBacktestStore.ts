@@ -85,6 +85,8 @@ const FONT = { name: "Arial", size: 10 };
 const MULTS = [
   { row: 2, inst: "SPX", big: 50, micro: 5, desc: "/ES $50 y /MES $5 por punto (CME)", bigLabel: "$ por 1 /ES", microLabel: "$ por 1 /MES" },
   { row: 3, inst: "NQ", big: 20, micro: 2, desc: "/NQ $20 y /MNQ $2 por punto (CME)", bigLabel: "$ por 1 /NQ", microLabel: "$ por 1 /MNQ" },
+  { row: 5, inst: "SPY", big: 100, micro: 10, desc: "100 y 10 acciones de SPY ($ por $1 de movimiento)", bigLabel: "$ por 100 acciones", microLabel: "$ por 10 acciones" },
+  { row: 6, inst: "QQQ", big: 100, micro: 10, desc: "100 y 10 acciones de QQQ ($ por $1 de movimiento)", bigLabel: "$ por 100 acciones", microLabel: "$ por 10 acciones" },
   { row: 4, inst: "TSLA", big: 100, micro: 10, desc: "100 y 10 acciones de TSLA ($ por $1 de movimiento)", bigLabel: "$ por 100 acciones", microLabel: "$ por 10 acciones" },
 ];
 const multOf = (inst?: string) => MULTS.find((m) => m.inst === (inst ?? "SPX")) ?? MULTS[0];
@@ -103,8 +105,8 @@ export async function buildBacktestWorkbook(): Promise<Buffer> {
   wb.calcProperties.fullCalcOnLoad = true;
 
   // ── Resumen ──
-  const res = wb.addWorksheet("Resumen", { views: [{ state: "frozen", ySplit: 6 }] });
-  res.getCell("A1").value = "VisionFutura — Backtest diario (SPX, NQ, TSLA · alertas de pantalla)";
+  const res = wb.addWorksheet("Resumen", { views: [{ state: "frozen", ySplit: 7 }] });
+  res.getCell("A1").value = "VisionFutura — Backtest diario (SPX, SPY, NQ, QQQ, TSLA · alertas de pantalla)";
   res.getCell("A1").font = { name: "Arial", size: 14, bold: true };
   // Multiplicadores por instrumento ($ por punto), editables: cada fila usa el de su instrumento.
   for (const m of MULTS) {
@@ -120,11 +122,11 @@ export async function buildBacktestWorkbook(): Promise<Buffer> {
 
   const headers = ["Fecha", "Entradas", "Ganadas", "Perdidas", "% acierto", "Puntos (del instrumento)", "$ contrato grande", "$ contrato micro", "Mejor (pts)", "Peor (pts)",
     "Spreads", "Spreads ganados", "Spreads perdidos", "Resultado spreads ($)", "Instrumento", "Lottos", "Lottos ganados", "Resultado lottos ($)", "Señales del dinero", "Señales ganadas", "Puntos señales", "$ señales (contrato grande)"];
-  res.getRow(6).values = headers;
-  res.getRow(6).eachCell((c) => { c.font = HEAD; c.fill = HEAD_FILL; c.alignment = { horizontal: "center" }; });
+  res.getRow(7).values = headers;
+  res.getRow(7).eachCell((c) => { c.font = HEAD; c.fill = HEAD_FILL; c.alignment = { horizontal: "center" }; });
 
   days.forEach((d, i) => {
-    const r = 7 + i;
+    const r = 8 + i;
     const n = d.trades.length;
     const sheetRef = `'${sheetName(d)}'`;
     const pts = n > 0 ? `${sheetRef}!P2:P${n + 1}` : null;
@@ -170,14 +172,14 @@ export async function buildBacktestWorkbook(): Promise<Buffer> {
     } else {
       for (const c of [19, 20, 21]) row.getCell(c).value = 0;
     }
-    row.getCell(22).value = { formula: `U${r}*INDEX($B$2:$B$4,MATCH(O${r},$A$2:$A$4,0))`, result: mt.reduce((a, x) => a + (x.points ?? 0), 0) * multOf(d.instrument).big };
+    row.getCell(22).value = { formula: `U${r}*INDEX($B$2:$B$6,MATCH(O${r},$A$2:$A$6,0))`, result: mt.reduce((a, x) => a + (x.points ?? 0), 0) * multOf(d.instrument).big };
     const m = multOf(d.instrument);
     row.getCell(15).value = m.inst;
-    row.getCell(7).value = { formula: `F${r}*INDEX($B$2:$B$4,MATCH(O${r},$A$2:$A$4,0))`, result: d.points * m.big };
-    row.getCell(8).value = { formula: `F${r}*INDEX($C$2:$C$4,MATCH(O${r},$A$2:$A$4,0))`, result: d.points * m.micro };
+    row.getCell(7).value = { formula: `F${r}*INDEX($B$2:$B$6,MATCH(O${r},$A$2:$A$6,0))`, result: d.points * m.big };
+    row.getCell(8).value = { formula: `F${r}*INDEX($C$2:$C$6,MATCH(O${r},$A$2:$A$6,0))`, result: d.points * m.micro };
   });
   if (days.length > 0) {
-    const first = 7, lastR = 6 + days.length, t = lastR + 1;
+    const first = 8, lastR = 7 + days.length, t = lastR + 1;
     const sum = (col: string) => days.reduce((s, d) => s + (col === "B" ? d.trades.length : col === "C" ? d.wins : col === "D" ? d.losses : d.points), 0);
     const tot = res.getRow(t);
     tot.getCell(1).value = "Total";

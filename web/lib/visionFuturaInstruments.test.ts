@@ -17,7 +17,7 @@ describe("instrumentos de VisionFutura", () => {
     expect(strikeStepNear([365, 367.5, 370, 372.5, 375, 380, 385], 372)).toBe(2.5);
   });
   it("nombres por instrumento", () => {
-    expect(labelsOf(INSTRUMENTS.NQ, "/NQZ6")).toEqual({ main: "NDX", etf: "QQQ", future: "/NQZ6", vol: "IV ATM" });
+    expect(labelsOf(INSTRUMENTS.NQ, "/NQZ6")).toEqual({ main: "NDX", etf: null, future: "/NQZ6", vol: "IV ATM" });
     expect(labelsOf(INSTRUMENTS.TSLA)).toEqual({ main: "TSLA", etf: null, future: null, vol: "IV ATM" });
   });
 });

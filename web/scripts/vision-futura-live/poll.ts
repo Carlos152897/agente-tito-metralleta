@@ -38,7 +38,7 @@ function log(msg: string) {
   try { mkdirSync(LOG_DIR, { recursive: true }); appendFileSync(LOG, line + "\n", "utf8"); } catch { /* sin disco */ }
 }
 
-const INSTRUMENTS = ["SPX", "NQ", "TSLA"];
+const INSTRUMENTS = ["SPX", "SPY", "NQ", "QQQ", "TSLA"];
 const EVERY_MS = 30_000;
 const RADIUS = 60;
 

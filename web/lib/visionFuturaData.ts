@@ -249,15 +249,17 @@ export async function loadVisionFutura(
   const expirations = await expirationsFor(cfg, now).catch(() => [] as ExpirationChip[]);
   const expiration = expirations[Math.min(Math.max(0, expIndex), Math.max(0, expirations.length - 1))]?.date ?? marketDateStr(now);
 
+  // ETF: el que se muestra (conversión) o el que solo arma la gráfica (NQ → QQQ, no se muestra).
+  const etfSym = cfg.etf ?? cfg.chartEtf ?? null;
   const [spotMs, gexBuckets, contracts, etfPxRaw, futRaw, vixQuoteRaw, chartMain, chartEtf, vixGexBuckets, mainTasty, spxRefRaw, vixRefRaw, chartVix] = await Promise.all([
     fetchAssetPrice(cfg.msTicker).catch(() => null),
     fetchGexStats(cfg.msTicker, { period: "1d" }).catch(() => [] as GexStatsBucket[]),
     fetchOptionChainExtended(cfg.msTicker, expiration).catch(() => [] as ExtendedChainContract[]),
-    cfg.etf ? fetchUnderlyingQuote(cfg.etf, false).catch(() => null) : Promise.resolve(null),
+    etfSym ? fetchUnderlyingQuote(etfSym, false).catch(() => null) : Promise.resolve(null),
     cfg.future ? futureQuote(cfg.future).catch(() => null) : Promise.resolve(null),
     cfg.volIndex ? fetchMacroQuote({ index: cfg.volIndex }).catch(() => null) : Promise.resolve(null),
     cfg.chartFromEtf ? Promise.resolve([]) : fetchAssetPriceChart(cfg.msTicker).catch(() => []),
-    cfg.chartFromEtf && cfg.etf ? fetchAssetPriceChart(cfg.etf).catch(() => []) : Promise.resolve([]),
+    cfg.chartFromEtf && etfSym ? fetchAssetPriceChart(etfSym).catch(() => []) : Promise.resolve([]),
     cfg.volIndex ? fetchGexStats(cfg.volIndex, { period: "1d" }).catch(() => []) : Promise.resolve([]),
     fetchUnderlyingQuote(cfg.main, !!cfg.tastyMain.index).catch(() => null),
     // Referencias para la escala (solo fuera de SPX).
@@ -298,9 +300,9 @@ export async function loadVisionFutura(
   const gexStats = latestBucket ? { ...latestBucket, gamma_flip: latestBucket.gamma_flip ?? lastFlip } : null;
 
   let etfPx = etfPxRaw;
-  if (cfg.etf && !(etfPx && etfPx > 0)) {
-    etfPx = (await yq(cfg.etf))?.last ?? null;
-    if (etfPx) backups.push(`${cfg.etf}: Yahoo`);
+  if (etfSym && !(etfPx && etfPx > 0)) {
+    etfPx = (await yq(etfSym))?.last ?? null;
+    if (etfPx) backups.push(`${etfSym}: Yahoo`);
   }
   let fut = futRaw;
   if (cfg.future && !fut) {
@@ -340,7 +342,7 @@ export async function loadVisionFutura(
 
   const report = buildVisionFutura({
     contracts, spot, gexStats,
-    spy: etfPx, es: fut?.price ?? null, vix, radius: effRadius, strikeStep,
+    spy: cfg.etf ? etfPx : null, es: fut?.price ?? null, vix, radius: effRadius, strikeStep,
     yearsToExpiry: yearsToExpiry(expiration, now),
   });
 

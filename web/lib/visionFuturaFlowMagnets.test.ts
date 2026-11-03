@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { flowMagnetHistory, flowMagnetsAt, fmtFuerza } from "./visionFuturaFlowMagnets";
+import { flowMagnetHistory, flowMagnetsAt, fmtFuerza, SOFIA_MAGNET_TUNING } from "./visionFuturaFlowMagnets";
 import type { StrikeMinute } from "./visionFuturaVolumeDelta";
 
 const m = (t: number, cA = 0, cB = 0, pA = 0, pB = 0): StrikeMinute => ({ t, cA, cB, cV: cA + cB, pA, pB, pV: pA + pB });
@@ -50,5 +50,27 @@ describe("flowMagnetHistory", () => {
   it("formato de fuerza", () => {
     expect(fmtFuerza(2600)).toBe("2.6K");
     expect(fmtFuerza(591)).toBe("591");
+  });
+});
+
+describe("imanesSofia (último minuto)", () => {
+  const o = { windowSec: SOFIA_MAGNET_TUNING.windowSec, minContracts: SOFIA_MAGNET_TUNING.minContracts, radius: SOFIA_MAGNET_TUNING.radiusPts };
+  it("solo cuenta el último minuto cerrado: el imán cambia de strike cada minuto", () => {
+    const by = new Map<number, StrikeMinute[]>([
+      [7560, [m(0, 5000), m(60, 212)]], // los 5,000 del minuto anterior ya no cuentan
+      [7585, [m(60, 0, 130)]], // −130
+      [7590, [m(120, 999)]], // minuto en curso: todavía no cuenta
+    ]);
+    const r = flowMagnetsAt(by, 120, 7560, o);
+    expect(r.pos).toEqual({ strike: 7560, fuerza: 212 });
+    expect(r.neg).toEqual({ strike: 7585, fuerza: 130 });
+  });
+  it("±75 pts y mínimo 10 contratos", () => {
+    const by = new Map<number, StrikeMinute[]>([
+      [7640, [m(0, 900)]], // a 80 pts: fuera
+      [7550, [m(0, 9)]], // menos de 10
+    ]);
+    const r = flowMagnetsAt(by, 60, 7560, o);
+    expect(r.pos).toBeNull();
   });
 });

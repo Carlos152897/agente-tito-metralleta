@@ -9,7 +9,7 @@
 // escala 1 fija para no cambiar nada de lo ya calibrado y backtesteado.
 
 /** Instrumentos con botón propio. */
-export type FixedInstrumentId = "SPX" | "NQ" | "TSLA" | "ESN" | "NQN";
+export type FixedInstrumentId = "SPX" | "SPY" | "NQ" | "QQQ" | "TSLA" | "ESN" | "NQN";
 /**
  * Un instrumento fijo o el ticker de cualquier acción/ETF con opciones abierta con el buscador
  * (AAPL, NVDA…): se trata igual que TSLA (solo la acción, umbrales escalados por su IV).
@@ -38,6 +38,8 @@ export interface InstrumentConfig {
   volIndex: string | null;
   /** MarketSnack no tiene gráfica intradía del índice: se arma con el ETF × ratio. */
   chartFromEtf: boolean;
+  /** ETF que se usa SOLO por dentro para esa gráfica (no se muestra; NQ → QQQ). Si falta, se usa `etf`. */
+  chartEtf?: string | null;
   /** Tiene opciones que vencen TODOS los días (0DTE diario). */
   dailyExpirations: boolean;
   /**
@@ -51,11 +53,24 @@ export interface InstrumentConfig {
 export const INSTRUMENTS: Record<FixedInstrumentId, InstrumentConfig> = {
   SPX: {
     id: "SPX", label: "SPX", main: "SPX", msTicker: "SPX", occRoot: "SPXW", tastyChain: "SPX",
-    tastyMain: { index: "SPX" }, etf: "SPY", future: "ES", volIndex: "VIX", chartFromEtf: false, dailyExpirations: true,
+    tastyMain: { index: "SPX" }, etf: null, future: "ES", volIndex: "VIX", chartFromEtf: false, dailyExpirations: true,
+  },
+  // SPY con botón propio (Carlos, 3-nov-2026: "no quiero el valor del SPY [en SPX], hazme un botón aparte
+  // SPY y ponme todo lo que tengo en SPX"): su propia cadena 0DTE diaria, mismos motores. Se trata
+  // como acción (umbrales escalados por su IV, ~0.1 de SPX), $ por 100 acciones.
+  SPY: {
+    id: "SPY", label: "SPY", main: "SPY", msTicker: "SPY", occRoot: "SPY", tastyChain: "SPY",
+    tastyMain: { equity: "SPY" }, etf: null, future: null, volIndex: null, chartFromEtf: false, dailyExpirations: true,
   },
   NQ: {
     id: "NQ", label: "NQ", main: "NDX", msTicker: "NDX", occRoot: "NDXP", tastyChain: "NDX",
-    tastyMain: { index: "NDX" }, etf: "QQQ", future: "NQ", volIndex: null, chartFromEtf: true, dailyExpirations: true,
+    tastyMain: { index: "NDX" }, etf: null, chartEtf: "QQQ", future: "NQ", volIndex: null, chartFromEtf: true, dailyExpirations: true,
+  },
+  // QQQ con botón propio (Carlos, 3-nov-2026: "así mismo para NQ, deja el NDX y /NQ y hazme otro botón
+  // para QQQ"). Igual que SPY: su cadena 0DTE diaria, mismos motores, $ por 100 acciones.
+  QQQ: {
+    id: "QQQ", label: "QQQ", main: "QQQ", msTicker: "QQQ", occRoot: "QQQ", tastyChain: "QQQ",
+    tastyMain: { equity: "QQQ" }, etf: null, future: null, volIndex: null, chartFromEtf: false, dailyExpirations: true,
   },
   TSLA: {
     id: "TSLA", label: "TSLA", main: "TSLA", msTicker: "TSLA", occRoot: "TSLA", tastyChain: "TSLA",

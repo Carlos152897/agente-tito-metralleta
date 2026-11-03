@@ -44,7 +44,7 @@ const PROF_R = 828;
 const LABEL_L = 834;
 
 interface Props {
-  inst: "SPX" | "NQ" | "TSLA";
+  inst: "SPX" | "SPY" | "NQ" | "QQQ" | "TSLA";
   futLabel: string | null;
 }
 
@@ -95,10 +95,10 @@ export default function VisionFuturaPremarketChart({ inst, futLabel }: Props) {
     return () => window.clearInterval(id);
   }, [load]);
 
-  const dec = inst === "TSLA" ? 2 : 2;
+  const dec = inst === "TSLA" || inst === "SPY" || inst === "QQQ" ? 2 : 2;
   const fmt = (v: number | null | undefined, d = dec) =>
     v == null || !Number.isFinite(v) ? "—" : v.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
-  const fmt0 = (v: number) => fmt(v, inst === "TSLA" ? 2 : Math.abs(v % 1) < 0.005 ? 0 : 2);
+  const fmt0 = (v: number) => fmt(v, inst === "TSLA" || inst === "SPY" || inst === "QQQ" ? 2 : Math.abs(v % 1) < 0.005 ? 0 : 2);
 
   const view = useMemo(() => {
     if (!data || data.candles.length === 0) return null;
@@ -207,7 +207,7 @@ export default function VisionFuturaPremarketChart({ inst, futLabel }: Props) {
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
         <b style={{ fontSize: 13 }}>
-          Gráfica de la noche · {inst === "TSLA" ? "4 am" : "6 pm"} → 9:30 NY
+          Gráfica de la noche · {inst === "TSLA" || inst === "SPY" || inst === "QQQ" ? "4 am" : "6 pm"} → 9:30 NY
           <span style={{ fontWeight: 400, color: "var(--muted)" }}> · {data.source}{data.phase === "sesion" ? " · noche terminada" : ` · se actualiza cada 30 s`}</span>
         </b>
         <div style={{ display: "flex", gap: 6 }}>

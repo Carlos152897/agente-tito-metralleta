@@ -46,7 +46,8 @@ export type LayerKey =
   | "inusuales_ms"
   | "premarket"
   | "volumen_delta"
-  | "iman_flujo";
+  | "iman_flujo"
+  | "imanes_sofia";
 
 export const LAYERS: { key: LayerKey; label: string; color: string }[] = [
   { key: "precio", label: "Precio", color: "#2dd4bf" },
@@ -71,13 +72,14 @@ export const LAYERS: { key: LayerKey; label: string; color: string }[] = [
   { key: "premarket", label: "Premarket", color: "#d4a373" },
   { key: "volumen_delta", label: "Volumen delta", color: "#38bdf8" },
   { key: "iman_flujo", label: "Imanes de flujo", color: "#3b82f6" },
+  { key: "imanes_sofia", label: "imanesSofia", color: "#22d3ee" },
 ];
 
 export const DEFAULT_LAYERS: Record<LayerKey, boolean> = {
   precio: true, posicionamiento: true, magneto: true, iman_positivo: true, iman_negativo: true,
   resistencia: true, piso: true, gamma_flip: false, max_pain: false, charm: false,
   dealers: false, rango_vix: false, historial: false, historial_ls: true, agresor: true, vix: true, spreads: true, prima: true, inusuales_ms: true, premarket: true, volumen_delta: true,
-  iman_flujo: true,
+  iman_flujo: true, imanes_sofia: true,
 };
 
 const COLOR = Object.fromEntries(LAYERS.map((l) => [l.key, l.color])) as Record<LayerKey, string>;
@@ -85,6 +87,9 @@ const POS_DOWN = "#a855f7"; // morado: se posicionan para abajo
 /** Imanes de flujo (lib/visionFuturaFlowMagnets.ts): azul = Imán +, rojo = Imán −, como la app de referencia. */
 const FLOW_POS = "#3b82f6";
 const FLOW_NEG = "#ef4444";
+/** Modelo imanesSofia (1 min, como la app SofIA): cian = Imán +, rosa = Imán −, línea punteada. */
+const SOFIA_POS = "#22d3ee";
+const SOFIA_NEG = "#f472b6";
 // Tono claro de cada lado = la parte que viene de PUTS (el fuerte = CALLS).
 const POS_UP_PUT = "#86efac";
 // Parte de la barra que viene de spreads (varias patas): no dice dirección.
@@ -161,6 +166,8 @@ interface Props {
    * dónde estuvieron durante el día (Carlos, 30-oct: "imán positivo y negativo con su fuerza").
    */
   flowMagnets?: { now: FlowMagnets; history: FlowMagnetSegment[]; windowLabel: string } | null;
+  /** Modelo imanesSofia: mismo formato, ventana de 1 min. */
+  sofiaMagnets?: { now: FlowMagnets; history: FlowMagnetSegment[]; windowLabel: string } | null;
 }
 
 export interface CandleBar { time: number; open: number; high: number; low: number; close: number }
@@ -303,6 +310,9 @@ function griddedProps(p: Props): Props {
   const g = p.gridStep;
   if (!g || p.rows.length === 0) return p;
   const remap = <T extends { strike: number }>(x: T): T => ({ ...x, strike: bucketOf(x.strike, g) });
+  const remapMagnets = (m: Props["flowMagnets"]) => m
+    ? { ...m, now: { pos: m.now.pos && remap(m.now.pos), neg: m.now.neg && remap(m.now.neg) }, history: m.history.map(remap) }
+    : m;
   return {
     ...p,
     rows: gridRows(p.rows, g, priceRange(p)),
@@ -314,16 +324,8 @@ function griddedProps(p: Props): Props {
     positions: p.positions
       ? { segments: p.positions.segments.map(remap), events: p.positions.events.map(remap) }
       : p.positions,
-    flowMagnets: p.flowMagnets
-      ? {
-          ...p.flowMagnets,
-          now: {
-            pos: p.flowMagnets.now.pos && remap(p.flowMagnets.now.pos),
-            neg: p.flowMagnets.now.neg && remap(p.flowMagnets.now.neg),
-          },
-          history: p.flowMagnets.history.map(remap),
-        }
-      : p.flowMagnets,
+    flowMagnets: remapMagnets(p.flowMagnets),
+    sofiaMagnets: remapMagnets(p.sofiaMagnets),
   };
 }
 
@@ -563,6 +565,11 @@ export default function VisionFuturaChart(rawProps: Props) {
     const { pos, neg } = props.flowMagnets.now;
     if (pos) addChip({ key: `fm-pos-${pos.strike}`, text: `Imán + flujo (${fmtFuerza(pos.fuerza)}) ${n2(pos.strike, 0)}`, color: FLOW_POS }, pos.strike);
     if (neg) addChip({ key: `fm-neg-${neg.strike}`, text: `Imán − flujo (${fmtFuerza(neg.fuerza)}) ${n2(neg.strike, 0)}`, color: FLOW_NEG }, neg.strike);
+  }
+  if (layers.imanes_sofia && props.sofiaMagnets) {
+    const { pos, neg } = props.sofiaMagnets.now;
+    if (pos) addChip({ key: `sf-pos-${pos.strike}`, text: `Sofía + (${fmtFuerza(pos.fuerza)}) ${n2(pos.strike, 0)}`, color: SOFIA_POS }, pos.strike);
+    if (neg) addChip({ key: `sf-neg-${neg.strike}`, text: `Sofía − (${fmtFuerza(neg.fuerza)}) ${n2(neg.strike, 0)}`, color: SOFIA_NEG }, neg.strike);
   }
   if (layers.premarket && props.premarket) {
     const pm = props.premarket;
@@ -817,6 +824,24 @@ export default function VisionFuturaChart(rawProps: Props) {
                   <line key={`fm-${i}`} x1={x0} x2={x1} y1={y(sg.strike)} y2={y(sg.strike)}
                     stroke={sg.kind === "pos" ? FLOW_POS : FLOW_NEG} strokeWidth={live ? 3 : 2.5} opacity={live ? 0.9 : 0.45} strokeLinecap="round">
                     <title>{`${sg.kind === "pos" ? "Imán +" : "Imán −"} flujo ${n2(sg.strike, 0)} · ${hm(sg.start - 60)}–${hm(sg.end)} · fuerza máx ${fmtFuerza(sg.fuerza)}`}</title>
+                  </line>
+                ) : null;
+              })}
+            </g>
+          )}
+
+          {/* imanesSofia (1 min): punteado cian (Imán +) / rosa (Imán −), cambia casi cada minuto. */}
+          {layers.imanes_sofia && props.sofiaMagnets && (
+            <g style={{ pointerEvents: "none" }}>
+              {props.sofiaMagnets.history.filter((sg) => inView(sg.strike)).map((sg, i) => {
+                const cur = props.sofiaMagnets!.now[sg.kind];
+                const live = !!cur && cur.strike === sg.strike && sg.end >= refSec - 120;
+                const x0 = x(sg.start - 60);
+                const x1 = live ? nowX : x(sg.end);
+                return x1 > x0 ? (
+                  <line key={`sf-${i}`} x1={x0} x2={x1} y1={y(sg.strike)} y2={y(sg.strike)}
+                    stroke={sg.kind === "pos" ? SOFIA_POS : SOFIA_NEG} strokeWidth={live ? 3 : 2} strokeDasharray="5 3" opacity={live ? 0.95 : 0.5}>
+                    <title>{`Sofía ${sg.kind === "pos" ? "+" : "−"} ${n2(sg.strike, 0)} · ${hm(sg.start - 60)}–${hm(sg.end)} · fuerza máx ${fmtFuerza(sg.fuerza)}`}</title>
                   </line>
                 ) : null;
               })}

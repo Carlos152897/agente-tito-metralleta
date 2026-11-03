@@ -34,7 +34,7 @@ import {
 const BASE = join(process.cwd(), "data", "vision-futura");
 const DIR = join(BASE, "premarket");
 
-export const PREMARKET_INSTRUMENTS = ["SPX", "NQ", "TSLA"] as const;
+export const PREMARKET_INSTRUMENTS = ["SPX", "SPY", "NQ", "QQQ", "TSLA"] as const;
 
 export interface PremarketSnapshot {
   t: string;

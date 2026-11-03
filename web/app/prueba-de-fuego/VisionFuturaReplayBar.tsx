@@ -160,7 +160,7 @@ export default function VisionFuturaReplayBar(p: Props) {
               <div style={{ fontSize: 13 }}>
                 Backtest de este día: <b>{bt.trades}</b> entradas · <b style={{ color: "var(--green)" }}>{bt.wins} ganadas</b> ·{" "}
                 <b style={{ color: "var(--red-soft)" }}>{bt.losses} perdidas</b> ·{" "}
-                <b style={{ color: bt.points >= 0 ? "var(--green)" : "var(--red-soft)" }}>{bt.points >= 0 ? "+" : ""}{bt.points.toFixed(2)} {lb.main === "TSLA" ? "$ por acción" : `pts ${lb.main}`}</b>
+                <b style={{ color: bt.points >= 0 ? "var(--green)" : "var(--red-soft)" }}>{bt.points >= 0 ? "+" : ""}{bt.points.toFixed(2)} {!lb.future ? "$ por acción" : `pts ${lb.main}`}</b>
                 <span style={{ color: "var(--faint)" }}> (guardado en el Excel)</span>
               </div>
             );

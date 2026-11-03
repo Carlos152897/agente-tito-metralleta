@@ -53,7 +53,7 @@ const prevCalendarDay = (date: string) => {
 
 export async function GET(req: Request) {
   const instRaw = new URL(req.url).searchParams.get("inst") ?? "SPX";
-  const inst = ["SPX", "NQ", "TSLA"].includes(instRaw) ? instRaw : "SPX";
+  const inst = ["SPX", "SPY", "NQ", "QQQ", "TSLA"].includes(instRaw) ? instRaw : "SPX";
   const now = Date.now();
   const hit = cache.get(inst);
   if (hit && now - hit.at < hit.ttl) return Response.json(hit.body);

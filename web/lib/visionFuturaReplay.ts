@@ -137,16 +137,17 @@ export const replayFileName = (inst: string, date: string) => (inst === "SPX" ? 
 export async function buildReplay(now: Date, opts: { force?: boolean; inst?: string } = {}): Promise<ReplayPayload> {
   const cfg = instrumentOf(opts.inst);
   // Precio del día: el del instrumento o, si MarketSnack no tiene su gráfica (NDX), la del ETF.
+  const etfSym = cfg.etf ?? cfg.chartEtf ?? null;
   const [mainChartRaw, etfChart, vixChart, gexRaw, vixGexRaw, spxChartRef] = await Promise.all([
     cfg.chartFromEtf ? Promise.resolve([]) : fetchAssetPriceChart(cfg.msTicker),
-    cfg.etf ? fetchAssetPriceChart(cfg.etf).catch(() => []) : Promise.resolve([]),
+    etfSym ? fetchAssetPriceChart(etfSym).catch(() => []) : Promise.resolve([]),
     fetchAssetPriceChart("VIX").catch(() => []),
     fetchGexStats(cfg.msTicker, { period: "1d" }),
     fetchGexStats("VIX", { period: "1d" }).catch(() => []),
     cfg.id === "SPX" ? Promise.resolve([]) : fetchAssetPriceChart("SPX").catch(() => []),
   ]);
   const baseChart = cfg.chartFromEtf ? etfChart : mainChartRaw;
-  if (baseChart.length === 0) throw new Error(`MarketSnack no devolvió el precio intradía de ${cfg.chartFromEtf ? cfg.etf : cfg.main}.`);
+  if (baseChart.length === 0) throw new Error(`MarketSnack no devolvió el precio intradía de ${cfg.chartFromEtf ? etfSym : cfg.main}.`);
 
   // Último día con sesión regular en la gráfica (la de un ETF trae también pre/post-market).
   const rthDays = [...new Set(baseChart.map((p) => Date.parse(p.t)).filter((ms) => isRth(ms)).map((ms) => nyDate(ms)))].sort();
@@ -174,7 +175,7 @@ export async function buildReplay(now: Date, opts: { force?: boolean; inst?: str
     const etfRth = etf.filter((p) => isRth(p.ms));
     const mainClose = await fetchUnderlyingQuote(cfg.main, !!cfg.tastyMain.index).catch(() => null);
     const etfClose = etfRth.at(-1)?.v ?? null;
-    if (!mainClose || !etfClose) throw new Error(`No se pudo convertir ${cfg.etf} a ${cfg.main}.`);
+    if (!mainClose || !etfClose) throw new Error(`No se pudo convertir ${etfSym} a ${cfg.main}.`);
     const ratio = mainClose / etfClose;
     spx = etfRth.map((p) => ({ ...p, v: Math.round(p.v * ratio * 100) / 100 }));
   } else {
@@ -505,7 +506,7 @@ export async function buildReplay(now: Date, opts: { force?: boolean; inst?: str
     notes: [
       `Magneto, paredes, flip, max pain, VIX y flujo por strike: datos reales de MarketSnack de cada momento (${cfg.main}).`,
       cfg.chartFromEtf
-        ? `Precio de ${cfg.main}: ${cfg.etf} de MarketSnack × (${cfg.main} ÷ ${cfg.etf} al cierre) — aproximado (MarketSnack no tiene la gráfica intradía de ${cfg.main}).`
+        ? `Precio de ${cfg.main}: ${cfg.chartEtf ?? cfg.etf} de MarketSnack × (${cfg.main} ÷ ${cfg.chartEtf ?? cfg.etf} al cierre) — aproximado (MarketSnack no tiene la gráfica intradía de ${cfg.main}).`
         : `Precio de ${cfg.main}: real, cada 5 min (MarketSnack).`,
       `Imanes ±, resistencias/pisos secundarios y charm: estimados con el open interest real y gamma de Black-Scholes (IV = VIX${ivRel !== 1 ? ` × ${ivRel.toFixed(2)}` : ""}).`,
       cfg.future ? `Sin ${cfg.future === "ES" ? "/ES" : `/${cfg.future}`} en la repetición: no hay historial intradía del futuro.` : "Acción: sin conversiones.",
@@ -548,7 +549,7 @@ export async function captureChainsForReplay(now: Date): Promise<void> {
   if (wd === "Sat" || wd === "Sun" || hr < 9 || hr >= 23) return;
   lastCapture = now.getTime();
   const date = marketDateStr(now);
-  for (const cfg of [instrumentOf("SPX"), instrumentOf("NQ"), instrumentOf("TSLA")]) {
+  for (const cfg of [instrumentOf("SPX"), instrumentOf("SPY"), instrumentOf("NQ"), instrumentOf("QQQ"), instrumentOf("TSLA")]) {
     // Mismo vencimiento que buscará la repetición: el primero desde hoy que tenga cadena.
     for (let i = 0; i <= 6; i++) {
       const d = new Date(`${date}T12:00:00Z`);

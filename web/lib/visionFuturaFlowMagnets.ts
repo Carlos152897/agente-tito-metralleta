@@ -17,6 +17,19 @@ export const FLOW_MAGNET_TUNING = {
   minContracts: 25,
 };
 
+/**
+ * Modelo "imanesSofia" (Carlos, 3-nov-2026: "haz el modelo de sofia"). Copia del imán de la app SofIA:
+ * sale de su columna del agresor ("▲▼ vs 1 min"): Imán + = strike con más compras netas en el ÚLTIMO
+ * minuto cerrado, Imán − = el de más ventas netas; fuerza = esos contratos. Se busca en ±15 strikes
+ * (±75 pts de SPX × escala). Misma Δ que el volumen delta; solo cambia la ventana (1 min vs 15 min).
+ * Verificado contra la captura de SofIA 9:48 (Imán + 7,560 fuerza 212 = 212 compras en su columna).
+ */
+export const SOFIA_MAGNET_TUNING = {
+  windowSec: 60,
+  radiusPts: 75,
+  minContracts: 10,
+};
+
 export interface FlowMagnet {
   strike: number;
   /** Contratos netos de la ventana (siempre positivo; el lado lo dice `kind`). */
