@@ -17,6 +17,9 @@ import VisionFuturaPremarket from "./VisionFuturaPremarket";
 import VisionFuturaPositionLog from "./VisionFuturaPositionLog";
 import VisionFuturaTickerSearch from "./VisionFuturaTickerSearch";
 import VisionFuturaHybrid from "./VisionFuturaHybrid";
+import VisionFuturaRetest from "./VisionFuturaRetest";
+import { retestAlertFrom, runRetestDay, screenLevels, type RetestAlertIn } from "@/lib/visionFuturaRetest";
+import type { RetestLive } from "@/lib/visionFuturaAlertStore";
 import { orderResultsFromPrices } from "@/lib/visionFuturaAlertOutcome";
 import { hybridFromReplay, type HybridDay } from "@/lib/visionFuturaHybrid";
 import { instrumentOf, isEquityTicker } from "@/lib/visionFuturaInstruments";
@@ -125,6 +128,8 @@ interface VisionData extends VisionFuturaReport {
   positions?: Pick<PosHistory, "segments" | "events">;
   /** Motor híbrido del día (solo en vivo; en la repetición se calcula de la repetición). */
   hybrid?: HybridDay;
+  /** Motores Retest y v3 (solo en vivo; en la repetición se calculan con las velas de 1 min). */
+  retest?: RetestLive | null;
 }
 
 const KIND_COLOR: Record<KeyLevelKind, string> = {
@@ -822,6 +827,20 @@ export default function VisionFuturaTab() {
   // vela del minuto actual armada con cada precio en vivo (cada 3 s), sin esperar al próximo pedido.
   const candleKey = `${inst}|${tick && replay ? replay.date : "vivo"}`;
   const baseBars = candles?.key === candleKey ? candles.bars : [];
+  // Motores Retest y v3: en vivo vienen del servidor; en la repetición, con las velas de 1 min hasta el cursor.
+  const retestDay = (() => {
+    if (!tick || !replay) return data.retest ?? null;
+    if (baseBars.length === 0) return null;
+    const levelsFor = (ms: number) => {
+      let tk = replay.ticks[0];
+      for (const x of replay.ticks) if (x.time * 1000 <= ms) tk = x;
+      return tk ? screenLevels(tk) : [];
+    };
+    const ins = replay.alerts.map((a) => retestAlertFrom({ ...a, levelsAt: levelsFor(a.firedAt) })).filter((x): x is RetestAlertIn => !!x);
+    if (ins.length === 0) return null;
+    const r = runRetestDay({ alerts: ins, bars: baseBars, nowMs: (cursorSec + 60) * 1000, final: atReplayEnd && !replay.partial });
+    return { ...r, source: candles?.source ?? null, asOf: tickMs };
+  })();
   let chartCandles: CandleBar[] = baseBars;
   if (tick) {
     chartCandles = baseBars.filter((b) => b.time <= cursorSec);
@@ -1241,6 +1260,14 @@ export default function VisionFuturaTab() {
         untilSec={tick ? cursorSec : null}
       />
       </div>
+
+      <VisionFuturaRetest
+        day={retestDay}
+        source={retestDay?.source ?? null}
+        main={labels.main}
+        night={isNightInst}
+        replay={!!tick}
+      />
 
       <VisionFuturaHybrid
         day={tick ? replayHybrid : view.hybrid ?? null}

@@ -21,6 +21,8 @@ import { emptyPosHistory, netFlowJumps, pressureMarks, stepPositions, type PosHi
 import { detectUnusual, snapshotOf as snapshotOfRows, type FlowSnapshot } from "./visionFuturaFlowChanges";
 import { hybridFromAlert, hybridFromMoney, resolveHybrid, type HybridDay } from "./visionFuturaHybrid";
 import { closeAt, openResult, stepOrder, type OrderInput, type OrderResult } from "./visionFuturaAlertOutcome";
+import { retestAlertFrom, runRetestDay, screenLevels, type RetestAlertIn, type RetestTrade } from "./visionFuturaRetest";
+import { liveSessionBars } from "./visionFuturaRetestStore";
 
 const STATE_DIR = join(process.cwd(), "data", "vision-futura");
 /** Un archivo de estado por instrumento (SPX conserva el nombre original). */
@@ -38,6 +40,8 @@ export interface FiredAlert extends VisionAlert {
   lastSeenAt: number;
   /** Cómo va o cómo terminó su orden (lib/visionFuturaAlertOutcome.ts): abierta, ganada o perdida. */
   result?: OrderResult;
+  /** Niveles de la pantalla cuando salió (motor v3: "siguiente nivel"). */
+  levelsAt?: number[];
 }
 
 const orderOf = (a: VisionAlert): OrderInput => ({ side: a.order.side, entry: a.order.entry.spx, stop: a.order.stop.spx, target: a.order.target?.spx ?? null });
@@ -66,6 +70,16 @@ export interface AlertState {
   posAgg?: { t: number; snap: [number, FlowSnapshot][] } | null;
   /** Motor híbrido (lib/visionFuturaHybrid.ts): TODAS las alertas/señales híbridas del día y las bloqueadas. */
   hybrid?: HybridDay;
+  /** Motores Retest y v3 (lib/visionFuturaRetest.ts): se recalculan enteros en cada ciclo. */
+  retest?: RetestLive;
+}
+
+export interface RetestLive {
+  retest: RetestTrade[];
+  v3: RetestTrade[];
+  /** De dónde salieron las velas de 1 min y hasta qué hora (ms). */
+  source: string | null;
+  asOf: number;
 }
 
 function emptyState(date: string): AlertState {
@@ -157,6 +171,8 @@ export interface VisionFuturaCycle {
   positions: Pick<PosHistory, "segments" | "events">;
   /** Motor híbrido del día (la pantalla muestra solo la última de cada tipo). */
   hybrid: HybridDay;
+  /** Motores Retest y v3 del día (null de noche o sin alertas). */
+  retest: RetestLive | null;
 }
 
 /** Cómo se opera cada lado según el instrumento (texto de la orden de las alertas). */
@@ -257,7 +273,7 @@ export async function runVisionFuturaCycle(now: Date, radius: number, instrument
     else {
       // Entrada nueva: la que siga abierta se cierra a este precio (ganada o perdida según cómo iba).
       for (const f of state.fired) if (f.result?.status === "abierta") f.result = closeAt(orderOf(f), payload.spot.spx, t, "nueva alerta");
-      state.fired.push({ ...a, firedAt: t, lastSeenAt: t, result: openResult() });
+      state.fired.push({ ...a, firedAt: t, lastSeenAt: t, result: openResult(), levelsAt: screenLevels(payload) });
       // Motor híbrido: la misma alerta con sus filtros y stop/objetivo más amplios.
       state.hybrid ??= { alerts: [], money: [], blocked: [] };
       const h = hybridFromAlert(a, { at: t, keyLevels: payload.keyLevels, scale: payload.scale ?? 1, open: [...state.hybrid.alerts, ...state.hybrid.money] });
@@ -380,6 +396,19 @@ export async function runVisionFuturaCycle(now: Date, radius: number, instrument
   }
   const money: MoneyLive = { reading: moneyReading, trades: state.moneyTrades };
 
+  // ── Motores Retest y v3 (lib/visionFuturaRetest.ts): las mismas alertas, con entrada en el retest ──
+  if (!isNightInst && state.fired.length > 0) {
+    const closedDay = !payload.marketOpen && nyMin >= 16 * 60;
+    const stale = !state.retest || state.retest.retest.some((x) => x.status === "armada" || x.status === "abierta") || state.retest.retest.length !== state.fired.length;
+    if (payload.marketOpen || (closedDay && stale)) {
+      const got = await liveSessionBars(inst, state.date, t);
+      if (got.bars.length > 0) {
+        const ins = state.fired.map(retestAlertFrom).filter((x): x is RetestAlertIn => !!x);
+        state.retest = { ...runRetestDay({ alerts: ins, bars: got.bars, nowMs: t, final: closedDay }), source: got.source, asOf: t };
+      }
+    }
+  }
+
   const lottos: LottoLive = {
     ideas: lottoIdeas,
     zeroDte,
@@ -397,5 +426,5 @@ export async function runVisionFuturaCycle(now: Date, radius: number, instrument
     .slice(0, 4);
 
   const positions = { segments: state.positions?.segments ?? [], events: state.positions?.events ?? [] };
-  return { payload, alerts, watch, lottos, money, positions, hybrid: state.hybrid };
+  return { payload, alerts, watch, lottos, money, positions, hybrid: state.hybrid, retest: state.retest ?? null };
 }

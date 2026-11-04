@@ -14,6 +14,7 @@ import { loadBacktestDay, saveBacktestDay } from "./visionFuturaBacktestStore";
 import { fetchSessionMinutes } from "./yahooCandles";
 import { instrumentOf } from "./visionFuturaInstruments";
 import { minutesWatched, scoreLiveDay, type LiveDay, type LiveFired } from "./visionFuturaLive";
+import { retestAlertFrom, runRetestDay, screenLevels, type RetestAlertIn } from "./visionFuturaRetest";
 
 const LIVE_DIR = join(process.cwd(), "data", "vision-futura", "live");
 const archiveFile = (inst: string, date: string) => join(LIVE_DIR, inst === "SPX" ? `${date}.json` : `${inst}-${date}.json`);
@@ -86,6 +87,21 @@ export async function attachLiveDay(inst: string, date: string): Promise<LiveDay
       minutesWatched: cycles.length ? minutesWatched(cycles) : 0,
     },
   });
+  // Retest y v3: las mismas alertas, con la entrada en el retest (velas de 1 min reales, día cerrado).
+  if (candles.length > 0) {
+    // Alertas guardadas antes de que existiera `levelsAt`: niveles del paso de la repetición de esa hora.
+    let ticks: { time: number; keyLevels?: { spx: number | null }[]; dealerLevels?: { spx: number | null }[] }[] = [];
+    try {
+      ticks = JSON.parse(readFileSync(join(process.cwd(), "data", "vision-futura", inst === "SPX" ? `replay-${date}.json` : `replay-${inst}-${date}.json`), "utf8")).ticks ?? [];
+    } catch { /* sin repetición */ }
+    const levelsFor = (ms: number) => {
+      let tk = ticks[0];
+      for (const x of ticks) if (x.time * 1000 <= ms) tk = x;
+      return tk ? screenLevels(tk) : [];
+    };
+    const ins = state.fired.map((f) => retestAlertFrom({ ...f, levelsAt: (f as { levelsAt?: number[] }).levelsAt ?? levelsFor(f.firedAt) })).filter((x): x is RetestAlertIn => !!x && x.firedAt >= open && x.firedAt < open + 390 * 60_000);
+    live.retest = runRetestDay({ alerts: ins, bars: candles, nowMs: open + 391 * 60_000, final: true });
+  }
   saveBacktestDay({ ...bt, live });
   return live;
 }

@@ -15,6 +15,7 @@ import type { BacktestTrade } from "./visionFuturaBacktest";
 import type { MoneyTrade } from "./visionFuturaMoneyFlow";
 import { settleLottoWithRule, type LottoTrade } from "./visionFuturaLottos";
 import type { VisionAlert } from "./visionFuturaAlerts";
+import type { RetestTrade } from "./visionFuturaRetest";
 
 export interface LiveCandle {
   /** Segundos (inicio de la vela de 1 min). */
@@ -48,6 +49,8 @@ export interface LiveDay {
   points: number;
   money: MoneyTrade[];
   lottos: LottoTrade[];
+  /** Motores Retest y v3 sobre las alertas en vivo del día, calificados con las velas de 1 min. */
+  retest?: { retest: RetestTrade[]; v3: RetestTrade[] };
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;

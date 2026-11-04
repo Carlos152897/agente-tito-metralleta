@@ -11,7 +11,7 @@
 import type ExcelJS from "exceljs";
 import type { BacktestDay } from "./visionFuturaBacktest";
 
-export const LIVE_MOTORS = ["Alertas", "Señal del dinero", "Híbrido", "Lottos"] as const;
+export const LIVE_MOTORS = ["Alertas", "Retest", "v3", "Señal del dinero", "Híbrido", "Lottos"] as const;
 export type LiveMotor = (typeof LIVE_MOTORS)[number];
 
 export interface LiveEntry {
@@ -56,6 +56,14 @@ export function liveEntries(days: BacktestDay[]): LiveEntry[] {
       out.push({ date: d.date, instrument: inst, motor: "Híbrido", at: h.at, side: h.side, title: h.title, entry: h.entry, stop: h.stop, target: h.target,
         exit: h.exit, exitAt: h.exitAt, outcome: h.outcome ?? "abierta", points: h.points, usd: null, detail: `${h.source === "alerta" ? "de alerta" : "de señal"}${h.note ? ` · ${h.note}` : ""}` });
     }
+    for (const [motor, list] of [["Retest", live?.retest?.retest ?? []], ["v3", live?.retest?.v3 ?? []]] as const) {
+      for (const r of list) {
+        if (r.entryAt == null) continue; // armadas que se cancelaron: no son entradas
+        out.push({ date: d.date, instrument: inst, motor, at: r.entryAt, side: r.side, title: r.title, entry: r.entry, stop: r.stop, target: r.t2,
+          exit: r.exit, exitAt: r.exitAt, outcome: r.outcome ?? "abierta", points: r.points, usd: null,
+          detail: `alerta ${new Date(r.firedAt).toLocaleTimeString("es-MX", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hour12: false })} · nivel ${r.level} · ATR ${r.atr ?? "—"}${r.t1 != null ? ` · obj. 1 ${r.t1}${r.t1Hit ? " (tocado)" : ""}` : ""}${r.r != null ? ` · ${r.r}R` : ""}` });
+      }
+    }
     for (const l of live?.lottos ?? []) {
       out.push({ date: d.date, instrument: inst, motor: "Lottos", at: l.openedAt, side: l.side, title: `${l.side.toUpperCase()} ${l.strike} a $${l.price}`, entry: l.price, stop: null,
         target: l.target?.spx ?? null, exit: l.settle, exitAt: null, outcome: l.pnlUsd == null ? "abierta" : "vencimiento", points: null,
@@ -68,16 +76,17 @@ export function liveEntries(days: BacktestDay[]): LiveEntry[] {
 /** Resultado de una entrada: >0 ganó, <0 perdió, 0 empate, null abierta. */
 export const entryResult = (e: LiveEntry) => (e.motor === "Lottos" ? e.usd : e.points);
 
-export interface MotorStats { entries: number; wins: number; losses: number; open: number; points: number; usd: number }
+export interface MotorStats { entries: number; wins: number; losses: number; even: number; open: number; points: number; usd: number }
 
 /** Totales por motor (y opcionalmente por instrumento/día). `usdPerPoint` = $ por punto del contrato grande. Puro. */
 export function motorStats(entries: LiveEntry[], usdPerPoint: (inst: string) => number): MotorStats {
-  const s: MotorStats = { entries: entries.length, wins: 0, losses: 0, open: 0, points: 0, usd: 0 };
+  const s: MotorStats = { entries: entries.length, wins: 0, losses: 0, even: 0, open: 0, points: 0, usd: 0 };
   for (const e of entries) {
     const r = entryResult(e);
     if (r == null) { s.open++; continue; }
     if (r > 0) s.wins++;
     else if (r < 0) s.losses++;
+    else s.even++;
     if (e.motor === "Lottos") s.usd += r;
     else { s.points += r; s.usd += r * usdPerPoint(e.instrument); }
   }
@@ -148,13 +157,13 @@ export function addLiveSheets(wb: ExcelJS.Workbook, days: BacktestDay[], multRow
   rs.getCell("A1").value = "VisionFutura — Backtest de las entradas EN VIVO por motor";
   rs.getCell("A1").font = { name: "Arial", size: 14, bold: true };
   rs.getCell("A2").value =
-    "Lo que de verdad salió en pantalla con la vigilancia encendida, calificado con velas reales de 1 min (si en la misma vela caben stop y objetivo, cuenta el stop; si no toca ninguno, sale al cierre). $ = contrato grande (/ES, /NQ o 100 acciones; editable en el Resumen, filas 2–6). Lottos = $ por contrato con la regla 1.5×/3×. El Híbrido repite entradas de Alertas y Señal filtradas: no lo sumes con ellas.";
+    "Lo que de verdad salió en pantalla con la vigilancia encendida, calificado con velas reales de 1 min (si en la misma vela caben stop y objetivo, cuenta el stop; si no toca ninguno, sale al cierre). $ = contrato grande (/ES, /NQ o 100 acciones; editable en el Resumen, filas 2–6). Lottos = $ por contrato con la regla 1.5×/3×. Retest y v3 son las MISMAS alertas entrando en el retest (v3: stop 0.75 ATR, obj. 1 sube el stop a la entrada → en cero, una abierta a la vez). El Híbrido repite entradas de Alertas y Señal filtradas. No sumes motores entre sí: compáralos.";
   rs.getCell("A2").font = NOTE;
   rs.getCell("A2").alignment = { wrapText: true, vertical: "top" };
-  rs.mergeCells("A2:J2");
+  rs.mergeCells("A2:K2");
   rs.getRow(2).height = 42;
 
-  const heads = ["Motor", "Instrumento", "Entradas", "Ganadas", "Perdidas", "Abiertas", "% acierto", "Puntos", "$ contrato grande", "$ por entrada"];
+  const heads = ["Motor", "Instrumento", "Entradas", "Ganadas", "Perdidas", "En cero", "Abiertas", "% acierto", "Puntos", "$ contrato grande", "$ por entrada"];
   const head = (r: number) => {
     rs.getRow(r).values = heads;
     rs.getRow(r).eachCell((c) => { c.font = HEAD; c.fill = HEAD_FILL; c.alignment = { horizontal: "center", wrapText: true }; });
@@ -170,16 +179,17 @@ export function addLiveSheets(wb: ExcelJS.Workbook, days: BacktestDay[], multRow
     row.getCell(3).value = { formula: `COUNTIFS(${cr})`, result: st.entries };
     row.getCell(4).value = { formula: `COUNTIFS(${cr},${O},"GANÓ")`, result: st.wins };
     row.getCell(5).value = { formula: `COUNTIFS(${cr},${O},"PERDIÓ")`, result: st.losses };
-    row.getCell(6).value = { formula: `COUNTIFS(${cr},${O},"abierta")`, result: st.open };
+    row.getCell(6).value = { formula: `COUNTIFS(${cr},${O},"empate")`, result: st.even };
+    row.getCell(7).value = { formula: `COUNTIFS(${cr},${O},"abierta")`, result: st.open };
     const dec = st.wins + st.losses;
-    row.getCell(7).value = { formula: `IF(D${r}+E${r}=0,"",D${r}/(D${r}+E${r}))`, result: dec ? st.wins / dec : "" };
-    if (motor === "Lottos" || inst === "Todos") row.getCell(8).value = "—"; // puntos de instrumentos distintos no se suman
-    else row.getCell(8).value = { formula: `SUMIFS(${col("M")},${cr})`, result: st.points };
-    row.getCell(9).value = { formula: `SUMIFS(${N},${cr})`, result: st.usd };
+    row.getCell(8).value = { formula: `IF(D${r}+E${r}=0,"",D${r}/(D${r}+E${r}))`, result: dec ? st.wins / dec : "" };
+    if (motor === "Lottos" || inst === "Todos") row.getCell(9).value = "—"; // puntos de instrumentos distintos no se suman
+    else row.getCell(9).value = { formula: `SUMIFS(${col("M")},${cr})`, result: st.points };
+    row.getCell(10).value = { formula: `SUMIFS(${N},${cr})`, result: st.usd };
     const closed = st.entries - st.open;
-    row.getCell(10).value = { formula: `IF(C${r}-F${r}=0,"",I${r}/(C${r}-F${r}))`, result: closed ? r2(st.usd / closed) : "" };
+    row.getCell(11).value = { formula: `IF(C${r}-G${r}=0,"",J${r}/(C${r}-G${r}))`, result: closed ? r2(st.usd / closed) : "" };
     row.font = { ...FONT, bold };
-    if (dec) row.getCell(9).font = { ...FONT, bold: true, color: { argb: st.usd >= 0 ? "FF0E9F5F" : "FFD92D20" } };
+    if (dec) row.getCell(10).font = { ...FONT, bold: true, color: { argb: st.usd >= 0 ? "FF0E9F5F" : "FFD92D20" } };
   };
 
   let r = 4;
@@ -241,13 +251,13 @@ export function addLiveSheets(wb: ExcelJS.Workbook, days: BacktestDay[], multRow
   rs.getRow(r + 1).getCell(1).value = "Min vigilados: minutos de la sesión (de 390) con la vigilancia en vivo corriendo. Con pocos minutos el día cuenta poco.";
   rs.getRow(r + 1).getCell(1).font = NOTE;
 
-  rs.columns.forEach((c, i) => { c.width = [17, 11, 10, 10, 10, 10, 10, 10, 15, 13][i] ?? 11; });
+  rs.columns.forEach((c, i) => { c.width = [17, 11, 10, 10, 10, 10, 10, 10, 10, 15, 13][i] ?? 11; });
   for (let rr = 4; rr < perDayStart && rr < sec3; rr++) {
-    const v = rs.getRow(rr).getCell(7);
+    const v = rs.getRow(rr).getCell(8);
     if (typeof v.value === "object" && v.value && "formula" in v.value) v.numFmt = "0.0%";
-    const p = rs.getRow(rr).getCell(8);
+    const p = rs.getRow(rr).getCell(9);
     if (typeof p.value === "object" && p.value && "formula" in p.value) p.numFmt = PTS_FMT;
-    for (const c of [9, 10]) {
+    for (const c of [10, 11]) {
       const x = rs.getRow(rr).getCell(c);
       if (typeof x.value === "object" && x.value && "formula" in x.value) x.numFmt = USD_FMT;
     }
