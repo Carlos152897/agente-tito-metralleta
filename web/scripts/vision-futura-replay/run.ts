@@ -121,6 +121,22 @@ async function main() {
       log(`${inst}: FALLÓ — ${e instanceof Error ? e.message : String(e)}`);
     }
   }
+  // Excel completo (Resumen + "En vivo · resultado" por motor + entradas en vivo + hojas por día),
+  // guardado cada día en la carpeta del Escritorio (Carlos, 3-nov: "guárdame siempre las entradas en vivo").
+  try {
+    const { buildBacktestWorkbook } = await import("../../lib/visionFuturaBacktestStore");
+    const { writeFileSync, existsSync } = await import("fs");
+    const { homedir } = await import("os");
+    const buf = await buildBacktestWorkbook();
+    const desk = [join(homedir(), "OneDrive", "Desktop"), join(homedir(), "Desktop")].find((d) => existsSync(d));
+    const outDir = desk ? join(desk, "VisionFutura Backtest") : LOG_DIR;
+    mkdirSync(outDir, { recursive: true });
+    const out = join(outDir, "VisionFutura Backtest - EN VIVO y todo.xlsx");
+    try { writeFileSync(out, buf); } catch { writeFileSync(out.replace(/\.xlsx$/, ` ${new Date().toISOString().slice(0, 10)}.xlsx`), buf); } // abierto en Excel
+    log(`Excel completo guardado: ${out}`);
+  } catch (e) {
+    log(`Excel completo: ${e instanceof Error ? e.message : e}`);
+  }
   if (fallas > 0) process.exitCode = 1;
 }
 

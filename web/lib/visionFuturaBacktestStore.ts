@@ -11,6 +11,7 @@ import ExcelJS from "exceljs";
 import { STOP_VARIANTS, summarizeStops, type BacktestDay } from "./visionFuturaBacktest";
 import { replayFileName, type ReplayPayload } from "./visionFuturaReplay";
 import { loadHistorial } from "./amigaStore";
+import { addLiveSheets } from "./visionFuturaLiveExcel";
 
 const DIR = join(process.cwd(), "data", "vision-futura");
 const BT_DIR = join(DIR, "backtest");
@@ -218,6 +219,9 @@ export async function buildBacktestWorkbook(): Promise<Buffer> {
   res.eachRow((row, rn) => { if (rn > 1 && rn !== 6) row.eachCell((c) => { c.font = { ...FONT, ...(c.font ?? {}), name: "Arial" }; }); });
   res.getCell("A1").font = { name: "Arial", size: 14, bold: true };
   for (const m of MULTS) for (const c of [`B${m.row}`, `C${m.row}`]) res.getCell(c).font = INPUT_FONT;
+
+  // ── Entradas EN VIVO y su resultado por motor (justo después del Resumen) ──
+  addLiveSheets(wb, days, (inst) => multOf(inst).row, (inst) => multOf(inst).big);
 
   // ── Una hoja por día ──
   for (const d of days) {
