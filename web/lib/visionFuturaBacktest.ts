@@ -119,7 +119,8 @@ export interface BacktestDay {
 /** Spreads ejecutados en la repetición → filas del backtest (solo los ya liquidados). */
 export function spreadsForBacktest(trades: ReplaySpreadTrade[]): BacktestSpread[] {
   return trades
-    .filter((t) => t.pnl != null)
+    // Sin direccionales de débito (Carlos, 11-nov-2026); repeticiones viejas todavía los traen.
+    .filter((t) => t.pnl != null && t.kind !== "debito")
     .sort((a, b) => a.openedAt - b.openedAt)
     .map((t) => ({
       openedAt: t.openedAt,

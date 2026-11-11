@@ -2,7 +2,7 @@
 
 // Sección "Spreads" de VisionFutura, debajo de "Alertas y órdenes" (Carlos,
 // oct 2026: "contratos de spreads para ganar prima, con alta probabilidad...
-// call credit, put credit, call debit, todo"). El cálculo vive en
+// call credit, put credit, call debit, todo"; 11-nov-2026: sin débito). El cálculo vive en
 // lib/visionFuturaSpreads.ts; las cotizaciones son de tastytrade en vivo.
 
 import type { SpreadIdea, SpreadsReport } from "@/lib/visionFuturaSpreads";
@@ -16,11 +16,10 @@ const money = (n: number) => `$${Math.abs(n).toLocaleString("en-US", { maximumFr
 const px = (n: number) => `$${n.toFixed(2)}`;
 const lvl = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 
-const GROUPS: { key: keyof Pick<SpreadsReport, "callCredit" | "putCredit" | "callDebit" | "putDebit">; title: string; help: string; color: string }[] = [
-  { key: "callCredit", title: "Call credit (bear call)", help: "Cobras prima si el precio NO sube más allá del strike vendido.", color: DOWN },
+// Solo prima (crédito): los direccionales de débito se quitaron (Carlos, 11-nov-2026).
+const GROUPS: { key: keyof Pick<SpreadsReport, "callCredit" | "putCredit">; title: string; help: string; color: string }[] = [
   { key: "putCredit", title: "Put credit (bull put)", help: "Cobras prima si el precio NO baja más allá del strike vendido.", color: UP },
-  { key: "callDebit", title: "Call debit", help: "Pagas para ganar si el precio SUBE hasta el objetivo.", color: UP },
-  { key: "putDebit", title: "Put debit", help: "Pagas para ganar si el precio BAJA hasta el objetivo.", color: DOWN },
+  { key: "callCredit", title: "Call credit (bear call)", help: "Cobras prima si el precio NO sube más allá del strike vendido.", color: DOWN },
 ];
 
 function Card({ s, color }: { s: SpreadIdea; color: string }) {
@@ -99,43 +98,31 @@ export default function VisionFuturaSpreads({ spreads, error, expiration, market
           )}
           {spreads.note && <div className="wheel-empty" style={{ fontSize: 13 }}>{spreads.note}</div>}
 
-          {/* SIEMPRE dos columnas (pedido explícito de Carlos): prima a la izquierda, direccionales a la derecha. */}
+          {/* Dos columnas fijas: put credit (alcista) a la izquierda, call credit (bajista) a la derecha; iron condor abajo. */}
           <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 14, alignItems: "start" }}>
-            {([
-              { title: "Prima (crédito)", groups: GROUPS.filter((g) => g.key === "callCredit" || g.key === "putCredit"), withCondor: true },
-              { title: "Direccionales (débito)", groups: GROUPS.filter((g) => g.key === "callDebit" || g.key === "putDebit"), withCondor: false },
-            ] as const).map((col) => {
-              const count = col.groups.reduce((n, g) => n + spreads[g.key].length, 0) + (col.withCondor && spreads.ironCondor ? 1 : 0);
-              return (
-                <div key={col.title} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  <div style={{ borderBottom: "1px solid var(--border)", paddingBottom: 6 }}>
-                    <b style={{ fontSize: 14 }}>{col.title}</b> <span style={{ color: "var(--muted)" }}>({count})</span>
-                  </div>
-                  {count === 0 && <div className="wheel-empty" style={{ fontSize: 13 }}>Ninguno pasa los filtros ahora.</div>}
-                  {col.groups.map((g) => spreads[g.key].length > 0 && (
-                    <div key={g.key} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                      <div style={{ fontSize: 13 }}>
-                        <b style={{ color: g.color }}>{g.title}</b> <span style={{ color: "var(--faint)" }}>· {g.help}</span>
-                      </div>
-                      {spreads[g.key].map((s) => <Card key={s.id} s={s} color={g.color} />)}
-                    </div>
-                  ))}
-                  {col.withCondor && spreads.ironCondor && (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                      <div style={{ fontSize: 13 }}>
-                        <b style={{ color: "var(--accent)" }}>Iron condor</b> <span style={{ color: "var(--faint)" }}>· Cobras prima si el precio se queda entre los dos lados.</span>
-                      </div>
-                      <Card s={spreads.ironCondor} color="var(--accent)" />
-                    </div>
-                  )}
+            {GROUPS.map((g) => (
+              <div key={g.key} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{ borderBottom: "1px solid var(--border)", paddingBottom: 6 }}>
+                  <b style={{ fontSize: 14, color: g.color }}>{g.title}</b> <span style={{ color: "var(--muted)" }}>({spreads[g.key].length})</span>
+                  <div style={{ fontSize: 12, color: "var(--faint)" }}>{g.help}</div>
                 </div>
-              );
-            })}
+                {spreads[g.key].length === 0 && <div className="wheel-empty" style={{ fontSize: 13 }}>Ninguno pasa los filtros ahora.</div>}
+                {spreads[g.key].map((s) => <Card key={s.id} s={s} color={g.color} />)}
+              </div>
+            ))}
           </div>
+          {spreads.ironCondor && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ fontSize: 13 }}>
+                <b style={{ color: "var(--accent)" }}>Iron condor</b> <span style={{ color: "var(--faint)" }}>· Cobras prima si el precio se queda entre los dos lados.</span>
+              </div>
+              <Card s={spreads.ironCondor} color="var(--accent)" />
+            </div>
+          )}
 
           <div style={{ fontSize: 12, color: "var(--faint)" }}>
             Crédito: probabilidad ≥ 80% medida en el breakeven, delta de la pata vendida ≤ 0.20, cobro ≥ $0.20 y el strike vendido más allá de un nivel de VisionFutura.
-            Débito: el strike vendido es un nivel (el objetivo) y la ganancia máxima ≥ el costo. 1 spread = 100 × el precio. Es una lectura del mercado, no una recomendación.
+            1 spread = 100 × el precio. Es una lectura del mercado, no una recomendación.
           </div>
         </>
       )}

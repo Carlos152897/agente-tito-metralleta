@@ -29,6 +29,7 @@ import type { InstrumentId, InstrumentLabels } from "@/lib/visionFuturaInstrumen
 import type { AlertView, LottoLive, MoneyLive } from "@/lib/visionFuturaAlertStore";
 import type { ReplayPayload } from "@/lib/visionFuturaReplay";
 import type { ReplayDay } from "./VisionFuturaReplayBar";
+import VisionFuturaLiveTimeline, { todayNy, sessionOpenSec } from "./VisionFuturaLiveTimeline";
 import type { VisionAlert } from "@/lib/visionFuturaAlerts";
 import type { SpreadsReport } from "@/lib/visionFuturaSpreads";
 import type { MsPremiumMinute, MsUnusualTrade } from "@/lib/marketsnack";
@@ -88,6 +89,10 @@ const KEY_RADIUS = "visionary.visionFutura.radius";
 const KEY_LAYERS = "visionary.visionFutura.layers";
 const KEY_ZOOM = "visionary.visionFutura.zoom";
 const KEY_FIT = "visionary.visionFutura.fitHeight";
+/** Vista de la escalera (Carlos, 10-nov): "Long/Short" = barras de posicionamiento siempre prendidas;
+ *  "Gamma" = barras de GEX neto por strike en su lugar, con todo lo demás pero sin el posicionamiento. */
+type LadderMode = "longshort" | "gamma";
+const KEY_LADDER = "visionary.visionFutura.ladderMode";
 /** Zoom de la gráfica: minutos visibles (null = todo el día / toda la noche). */
 const ZOOMS: { min: number | null; label: string }[] = [
   { min: 60, label: "Última hora" },
@@ -298,7 +303,7 @@ function FragmentRow({ showSpot, spot, children }: { showSpot: boolean; spot: nu
 }
 
 const INSTRUMENT_OPTIONS: { id: InstrumentId; label: string; sub: string }[] = [
-  { id: "SPX", label: "SPX", sub: "/ES" },
+  { id: "SPX", label: "SPX", sub: "SPY · /ES" },
   { id: "SPY", label: "SPY", sub: "ETF · 0DTE" },
   { id: "NQ", label: "NQ", sub: "NDX · /NQ" },
   { id: "QQQ", label: "QQQ", sub: "ETF · 0DTE" },
@@ -307,6 +312,15 @@ const INSTRUMENT_OPTIONS: { id: InstrumentId; label: string; sub: string }[] = [
 ];
 const NIGHT_IDS: InstrumentId[] = ["ESN", "NQN"];
 const KEY_INST = "visionary.visionFutura.inst";
+/** Deja el instrumento en el link (?vf=SPY) de ESTA pestaña del navegador, sin recargar. */
+function setUrlInst(id: string) {
+  try {
+    const u = new URL(window.location.href);
+    if (u.searchParams.get("vf") === id) return;
+    u.searchParams.set("vf", id);
+    window.history.replaceState(null, "", u);
+  } catch { /* ignorar */ }
+}
 /** Acciones abiertas con el buscador (las más recientes primero). */
 const KEY_RECENT = "visionary.visionFutura.recientes";
 const isFixedInst = (id: string) => INSTRUMENT_OPTIONS.some((o) => o.id === id);
@@ -321,6 +335,7 @@ function expLabel(date: string, dte: number): string {
 
 export default function VisionFuturaTab() {
   const [radius, setRadius] = useState<number>(60);
+  const [ladder, setLadder] = useState<LadderMode>("longshort");
   const [inst, setInst] = useState<InstrumentId>("SPX");
   const [recientes, setRecientes] = useState<string[]>(["TSLA"]);
   const [expIdx, setExpIdx] = useState(0);
@@ -372,6 +387,8 @@ export default function VisionFuturaTab() {
   // 5 min ≤ cursor (MarketSnack no da más fino); velas, precio, volumen delta y alertas van por minuto.
   const [replayMin, setReplayMin] = useState(0);
   const [playing, setPlaying] = useState(false);
+  // Barra de tiempo bajo la escalera: hora de HOY a la que se quiere ir cuando termine de cargar la repetición.
+  const [pendingSec, setPendingSec] = useState<number | null>(null);
   const [speedMs, setSpeedMs] = useState(REPLAY_SPEEDS[0].ms);
   const [replayLoading, setReplayLoading] = useState(false);
   const [replayError, setReplayError] = useState<string | null>(null);
@@ -381,8 +398,13 @@ export default function VisionFuturaTab() {
     try {
       const saved = Number(window.localStorage.getItem(KEY_RADIUS));
       if ((RADII as readonly number[]).includes(saved)) setRadius(saved);
-      const savedInst = window.localStorage.getItem(KEY_INST);
-      if (savedInst && (isFixedInst(savedInst) || isEquityTicker(savedInst))) setInst(savedInst as InstrumentId);
+      // El link (?vf=SPY) manda sobre lo guardado: así cada pestaña del navegador conserva su instrumento al recargar.
+      const urlInst = new URLSearchParams(window.location.search).get("vf")?.toUpperCase() ?? null;
+      const savedInst = urlInst && (isFixedInst(urlInst) || isEquityTicker(urlInst)) ? urlInst : window.localStorage.getItem(KEY_INST);
+      if (savedInst && (isFixedInst(savedInst) || isEquityTicker(savedInst))) {
+        setInst(savedInst as InstrumentId);
+        setUrlInst(savedInst);
+      }
       const savedRecent = JSON.parse(window.localStorage.getItem(KEY_RECENT) ?? "[]");
       // TSLA ya no tiene botón (Carlos, 3-nov-2026: "sácame TSLA, tenemos la barra de buscar acción"):
       // queda siempre entre los recientes para abrirla con un click.
@@ -395,6 +417,7 @@ export default function VisionFuturaTab() {
       const savedZoom = Number(window.localStorage.getItem(KEY_ZOOM));
       if (ZOOMS.some((z) => z.min === savedZoom)) setZoom(savedZoom);
       if (window.localStorage.getItem(KEY_FIT) === "1") setFitHeight(true);
+      if (window.localStorage.getItem(KEY_LADDER) === "gamma") setLadder("gamma");
     } catch { /* sin storage: queda el default */ }
   }, []);
 
@@ -457,11 +480,29 @@ export default function VisionFuturaTab() {
     if (NIGHT_IDS.includes(id)) setMode("vivo");
     else if (mode === "repeticion") loadReplay(false);
     try { window.localStorage.setItem(KEY_INST, id); } catch { /* ignorar */ }
+    setUrlInst(id);
     if (!isFixedInst(id)) {
       const next = [id, ...recientes.filter((x) => x !== id)].slice(0, 6);
       setRecientes(next);
       try { window.localStorage.setItem(KEY_RECENT, JSON.stringify(next)); } catch { /* ignorar */ }
     }
+  };
+  // Click en otro instrumento = pestaña NUEVA del navegador con su link (?vf=ID); esta se queda como está
+  // (Carlos, 10-nov). Si el navegador bloquea la ventana, se cambia aquí mismo como antes.
+  const openInst = (id: InstrumentId) => {
+    if (id === inst) return;
+    if (!isFixedInst(id)) {
+      const next = [id, ...recientes.filter((x) => x !== id)].slice(0, 6);
+      setRecientes(next);
+      try { window.localStorage.setItem(KEY_RECENT, JSON.stringify(next)); } catch { /* ignorar */ }
+    }
+    let win: Window | null = null;
+    try {
+      const u = new URL(window.location.href);
+      u.searchParams.set("vf", id);
+      win = window.open(u.toString(), "_blank");
+    } catch { /* ignorar */ }
+    if (!win) pickInst(id);
   };
   const pickExp = (i: number) => {
     if (i === expIdx) return;
@@ -523,6 +564,24 @@ export default function VisionFuturaTab() {
     setPlaying(false);
     if (m === "repeticion" && !replay && !replayLoading) loadReplay(false);
   };
+
+  // Barra de tiempo en vivo: ir a una hora de hoy (carga/refresca la repetición del día en curso si hace falta).
+  const goBackTo = (sec: number) => {
+    setPlaying(false);
+    setReplayError(null);
+    setMode("repeticion");
+    setPendingSec(sec);
+    const isToday = replay?.date === todayNy();
+    const lastT = replay?.ticks.length ? replay.ticks[replay.ticks.length - 1].time : 0;
+    if (!replayLoading && (!isToday || lastT < sec - 300)) loadReplay(false);
+  };
+  const goLive = () => { setPlaying(false); setPendingSec(null); setMode("vivo"); };
+  useEffect(() => {
+    if (pendingSec == null || replayLoading || !replay?.ticks.length || replay.date !== todayNy()) return;
+    const m = Math.round((pendingSec - replay.ticks[0].time) / 60);
+    setReplayMin(Math.max(0, Math.min(replayLastMin(replay), m)));
+    setPendingSec(null);
+  }, [pendingSec, replay, replayLoading]);
 
   // Reproducción: avanza UN MINUTO cada `speedMs`.
   useEffect(() => {
@@ -615,6 +674,10 @@ export default function VisionFuturaTab() {
     setLayers(next);
     try { window.localStorage.setItem(KEY_LAYERS, JSON.stringify(next)); } catch { /* ignorar */ }
   };
+  const pickLadder = (m: LadderMode) => {
+    setLadder(m);
+    try { window.localStorage.setItem(KEY_LADDER, m); } catch { /* ignorar */ }
+  };
   const pickZoom = (z: number | null) => {
     setZoom(z);
     try { window.localStorage.setItem(KEY_ZOOM, z == null ? "" : String(z)); } catch { /* ignorar */ }
@@ -634,7 +697,7 @@ export default function VisionFuturaTab() {
         {INSTRUMENT_OPTIONS.map((o) => (
           <button
             key={o.id}
-            onClick={() => pickInst(o.id)}
+            onClick={() => openInst(o.id)}
             style={{
               padding: "6px 14px", borderRadius: 10, cursor: "pointer", textAlign: "center", minWidth: 84,
               border: `1px solid ${inst === o.id ? "var(--accent)" : "var(--border)"}`,
@@ -653,7 +716,7 @@ export default function VisionFuturaTab() {
             <div style={{ fontSize: 10, color: "var(--accent)" }}>acción · buscada</div>
           </button>
         )}
-        <VisionFuturaTickerSearch onPick={(t) => pickInst(t)} recientes={recientes.filter((t) => t !== inst)} />
+        <VisionFuturaTickerSearch onPick={(t) => openInst(t)} recientes={recientes.filter((t) => t !== inst)} />
       </div>
       {data?.expirations && data.expirations.length > 0 && mode === "vivo" && (
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -974,6 +1037,13 @@ export default function VisionFuturaTab() {
           <Tile label={labels.main} value={fmt(view.spot.spx)} sub={view.regime ? `GEX neto ${view.regime} (${fmtGex(view.netGex ?? 0)})` : "sin GEX"} color={view.regime === "negativo" ? "var(--red-soft)" : undefined} />
           {labels.etf && <Tile label={labels.etf} value={fmt(view.spot.spy)} sub={spyRatio != null ? `ratio ${spyRatio.toFixed(5)} × ${labels.main}` : "sin cotización"} />}
           {labels.future && <Tile label={view.esSymbol ?? labels.future} value={fmt(view.spot.es)} sub={esBasis != null ? `base ${esBasis >= 0 ? "+" : ""}${esBasis.toFixed(2)} pts vs ${labels.main}` : "sin cotización"} />}
+          {/* Net GEX en su propia tarjeta (Carlos, 9-nov-2026). Positivo = dealers frenan; negativo = aceleran. */}
+          <Tile
+            label="Net GEX"
+            value={view.netGex != null ? `${view.netGex >= 0 ? "+" : "−"}$${fmtGex(Math.abs(view.netGex)).replace(/(\d+\.\d)\d(B)$/, "$1$2")}` : "—"}
+            color={view.netGex == null ? undefined : view.netGex >= 0 ? "var(--green)" : "var(--red-soft)"}
+            sub={view.netGex == null ? "sin GEX" : view.netGex >= 0 ? "positivo: los dealers frenan el precio" : "negativo: los dealers aceleran el precio"}
+          />
           <Tile
             label={labels.vol}
             value={view.vix ? `${fmt(view.vix.last)}${labels.vol === "VIX" ? "" : "%"}` : "—"}
@@ -1077,6 +1147,11 @@ export default function VisionFuturaTab() {
       <div className="card" style={{ gap: 12, flex: "1 1 760px", minWidth: 0 }}>
         <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
           <h4 style={{ margin: 0 }}>Escalera en vivo</h4>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <div className="view-toggle">
+            <button className={ladder === "longshort" ? "active" : ""} onClick={() => pickLadder("longshort")} title="Barras de posicionamiento: verde = apuestas arriba, morado = apuestas abajo">Long/Short</button>
+            <button className={ladder === "gamma" ? "active" : ""} onClick={() => pickLadder("gamma")} title="Barras de GEX neto por strike: verde = frena el precio, rojo = lo acelera">Gamma</button>
+          </div>
           {tick ? (
             <span style={{ fontSize: 12, color: "var(--muted)" }}>±{view.radius} pts (fijo en la repetición)</span>
           ) : <div className="view-toggle">
@@ -1084,9 +1159,10 @@ export default function VisionFuturaTab() {
               <button key={r} className={radius === r ? "active" : ""} onClick={() => pickRadius(r)}>±{windowFor(r)}</button>
             ))}
           </div>}
+          </div>
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
-          {LAYERS.map((l) => {
+          {LAYERS.filter((l) => l.key !== "posicionamiento").map((l) => {
             const on = layers[l.key];
             return (
               <button
@@ -1202,7 +1278,8 @@ export default function VisionFuturaTab() {
             dealerLevels={view.dealerLevels}
             expectedMove={view.expectedMove}
             conversion={view.conversion}
-            layers={layers}
+            layers={{ ...layers, posicionamiento: ladder === "longshort", historial_ls: ladder === "gamma" ? false : layers.historial_ls }}
+            gexBars={ladder === "gamma"}
             prevAggressor={tick ? replayPrevAgg : prevAgg}
             unusual={tick ? replayUnusual : liveUnusual}
             vix={vixStrip}
@@ -1236,6 +1313,25 @@ export default function VisionFuturaTab() {
             premarket={pmReport ? { low: pmReport.range.low, high: pmReport.range.high, extLow: pmReport.extended.low, extHigh: pmReport.extended.high } : null}
           />
         )}
+        {(() => {
+          // Solo hoy, entre semana, después de las 9:31 NY, y no en modo noche.
+          const today = todayNy();
+          const openSec = sessionOpenSec(today);
+          const nowSec = Date.now() / 1000;
+          const wd = new Date(`${today}T12:00:00Z`).getUTCDay();
+          const onToday = mode === "vivo" || replay?.date === today;
+          if (isNightInst || wd === 0 || wd === 6 || nowSec < openSec + 60 || !onToday) return null;
+          return (
+            <VisionFuturaLiveTimeline
+              openSec={openSec}
+              nowSec={nowSec}
+              cursorSec={mode === "vivo" ? null : pendingSec ?? (tick ? cursorSec : null)}
+              loading={replayLoading}
+              onPick={goBackTo}
+              onLive={goLive}
+            />
+          );
+        })()}
         {tick && replay && (
           <ReplayMiniControls
             replay={replay} idx={curMin} onIdx={setReplayMin} playing={playing} onPlaying={setPlaying} spotNow={view.spot.spx}

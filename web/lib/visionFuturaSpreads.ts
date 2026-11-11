@@ -93,6 +93,11 @@ export const SPREAD_TUNING = {
   debitTargetMin: 5,
   debitTargetMax: 40,
   perSide: 3,
+  /**
+   * Direccionales de débito APAGADOS (Carlos, 11-nov-2026: "ya no quiero eso en el sistema").
+   * Ni en vivo, ni en la repetición, ni en el backtest. El código queda por si algún día los pide.
+   */
+  debitEnabled: false,
 };
 
 export interface SpreadsInput {
@@ -111,6 +116,8 @@ export interface SpreadsInput {
   widths?: number[];
   /** $ por punto del contrato de opciones (100 en SPX/NDX/acciones). */
   multiplier?: number;
+  /** Arma también call/put debit (default = SPREAD_TUNING.debitEnabled, hoy apagado). */
+  includeDebit?: boolean;
 }
 
 export interface SpreadsReport {
@@ -271,8 +278,9 @@ export function buildSpreads(input: SpreadsInput): SpreadsReport {
 
   const callCredit = credit("call");
   const putCredit = credit("put");
-  const callDebit = debit("call");
-  const putDebit = debit("put");
+  const withDebit = input.includeDebit ?? SPREAD_TUNING.debitEnabled;
+  const callDebit = withDebit ? debit("call") : [];
+  const putDebit = withDebit ? debit("put") : [];
 
   // ── Iron condor: el mejor call credit + el mejor put credit del mismo ancho ──
   let ironCondor: SpreadIdea | null = null;

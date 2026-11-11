@@ -24,6 +24,9 @@ const btFile = (day: { date: string; instrument?: string }) =>
 /** Nombre de la hoja de Excel de un día: "2026-10-22" para SPX, "NQ 2026-10-22" para el resto. */
 const sheetName = (d: { date: string; instrument?: string }) => (!d.instrument || d.instrument === "SPX" ? d.date : `${d.instrument} ${d.date}`);
 
+/** Spreads del día SIN los direccionales de débito (Carlos, 11-nov-2026: ya no se usan); los días viejos los traen guardados. */
+const spreadsOf = (d: BacktestDay) => (d.spreads ?? []).filter((x) => x.kind !== "debito");
+
 export function saveBacktestDay(day: BacktestDay) {
   mkdirSync(BT_DIR, { recursive: true });
   // Rearmar la repetición no borra el bloque "En vivo" ya guardado (viene de otra fuente).
@@ -144,7 +147,7 @@ export async function buildBacktestWorkbook(): Promise<Buffer> {
       for (const c of [2, 3, 4, 6, 9, 10]) row.getCell(c).value = 0;
     }
     row.getCell(5).value = { formula: `IF(B${r}>0,C${r}/B${r},0)`, result: n > 0 ? d.wins / n : 0 };
-    const sp = d.spreads ?? [];
+    const sp = spreadsOf(d);
     if (sp.length > 0) {
       const usdRange = `'${sheetName(d)} spreads'!N2:N${sp.length + 1}`;
       const usd = sp.map((x) => Math.round((x.pnl ?? 0) * 100));
@@ -192,7 +195,7 @@ export async function buildBacktestWorkbook(): Promise<Buffer> {
     tot.getCell(6).value = "—";
     tot.getCell(7).value = { formula: `SUM(G${first}:G${lastR})`, result: days.reduce((a, d) => a + d.points * multOf(d.instrument).big, 0) };
     tot.getCell(8).value = { formula: `SUM(H${first}:H${lastR})`, result: days.reduce((a, d) => a + d.points * multOf(d.instrument).micro, 0) };
-    const spUsd = days.flatMap((d) => (d.spreads ?? []).map((x) => Math.round((x.pnl ?? 0) * 100)));
+    const spUsd = days.flatMap((d) => (spreadsOf(d)).map((x) => Math.round((x.pnl ?? 0) * 100)));
     tot.getCell(11).value = { formula: `SUM(K${first}:K${lastR})`, result: spUsd.length };
     tot.getCell(12).value = { formula: `SUM(L${first}:L${lastR})`, result: spUsd.filter((v) => v > 0).length };
     tot.getCell(13).value = { formula: `SUM(M${first}:M${lastR})`, result: spUsd.filter((v) => v < 0).length };
@@ -351,7 +354,7 @@ export async function buildBacktestWorkbook(): Promise<Buffer> {
 
   // ── Spreads por día ──
   for (const d of days) {
-    const sp = d.spreads ?? [];
+    const sp = spreadsOf(d);
     if (sp.length === 0) continue;
     const ws = wb.addWorksheet(`${sheetName(d)} spreads`, { views: [{ state: "frozen", ySplit: 1 }] });
     ws.columns = [

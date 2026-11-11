@@ -57,11 +57,11 @@ describe("datos por strike", () => {
     const snap = gridSnapshot(new Map([[28510, { compras: 1, ventas: 2, up: 0, down: 1 }], [28500, { compras: 3, ventas: 0, up: 2, down: 0 }]]), 20);
     expect(snap!.get(28500)).toEqual({ compras: 4, ventas: 2, up: 2, down: 1 });
     const vol = gridVolRows([
-      { strike: 28510, cA: 1, cB: 0, cV: 1, pA: 0, pB: 0, pV: 0, delta: 1, prevDelta: null, position: null },
-      { strike: 28500, cA: 2, cB: 1, cV: 3, pA: 0, pB: 0, pV: 0, delta: 1, prevDelta: 2, position: { kind: "compran_calls", contracts: 1, side: "arriba" } },
+      { strike: 28510, cA: 1, cB: 0, cV: 1, pA: 0, pB: 0, pV: 0, delta: 1, prevDelta: null, prevBuy: null, prevSell: null, position: null },
+      { strike: 28500, cA: 2, cB: 1, cV: 3, pA: 0, pB: 0, pV: 0, delta: 1, prevDelta: 2, prevBuy: null, prevSell: null, position: { kind: "compran_calls", contracts: 1, side: "arriba" } },
     ], 20);
     expect(vol).toHaveLength(1);
-    expect(vol[0]).toMatchObject({ strike: 28500, cA: 3, delta: 2, prevDelta: 2, position: { kind: "compran_calls" } });
+    expect(vol[0]).toMatchObject({ strike: 28500, cA: 3, delta: 2, prevDelta: 2, prevBuy: null, prevSell: null, position: { kind: "compran_calls" } });
     const mins = gridMinutes(new Map([[28510, [{ t: 60, cA: 1, cB: 0, cV: 1, pA: 0, pB: 0, pV: 0 }]], [28500, [{ t: 60, cA: 2, cB: 0, cV: 2, pA: 0, pB: 0, pV: 0 }]]]), 20);
     expect(mins.get(28500)).toEqual([{ t: 60, cA: 3, cB: 0, cV: 3, pA: 0, pB: 0, pV: 0 }]);
   });

@@ -151,6 +151,8 @@ export function gridVolRows(rows: VolDeltaRow[], step: number): VolDeltaRow[] {
       pA: sum((r) => r.pA), pB: sum((r) => r.pB), pV: sum((r) => r.pV),
       delta: sum((r) => r.delta),
       prevDelta: anyPrev ? sum((r) => r.prevDelta ?? 0) : null,
+      prevBuy: l.some((r) => r.prevBuy != null) ? sum((r) => r.prevBuy ?? 0) : null,
+      prevSell: l.some((r) => r.prevSell != null) ? sum((r) => r.prevSell ?? 0) : null,
       position: top.position,
     };
   });

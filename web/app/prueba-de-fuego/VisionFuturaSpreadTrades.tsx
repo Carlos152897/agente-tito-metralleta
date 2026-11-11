@@ -2,8 +2,8 @@
 
 // Backtest de spreads dentro de la repetición (Carlos, oct 2026: "si se da una
 // alerta de un spread dame la notificación, la ejecutas y me dices cuánto se
-// ganó o perdió"). Cada alerta de VisionFutura "ejecuta" su spread de prima y
-// su spread direccional (lib/visionFuturaReplay.ts); acá se muestran a medida
+// ganó o perdió"). Cada alerta de VisionFutura "ejecuta" su spread de prima
+// (lib/visionFuturaReplay.ts; el direccional de débito se quitó el 11-nov-2026); acá se muestran a medida
 // que avanza la repetición: la notificación al abrirse, el resultado "si el
 // SPX terminara aquí" mientras sigue el día, y el resultado final al cierre.
 
@@ -17,7 +17,7 @@ const usd = (n: number) => `${n > 0 ? "+" : n < 0 ? "−" : ""}$${Math.abs(Math.
 const lvl = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 2 });
 const hmNy = (ms: number) => new Date(ms).toLocaleTimeString("es-MX", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hour12: false });
 
-export default function VisionFuturaSpreadTrades({ trades, tickMs, spot, isLastTick, partial, atClose }: {
+export default function VisionFuturaSpreadTrades({ trades: allTrades, tickMs, spot, isLastTick, partial, atClose }: {
   trades: ReplaySpreadTrade[];
   tickMs: number;
   spot: number;
@@ -27,14 +27,17 @@ export default function VisionFuturaSpreadTrades({ trades, tickMs, spot, isLastT
   atClose?: boolean;
 }) {
   const lb = useVisionLabels();
+  // Sin direccionales de débito (Carlos, 11-nov-2026); las repeticiones guardadas antes todavía los traen.
+  const trades = allTrades.filter((t) => t.kind !== "debito");
   const open = trades.filter((t) => t.openedAt <= tickMs).sort((a, b) => b.openedAt - a.openedAt);
   const justOpened = open.filter((t) => t.openedAt === tickMs);
   const final = isLastTick && !partial;
   // Resultado de cada uno: final (al vencimiento) en el último momento; si no, "si terminara aquí".
   const pnlOf = (t: ReplaySpreadTrade) => (final && t.pnlUsd != null ? t.pnlUsd : spreadPnlAtExpiry(t.idea, spot) * 100);
   const total = open.reduce((s, t) => s + pnlOf(t), 0);
-  const credit = open.filter((t) => t.kind === "credito");
-  const debit = open.filter((t) => t.kind === "debito");
+  // Put credit = alerta alcista, call credit = alerta bajista.
+  const putCredit = open.filter((t) => t.direction === "alcista");
+  const callCredit = open.filter((t) => t.direction !== "alcista");
   const sum = (arr: ReplaySpreadTrade[]) => arr.reduce((s, t) => s + pnlOf(t), 0);
   const allFinal = trades.filter((t) => t.pnlUsd != null);
   const dayTotal = allFinal.reduce((s, t) => s + (t.pnlUsd ?? 0), 0);
@@ -55,8 +58,8 @@ export default function VisionFuturaSpreadTrades({ trades, tickMs, spot, isLastT
           <b style={{ color: total >= 0 ? UP : DOWN, fontSize: 15 }}>{usd(total)}</b>
         </span>
         <span style={{ color: "var(--muted)" }}>
-          Prima: <b style={{ color: sum(credit) >= 0 ? UP : DOWN }}>{usd(sum(credit))}</b> ({credit.length}) · Direccionales:{" "}
-          <b style={{ color: sum(debit) >= 0 ? UP : DOWN }}>{usd(sum(debit))}</b> ({debit.length})
+          Put credit: <b style={{ color: sum(putCredit) >= 0 ? UP : DOWN }}>{usd(sum(putCredit))}</b> ({putCredit.length}) · Call credit:{" "}
+          <b style={{ color: sum(callCredit) >= 0 ? UP : DOWN }}>{usd(sum(callCredit))}</b> ({callCredit.length})
         </span>
         {!final && allFinal.length > 0 && (
           <span style={{ color: "var(--faint)" }}>Total del día completo: {usd(dayTotal)} (ve al cierre ⏭)</span>
@@ -66,12 +69,12 @@ export default function VisionFuturaSpreadTrades({ trades, tickMs, spot, isLastT
       {open.length === 0 ? (
         <div className="wheel-empty" style={{ fontSize: 13 }}>Todavía no se ejecutó ningún spread a esta hora. Se ejecutan cuando se dispara una alerta.</div>
       ) : (
-        // SIEMPRE dos columnas (pedido explícito de Carlos): prima a la izquierda,
-        // direccionales a la derecha — no se apilan en pantallas angostas.
+        // Dos columnas fijas (no se apilan en pantallas angostas): put credit a la izquierda,
+        // call credit a la derecha. Los direccionales de débito se quitaron (11-nov-2026).
         <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 14, alignItems: "start" }}>
           {([
-            { list: credit, title: "Prima (crédito)", help: "Cobras prima; ganan si el precio no llega al strike vendido." },
-            { list: debit, title: "Direccionales (débito)", help: "Pagas; ganan si el precio llega al objetivo." },
+            { list: putCredit, title: "Put credit (alertas alcistas)", help: "Cobras prima; gana si el precio no baja del strike vendido." },
+            { list: callCredit, title: "Call credit (alertas bajistas)", help: "Cobras prima; gana si el precio no sube del strike vendido." },
           ] as const).map((col) => (
             <div key={col.title} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap", borderBottom: "1px solid var(--border)", paddingBottom: 6 }}>
@@ -90,7 +93,7 @@ export default function VisionFuturaSpreadTrades({ trades, tickMs, spot, isLastT
               {col.list.length === 0 && <div className="wheel-empty" style={{ fontSize: 13 }}>Ninguno todavía.</div>}
               {col.list.map((t) => {
                 const pnl = pnlOf(t);
-                const color = t.kind === "credito" ? (t.direction === "alcista" ? UP : DOWN) : "var(--accent)";
+                const color = t.direction === "alcista" ? UP : DOWN;
                 return (
                   <div key={t.id} style={{ border: "1px solid var(--border)", borderLeft: `4px solid ${color}`, borderRadius: 10, padding: 12, display: "flex", flexDirection: "column", gap: 6, background: "var(--panel-2)" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -136,7 +139,7 @@ export default function VisionFuturaSpreadTrades({ trades, tickMs, spot, isLastT
         </div>
       )}
       <div style={{ fontSize: 12, color: "var(--faint)" }}>
-        Cada alerta ejecuta 2 spreads: uno de prima (crédito protegido por el nivel de la alerta) y uno direccional (débito hacia el objetivo).
+        Cada alerta ejecuta 1 spread de prima: put credit si es alcista, call credit si es bajista, protegido por el nivel de la alerta.
         Precio de cada pata = promedio real al que se llenó en MarketSnack en los últimos 15 min. Se mantienen hasta el vencimiento; 1 spread = 100 × el precio. Sin comisiones.
       </div>
     </div>

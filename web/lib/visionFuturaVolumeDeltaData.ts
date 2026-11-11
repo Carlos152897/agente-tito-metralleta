@@ -18,6 +18,8 @@ const REPULL_MS = 15_000;
 /** Si DXLink no dio nada, no se le vuelve a esperar hasta esta hora (mientras, respaldo de MarketSnack). */
 let dxDownUntil = 0;
 const DX_RETRY_MS = 2 * 60_000;
+/** Más viejas que esto (s), las velas de tastytrade se consideran trabadas. */
+const STALE_SEC = 180;
 
 /**
  * RESPALDO (Carlos, 2-nov-2026: "se supone que debe haber respaldo"): volumen al ask / bid por
@@ -189,8 +191,15 @@ export async function loadVolumeDelta(inst: string, expiration: string, spot: nu
     if (mins.length) out[String(s.k)] = mins.map((m) => [m.t, m.cA, m.cB, m.cV, m.pA, m.pB, m.pV]);
   }
   const asOfT = Math.floor(now / 60_000) * 60;
-  // tastytrade no dio nada (DXLink caído): respaldo de MarketSnack. 
-  if (Object.keys(out).length === 0 && now < dxDownUntil) {
+  // Velas viejas: si la última vela de tastytrade tiene > 3 min con la sesión abierta, DXLink se
+  // trabó y la ventana de "1 min" saldría vacía (el panel se borraba entero) → respaldo MarketSnack.
+  let newest = -Infinity;
+  for (const s of strikes) for (const sym of [s.call!, s.put!]) for (const t of store.get(sym)?.bars.keys() ?? []) if (t > newest) newest = t;
+  const inSession = now - open > STALE_SEC * 1000 && now - open < 6.5 * 3600_000; // 9:33–16:00 NY
+  const stale = inSession && newest > -Infinity && asOfT - newest > STALE_SEC;
+  if (stale) dxDownUntil = Math.max(dxDownUntil, now + DX_RETRY_MS);
+  // tastytrade no dio nada (DXLink caído) o se quedó atrás: respaldo de MarketSnack.
+  if ((Object.keys(out).length === 0 || stale) && now < dxDownUntil) {
     // Siempre el día completo (está en caché 60 s): si el navegador venía de tastytrade, rearma todo.
     const ms = await msStrikes(strikes.filter((s) => s.callOcc && s.putOcc), open, open / 1000).catch(() => ({}));
     if (Object.keys(ms).length > 0) {

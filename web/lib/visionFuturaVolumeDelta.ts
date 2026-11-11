@@ -43,6 +43,9 @@ export interface VolDeltaRow extends VolSums {
   delta: number;
   /** Delta de la ventana anterior del mismo largo (para ▲▼). null si no hay. */
   prevDelta: number | null;
+  /** Compras al ask (cA + pA) y ventas al bid (cB + pB) de la ventana anterior, para ▲▼= por lado. null si no hay. */
+  prevBuy: number | null;
+  prevSell: number | null;
   /** Lo que más pesa en el strike en la ventana (null = nada operado). */
   position: { kind: PositionKind; contracts: number; side: "arriba" | "abajo" } | null;
 }
@@ -99,7 +102,11 @@ export function volDeltaRows(byStrike: Map<number, StrikeMinute[]>, toT: number,
     const s = sumMinutes(mins, fromT, toT);
     const prev = windowSec == null ? null : sumMinutes(mins, fromT - windowSec, fromT);
     const hadPrev = prev != null && (prev.cV > 0 || prev.pV > 0);
-    out.push({ strike, ...s, delta: deltaOf(s), prevDelta: hadPrev ? deltaOf(prev!) : null, position: positionOf(s) });
+    out.push({
+      strike, ...s, delta: deltaOf(s), prevDelta: hadPrev ? deltaOf(prev!) : null,
+      prevBuy: prev ? prev.cA + prev.pA : null, prevSell: prev ? prev.cB + prev.pB : null,
+      position: positionOf(s),
+    });
   }
   return out.sort((a, b) => b.strike - a.strike);
 }

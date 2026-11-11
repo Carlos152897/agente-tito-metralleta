@@ -72,7 +72,7 @@ export const LAYERS: { key: LayerKey; label: string; color: string }[] = [
   { key: "premarket", label: "Premarket", color: "#d4a373" },
   { key: "volumen_delta", label: "Volumen delta", color: "#38bdf8" },
   { key: "iman_flujo", label: "Imanes de flujo", color: "#3b82f6" },
-  { key: "imanes_sofia", label: "imanesSofia", color: "#22d3ee" },
+  { key: "imanes_sofia", label: "Imán Referencia", color: "#22d3ee" },
 ];
 
 export const DEFAULT_LAYERS: Record<LayerKey, boolean> = {
@@ -168,7 +168,13 @@ interface Props {
   flowMagnets?: { now: FlowMagnets; history: FlowMagnetSegment[]; windowLabel: string } | null;
   /** Modelo imanesSofia: mismo formato, ventana de 1 min. */
   sofiaMagnets?: { now: FlowMagnets; history: FlowMagnetSegment[]; windowLabel: string } | null;
+  /** Vista "Gamma": barras de GEX neto por strike en el centro del plot (en lugar del posicionamiento). */
+  gexBars?: boolean;
 }
+
+/** Barras de gamma: verde = GEX + (los dealers frenan), rojo = GEX − (los dealers aceleran). */
+const GEX_POS = "#12b76a";
+const GEX_NEG = "#f97066";
 
 export interface CandleBar { time: number; open: number; high: number; low: number; close: number }
 
@@ -568,8 +574,9 @@ export default function VisionFuturaChart(rawProps: Props) {
   }
   if (layers.imanes_sofia && props.sofiaMagnets) {
     const { pos, neg } = props.sofiaMagnets.now;
-    if (pos) addChip({ key: `sf-pos-${pos.strike}`, text: `Sofía + (${fmtFuerza(pos.fuerza)}) ${n2(pos.strike, 0)}`, color: SOFIA_POS }, pos.strike);
-    if (neg) addChip({ key: `sf-neg-${neg.strike}`, text: `Sofía − (${fmtFuerza(neg.fuerza)}) ${n2(neg.strike, 0)}`, color: SOFIA_NEG }, neg.strike);
+    // Nombre visible "Imán Referencia +/−" (Carlos, 11-nov: antes decía "Sofía").
+    if (pos) addChip({ key: `sf-pos-${pos.strike}`, text: `Imán Referencia + (${fmtFuerza(pos.fuerza)}) ${n2(pos.strike, 0)}`, color: SOFIA_POS }, pos.strike);
+    if (neg) addChip({ key: `sf-neg-${neg.strike}`, text: `Imán Referencia − (${fmtFuerza(neg.fuerza)}) ${n2(neg.strike, 0)}`, color: SOFIA_NEG }, neg.strike);
   }
   if (layers.premarket && props.premarket) {
     const pm = props.premarket;
@@ -673,8 +680,25 @@ export default function VisionFuturaChart(rawProps: Props) {
   const volOn = !!props.volDelta && layers.volumen_delta;
   const volBy = new Map((props.volDelta?.rows ?? []).map((v) => [v.strike, v]));
   const spikeBy = new Map((volOn ? props.volDelta?.spikes ?? [] : []).map((v) => [v.strike, v]));
-  const netOf = (r: VisionStrikeRow) => (volOn ? volBy.get(r.spx)?.delta ?? 0 : r.compras - r.ventas);
-  const maxNetAgg = Math.max(1, ...rows.map((r) => Math.abs(netOf(r))));
+  // Agresor como SofIA (Carlos, 11-nov, "sí, como SofIA"): NETO por strike en el lado que gana, el
+  // otro en 0. Neto = (calls compradas + puts vendidas) − (calls vendidas + puts compradas), el mismo de
+  // imanesSofia → la barra azul más grande = Imán +, la roja más grande = Imán −. ▲▼= vs la ventana anterior.
+  const split = (net: number) => ({ buy: Math.max(net, 0), sell: Math.max(-net, 0) });
+  const sidesOf = (r: VisionStrikeRow) => {
+    if (volOn) {
+      const v = volBy.get(r.spx);
+      const cur = split(v?.delta ?? 0);
+      const prev = v?.prevDelta != null ? split(v.prevDelta) : null;
+      return { ...cur, prevBuy: prev ? prev.buy : null, prevSell: prev ? prev.sell : null };
+    }
+    // En $: arriba − abajo = flujo neto de calls − flujo neto de puts.
+    const { up, down } = positioningSides(r);
+    const p = prevAggressor?.get(r.spx);
+    const prev = p ? split(p.up - p.down) : null;
+    return { ...split(up - down), prevBuy: prev ? prev.buy : null, prevSell: prev ? prev.sell : null };
+  };
+  const maxSideAgg = Math.max(1, ...rows.map((r) => { const s = sidesOf(r); return Math.max(s.buy, s.sell); }));
+  const cmpArrow = (cur: number, prev: number | null) => (prev == null ? "" : cur > prev ? "▲" : cur < prev ? "▼" : "=");
   const fmtNet = (v: number) => (volOn ? (v >= 10_000 ? `${(v / 1000).toFixed(1)}K` : v.toLocaleString("en-US")) : money1(v));
   const spotStrike = rows.reduce((a, b) => (Math.abs(b.spx - spot) < Math.abs(a.spx - spot) ? b : a), rows[0]).spx;
   const pressureLit = new Map(
@@ -779,6 +803,36 @@ export default function VisionFuturaChart(rawProps: Props) {
           </g>
         )}
 
+        {/* Vista Gamma: GEX neto por strike, eje al centro — rojo ← (acelera) y verde → (frena). */}
+        {props.gexBars && (() => {
+          const maxGex = Math.max(1, ...rows.map((r) => Math.abs(r.netGex)));
+          return (
+            <g>
+              <line x1={posX} x2={posX} y1={TOP} y2={plotBottom} stroke="#3a4560" strokeDasharray="2 3" />
+              {rows.map((r) => {
+                if (!r.netGex) return null;
+                const w = Math.max(1, (Math.abs(r.netGex) / maxGex) * POS_SPAN);
+                const neg = r.netGex < 0;
+                const x0 = neg ? posX - w : posX;
+                const ry = y(r.spx) - 6;
+                const big = Math.abs(r.netGex) >= maxGex * 0.5;
+                return (
+                  <g key={`gex-${r.spx}`}>
+                    <rect x={x0} y={ry} width={w} height={12} fill={neg ? GEX_NEG : GEX_POS} opacity={big ? POS_OPACITY + 0.15 : POS_OPACITY} />
+                    {Math.abs(r.netGex) >= maxGex * 0.08 && (
+                      <text x={neg ? x0 - 3 : x0 + w + 3} y={ry + 10} fontSize={9} fontWeight={big ? 700 : 400} fill={neg ? GEX_NEG : GEX_POS} textAnchor={neg ? "end" : "start"} style={{ pointerEvents: "none" }}>
+                        {neg ? "−" : "+"}{gexM(Math.abs(r.netGex)).replace(/(\d)$/, "$1M")}
+                      </text>
+                    )}
+                  </g>
+                );
+              })}
+              <text x={posX - 6} y={height - 24} fontSize={10} textAnchor="end" fill={GEX_NEG}>← GEX − acelera</text>
+              <text x={posX + 6} y={height - 24} fontSize={10} fill={GEX_POS}>GEX + frena →</text>
+            </g>
+          );
+        })()}
+
         {/* Eje de tiempo */}
         {ticks.map((t) => (
           <g key={t}>
@@ -841,7 +895,7 @@ export default function VisionFuturaChart(rawProps: Props) {
                 return x1 > x0 ? (
                   <line key={`sf-${i}`} x1={x0} x2={x1} y1={y(sg.strike)} y2={y(sg.strike)}
                     stroke={sg.kind === "pos" ? SOFIA_POS : SOFIA_NEG} strokeWidth={live ? 3 : 2} strokeDasharray="5 3" opacity={live ? 0.95 : 0.5}>
-                    <title>{`Sofía ${sg.kind === "pos" ? "+" : "−"} ${n2(sg.strike, 0)} · ${hm(sg.start - 60)}–${hm(sg.end)} · fuerza máx ${fmtFuerza(sg.fuerza)}`}</title>
+                    <title>{`Imán Referencia ${sg.kind === "pos" ? "positivo" : "negativo"} ${n2(sg.strike, 0)} · ${hm(sg.start - 60)}–${hm(sg.end)} · fuerza máx ${fmtFuerza(sg.fuerza)}`}</title>
                   </line>
                 ) : null;
               })}
@@ -1072,21 +1126,22 @@ export default function VisionFuturaChart(rawProps: Props) {
             {rows.map((r, i) => {
               const ry0 = TOP + i * ROW_H;
               const ry = ry0 + rowMid; // contenido centrado en la fila (filas altas con el zoom vertical)
-              const net = netOf(r);
               const vd = volOn ? volBy.get(r.spx) : undefined;
-              const show = Math.abs(net) >= 0.01 * maxNetAgg && net !== 0;
-              const buy = net > 0;
-              const w = show ? Math.max(3, (Math.abs(net) / maxNetAgg) * AGG_HALF) : 0;
-              const prev = prevAggressor?.get(r.spx);
-              const prevNet = volOn ? vd?.prevDelta ?? null : prev ? prev.compras - prev.ventas : null;
-              const grew = prevNet == null ? 0 : Math.sign(net) !== Math.sign(prevNet) ? 1 : Math.sign(Math.abs(net) - Math.abs(prevNet));
-              const arrow = !show || prevNet == null || grew === 0 ? "" : grew > 0 ? "▲" : "▼";
+              const sd = sidesOf(r);
+              const any = sd.buy > 0 || sd.sell > 0;
+              const wB = sd.buy > 0 ? Math.max(2, (sd.buy / maxSideAgg) * AGG_HALF) : 0;
+              const wS = sd.sell > 0 ? Math.max(2, (sd.sell / maxSideAgg) * AGG_HALF) : 0;
+              const aB = cmpArrow(sd.buy, sd.prevBuy);
+              const aS = cmpArrow(sd.sell, sd.prevSell);
               const hit = unusualBy.get(r.spx);
               const sp = hit ? undefined : spikeBy.get(r.spx);
               const pr = pressureLit.get(r.spx);
               const uCol = hit?.cruce ? CRUCE : UNUSUAL;
-              const col = hit && !hit.cruce ? UNUSUAL : sp ? VOL_SPIKE : buy ? "#2f6bff" : "#f04438";
-              const sideCol = buy ? "#7aa2ff" : "#f97066";
+              // La barra del lado inusual se pinta amarilla (o naranja si es volumen delta inusual).
+              const hiBuy = hit && !hit.cruce ? hit.side === "compra" : sp ? sp.kind.startsWith("compran") : false;
+              const hiSell = hit && !hit.cruce ? hit.side !== "compra" : sp ? !sp.kind.startsWith("compran") : false;
+              const hiCol = hit ? UNUSUAL : VOL_SPIKE;
+              const arrowCol = (a: string, up: string) => (a === "▲" ? up : "#6b7591");
               const isSpot = r.spx === spotStrike;
               return (
                 <g key={`agg-${r.spx}`}>
@@ -1097,18 +1152,16 @@ export default function VisionFuturaChart(rawProps: Props) {
                       fill={pr.side === "S" ? "rgba(168,85,247,0.12)" : "rgba(18,183,106,0.12)"} stroke={pr.side === "S" ? POS_DOWN : COLOR.posicionamiento} strokeDasharray="4 3" />
                   )}
                   <text x={aggX + AGG_GEX_W - 6} y={ry + 14} fontSize={10} textAnchor="end" fill={r.netGex > 0 ? "#12b76a" : r.netGex < 0 ? "#f97066" : "#6b7591"}>{gexM(r.netGex)}</text>
-                  {show && !buy && (
+                  {any && (
                     <>
-                      <text x={aggC - AGG_HALF - 4} y={ry + 14} fontSize={10} textAnchor="end" fill={arrow === "▼" ? "#9aa5c0" : sideCol}>{arrow}</text>
-                      <text x={aggC - AGG_HALF - 16} y={ry + 14} fontSize={10} fontWeight={700} textAnchor="end" fill={hit && !hit.cruce ? UNUSUAL : sp ? VOL_SPIKE : "#f5f7fb"}>{fmtNet(-net)}</text>
-                      <rect x={aggC - w} y={ry + 4} width={w} height={12} rx={2} fill={col} opacity={0.85} />
-                    </>
-                  )}
-                  {show && buy && (
-                    <>
-                      <rect x={aggC} y={ry + 4} width={w} height={12} rx={2} fill={col} opacity={0.85} />
-                      <text x={aggC + AGG_HALF + 4} y={ry + 14} fontSize={10} fill={arrow === "▼" ? "#9aa5c0" : sideCol}>{arrow}</text>
-                      <text x={aggC + AGG_HALF + 16} y={ry + 14} fontSize={10} fontWeight={700} fill={hit && !hit.cruce ? UNUSUAL : sp ? VOL_SPIKE : "#f5f7fb"}>{fmtNet(net)}</text>
+                      {/* Ventas al bid ← : flecha afuera, número, barra roja hacia la izquierda */}
+                      <text x={aggX + AGG_GEX_W + 3} y={ry + 14} fontSize={10} fill={arrowCol(aS, "#f97066")}>{aS}</text>
+                      <text x={aggC - AGG_HALF - 4} y={ry + 14} fontSize={10} fontWeight={sd.sell > 0 ? 700 : 400} textAnchor="end" fill={hiSell ? hiCol : sd.sell > 0 ? "#f5f7fb" : "#6b7591"}>{fmtNet(sd.sell)}</text>
+                      {wS > 0 && <rect x={aggC - wS} y={ry + 4} width={wS} height={12} rx={2} fill={hiSell ? hiCol : "#f04438"} opacity={0.85} />}
+                      {/* Compras al ask → : barra azul hacia la derecha, número, flecha afuera */}
+                      {wB > 0 && <rect x={aggC} y={ry + 4} width={wB} height={12} rx={2} fill={hiBuy ? hiCol : "#2f6bff"} opacity={0.85} />}
+                      <text x={aggC + AGG_HALF + 4} y={ry + 14} fontSize={10} fontWeight={sd.buy > 0 ? 700 : 400} fill={hiBuy ? hiCol : sd.buy > 0 ? "#f5f7fb" : "#6b7591"}>{fmtNet(sd.buy)}</text>
+                      <text x={strikeX - 6} y={ry + 14} fontSize={10} textAnchor="end" fill={arrowCol(aB, "#7aa2ff")}>{aB}</text>
                     </>
                   )}
                   <text x={strikeX} y={ry + 14} fontSize={10.5} fill={isSpot || hit ? "#f5f7fb" : "#9aa5c0"} fontWeight={isSpot || hit ? 700 : 400}>{n2(r.spx, Number.isInteger(r.spx) ? 0 : 1)}</text>
@@ -1141,8 +1194,8 @@ export default function VisionFuturaChart(rawProps: Props) {
               );
             })}
             <text x={aggX + AGG_GEX_W - 6} y={height - 8} fontSize={10} textAnchor="end" fill="#6b7591">GEX $M</text>
-            <text x={aggC} y={height - 16} fontSize={10} textAnchor="middle"><tspan fill="#f97066">← venta</tspan><tspan fill="#6b7591"> | </tspan><tspan fill="#7aa2ff">compra →</tspan><tspan fill="#6b7591">{volOn ? ` (Δ contratos · ${props.volDelta!.windowLabel})` : " ($ neto)"}</tspan></text>
-            <text x={aggC} y={height - 4} fontSize={9} textAnchor="middle" fill="#6b7591">{volOn ? "▲▼ vs ventana anterior" : "▲▼ vs refresco anterior"}</text>
+            <text x={aggC} y={height - 16} fontSize={10} textAnchor="middle"><tspan fill="#f97066">← ventas</tspan><tspan fill="#6b7591"> | </tspan><tspan fill="#7aa2ff">compras →</tspan><tspan fill="#6b7591">{volOn ? ` (netas, contratos · ${props.volDelta!.windowLabel})` : " (netas, $)"}</tspan></text>
+            <text x={aggC} y={height - 4} fontSize={9} textAnchor="middle" fill="#6b7591">{volOn ? `▲▼= vs los ${props.volDelta!.windowLabel.replace(/^últ\.\s*/, "")} anteriores` : "▲▼= vs refresco anterior"}</text>
             <text x={strikeX} y={height - 8} fontSize={10} fill="#6b7591">Strike</text>
           </g>
         )}

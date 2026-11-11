@@ -53,7 +53,8 @@ export interface InstrumentConfig {
 export const INSTRUMENTS: Record<FixedInstrumentId, InstrumentConfig> = {
   SPX: {
     id: "SPX", label: "SPX", main: "SPX", msTicker: "SPX", occRoot: "SPXW", tastyChain: "SPX",
-    tastyMain: { index: "SPX" }, etf: null, future: "ES", volIndex: "VIX", chartFromEtf: false, dailyExpirations: true,
+    // SPY de regreso en SPX (Carlos, 9-nov-2026: "ponme el valor del SPY ahí y en la escalera como estaba antes").
+    tastyMain: { index: "SPX" }, etf: "SPY", future: "ES", volIndex: "VIX", chartFromEtf: false, dailyExpirations: true,
   },
   // SPY con botón propio (Carlos, 3-nov-2026: "no quiero el valor del SPY [en SPX], hazme un botón aparte
   // SPY y ponme todo lo que tengo en SPX"): su propia cadena 0DTE diaria, mismos motores. Se trata

@@ -33,6 +33,12 @@ export default function PruebaDeFuegoPage() {
 
   useEffect(() => {
     migrateLegacyKey("tito.pruebaDeFuego.tab", KEY_TAB);
+    // Link con ?vf=SPY (VisionFutura con su instrumento): esa pestaña del navegador abre VisionFutura,
+    // sin importar lo que se eligió en otra pestaña (Carlos, 10-nov: SPX y SPY a la vez).
+    if (new URLSearchParams(window.location.search).get("vf")) {
+      setTab("VISION_FUTURA");
+      return;
+    }
     const saved = window.localStorage.getItem(KEY_TAB);
     if (VISIBLE_TABS.includes(saved as Tab)) {
       setTab(saved as Tab);
@@ -42,6 +48,11 @@ export default function PruebaDeFuegoPage() {
   const pickTab = (t: Tab) => {
     setTab(t);
     window.localStorage.setItem(KEY_TAB, t);
+    // Al salir de VisionFutura se quita ?vf= del link (si no, al recargar volvería a VisionFutura).
+    if (t !== "VISION_FUTURA") {
+      const u = new URL(window.location.href);
+      if (u.searchParams.has("vf")) { u.searchParams.delete("vf"); window.history.replaceState(null, "", u); }
+    }
   };
 
   return (

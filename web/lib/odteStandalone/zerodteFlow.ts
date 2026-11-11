@@ -22,7 +22,10 @@ import { aggressionOf, type RawTrade } from "./flow";
 import { marketDateStr, parseOcc } from "./occ";
 import type { ContractGreeks, ContractType, Row } from "./types";
 
-const DATA_DIR = path.join(process.cwd(), "data", "odte-standalone", "flow");
+// El agresor lo escribe streamer/tastytrade-stream.mjs en data/0dte/ (dato crudo
+// de mercado, mismo formato). Este motor solo lo LEE; antes apuntaba a
+// data/odte-standalone/flow/, que nadie llenaba → "Cargando agresor…" eterno.
+const DATA_DIR = path.join(process.cwd(), "data", "0dte");
 
 /**
  * Cuántos ids recientes se recuerdan para no contar un trade dos veces.

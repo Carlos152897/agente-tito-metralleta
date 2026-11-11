@@ -5,7 +5,7 @@
 // cualquier script la usen igual. Imports relativos a propósito.
 
 import { buildVisionFutura, yearsToExpiry, type VisionFuturaReport, type VixReading } from "./visionFutura";
-import { fetchAssetPrice, fetchAssetPriceChart, fetchGexStats, fetchOptionChainExtended } from "./marketsnack";
+import { fetchAssetPrice, fetchAssetPriceChart, fetchContractTradeSummary, fetchGexStats, fetchOptionChainExtended } from "./marketsnack";
 import {
   fetchActiveFuture, fetchFuturesQuote, fetchMacroQuote, fetchNestedOptionChain, fetchOptionQuotesByType, fetchUnderlyingQuote,
   type NestedChainExpiration,
@@ -36,6 +36,18 @@ async function cachedChain(ticker: string, exp: string): Promise<ExtendedChainCo
   if (hit && Date.now() - hit.at < 5 * 60_000) return hit.c;
   const c = await fetchOptionChainExtended(ticker, exp).catch(() => [] as ExtendedChainContract[]);
   chainCache.set(k, { at: Date.now(), c });
+  return c;
+}
+
+// Cadena del vencimiento mostrado: si MarketSnack falló (p. ej. 500 tras 15 s), no se le vuelve a
+// esperar en 60 s — mientras, el respaldo de tastytrade + trade_summaries.
+const chainFailUntil = new Map<string, number>();
+async function mainChain(ticker: string, exp: string): Promise<ExtendedChainContract[]> {
+  const k = `${ticker}|${exp}`;
+  if (Date.now() < (chainFailUntil.get(k) ?? 0)) return [];
+  const c = await fetchOptionChainExtended(ticker, exp).catch(() => [] as ExtendedChainContract[]);
+  if (c.length === 0) chainFailUntil.set(k, Date.now() + 60_000);
+  else chainFailUntil.delete(k);
   return c;
 }
 
@@ -197,6 +209,32 @@ async function tastyChainContracts(chainSymbol: string, expiration: string, spot
   return out;
 }
 
+/**
+ * RESPALDO del flujo (2026-11-05: la cadena de SPX 0DTE de MarketSnack daba 500 y el posicionamiento
+ * salía vacío): prima al ask / al bid del día por contrato con `trade_summaries` de MarketSnack, solo
+ * para los strikes a ±`win` del precio. Cache 60 s por contrato. Devuelve cuántos contratos se llenaron.
+ */
+const summaryCache = new Map<string, { at: number; ask: number; bid: number }>();
+async function fillFlowFromSummaries(contracts: ExtendedChainContract[], spot: number, win: number): Promise<number> {
+  const todo = contracts.filter((c) => c.symbol && Math.abs(c.strike - spot) <= win).slice(0, 160);
+  let filled = 0;
+  for (let i = 0; i < todo.length; i += 8) {
+    await Promise.all(todo.slice(i, i + 8).map(async (c) => {
+      const occ = c.symbol.replace(/\s+/g, "");
+      let hit = summaryCache.get(occ);
+      if (!hit || Date.now() - hit.at > 60_000) {
+        const b = await fetchContractTradeSummary(occ).catch(() => null);
+        if (!b) return;
+        hit = { at: Date.now(), ask: b.reduce((s, x) => s + (x.ask_premium || 0), 0), bid: b.reduce((s, x) => s + (x.bid_premium || 0), 0) };
+        summaryCache.set(occ, hit);
+      }
+      c.premium_breakdown = { bid: hit.bid, mid: 0, ask: hit.ask };
+      if (hit.ask > 0 || hit.bid > 0) filled++;
+    }));
+  }
+  return filled;
+}
+
 /** RESPALDO del GEX de MarketSnack: niveles propios con gamma × OI de la cadena (mismo método del modo noche). */
 function ownGexBucket(contracts: ExtendedChainContract[], spot: number, now: Date): GexStatsBucket | null {
   const rows: ZRow[] = contracts.map((c) => ({
@@ -254,7 +292,7 @@ export async function loadVisionFutura(
   const [spotMs, gexBuckets, contracts, etfPxRaw, futRaw, vixQuoteRaw, chartMain, chartEtf, vixGexBuckets, mainTasty, spxRefRaw, vixRefRaw, chartVix] = await Promise.all([
     fetchAssetPrice(cfg.msTicker).catch(() => null),
     fetchGexStats(cfg.msTicker, { period: "1d" }).catch(() => [] as GexStatsBucket[]),
-    fetchOptionChainExtended(cfg.msTicker, expiration).catch(() => [] as ExtendedChainContract[]),
+    mainChain(cfg.msTicker, expiration),
     etfSym ? fetchUnderlyingQuote(etfSym, false).catch(() => null) : Promise.resolve(null),
     cfg.future ? futureQuote(cfg.future).catch(() => null) : Promise.resolve(null),
     cfg.volIndex ? fetchMacroQuote({ index: cfg.volIndex }).catch(() => null) : Promise.resolve(null),
@@ -283,7 +321,14 @@ export async function loadVisionFutura(
     const tc = await tastyChainContracts(cfg.tastyChain, expiration, spot, spot * 0.06).catch(() => [] as ExtendedChainContract[]);
     if (tc.length > 0) {
       contracts.push(...tc);
-      backups.push("Cadena de opciones: tastytrade (MarketSnack no respondió; sin compras/ventas por strike)");
+      // Compras/ventas por strike (posicionamiento, agresor, dealers): trade_summaries de MarketSnack
+      // contrato por contrato — otro endpoint, sigue respondiendo cuando la cadena da 500.
+      const step = strikeStepNear(tc.map((c) => c.strike), spot);
+      const win = (cfg.id === "SPX" ? radius : strikesPerSide(radius) * step) + 2 * step;
+      const filled = await fillFlowFromSummaries(contracts, spot, win).catch(() => 0);
+      backups.push(filled > 0
+        ? "Cadena de opciones: tastytrade (MarketSnack no respondió); compras/ventas por strike: MarketSnack contrato por contrato"
+        : "Cadena de opciones: tastytrade (MarketSnack no respondió; sin compras/ventas por strike)");
     }
   }
   if (gexBuckets.length === 0 && contracts.length > 0) {

@@ -62,7 +62,13 @@ export function useVolumeDelta(p: { inst: string; expiration: string | null; spo
           minutes.set(strike, [...byT.values()].sort((a, b) => a.t - b.t));
         }
         if (full) lastFull = Date.now();
-        setState({ key, sessionOpen: j.sessionOpen, asOfT: j.asOfT, minutes, source, resolutionSec: Number(j.resolutionSec) || 60 });
+        const resolutionSec = Number(j.resolutionSec) || 60;
+        // Si las velas vienen atrasadas, la ventana termina en el último minuto CON datos: si no, la
+        // ventana de "1 min" queda vacía y el panel (barras, +C/−P, posicionamiento) se borra entero.
+        let newest = -Infinity;
+        for (const rows of minutes.values()) { const t = rows.at(-1)?.t; if (t != null && t > newest) newest = t; }
+        const asOfT = resolutionSec === 60 && newest > -Infinity ? Math.min(j.asOfT, newest + 60) : j.asOfT;
+        setState({ key, sessionOpen: j.sessionOpen, asOfT, minutes, source, resolutionSec });
       } catch { /* sin red: se reintenta en el próximo ciclo */ }
     };
     load();

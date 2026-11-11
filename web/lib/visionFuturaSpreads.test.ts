@@ -49,7 +49,7 @@ describe("buildSpreads", () => {
       q("call", 7715, 3.0, 3.3, 0.25),
       q("call", 7720, 2.0, 2.2, 0.2),
     ];
-    const r = buildSpreads({ ...base, rows });
+    const r = buildSpreads({ ...base, rows, includeDebit: true });
     expect(r.bias).toBe("alcista");
     expect(r.callDebit.every((x) => x.maxLossUsd <= 200)).toBe(true);
     expect(r.callDebit.some((x) => x.legs[0].strike === 7700)).toBe(false);
@@ -62,6 +62,15 @@ describe("buildSpreads", () => {
     expect(s.breakevens).toEqual([7711.8]);
     expect(s.withBias).toBe(true);
     expect(s.levels[0]).toBe("Objetivo: Magneto 7,715");
+  });
+
+  it("débito apagado por defecto (Carlos, 11-nov): sin call/put debit ni en la alerta", async () => {
+    const rows = [q("call", 7710, 4.6, 4.8, 0.35), q("call", 7715, 3.0, 3.3, 0.25), q("put", 7690, 4.6, 4.8, -0.35), q("put", 7685, 3.0, 3.3, -0.25)];
+    const r = buildSpreads({ ...base, rows });
+    expect(r.callDebit).toHaveLength(0);
+    expect(r.putDebit).toHaveLength(0);
+    const { spreadsForAlert } = await import("./visionFuturaSpreads");
+    expect(spreadsForAlert(r, { direction: "alcista", level: { spx: 7680 } }).debit).toBeNull();
   });
 
   it("iron condor junta el mejor de cada lado del mismo ancho", () => {
