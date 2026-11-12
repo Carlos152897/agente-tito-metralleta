@@ -615,10 +615,10 @@ export default function VisionFuturaChart(rawProps: Props) {
     // Como SofIA: "Imán + 7,640 · fuerza 696" (fuerza = GEX del strike en millones).
     // + el lado a la vista: contratos agresivos netos de 5 min que lo hicieron + o −.
     const lado = (mg: FlowMagnet) => (mg.lado == null ? "" : ` · ${mg.lado > 0 ? "compras" : "ventas"} 5m ${mg.lado > 0 ? "+" : "−"}${Math.abs(Math.round(mg.lado))}`);
-    // Dentro de la ventana lleva su propia etiqueta sobre la línea (abajo, en el SVG) para que no se
-    // amontone con Magneto/Call Wall; aquí solo el chip de borde si quedó fuera de la vista.
-    if (pos && !inView(pos.strike)) addChip({ key: `gm-pos-${pos.strike}`, text: `Imán GEX + ${n2(pos.strike, 0)} · fuerza ${n2(pos.fuerza, 0)}${lado(pos)}`, color: GEXM_POS }, pos.strike);
-    if (neg && !inView(neg.strike)) addChip({ key: `gm-neg-${neg.strike}`, text: `Imán GEX − ${n2(neg.strike, 0)} · fuerza ${n2(neg.fuerza, 0)}${lado(neg)}`, color: GEXM_NEG }, neg.strike);
+    // Chip en la columna de etiquetas, igual que los demás imanes (Carlos, 12-nov: la etiqueta grande
+    // sobre la gráfica tapaba el precio).
+    if (pos) addChip({ key: `gm-pos-${pos.strike}`, text: `Imán GEX + ${n2(pos.strike, 0)} · fuerza ${n2(pos.fuerza, 0)}${lado(pos)}`, color: GEXM_POS }, pos.strike);
+    if (neg) addChip({ key: `gm-neg-${neg.strike}`, text: `Imán GEX − ${n2(neg.strike, 0)} · fuerza ${n2(neg.fuerza, 0)}${lado(neg)}`, color: GEXM_NEG }, neg.strike);
   }
   if (layers.premarket && props.premarket) {
     const pm = props.premarket;
@@ -1314,35 +1314,6 @@ export default function VisionFuturaChart(rawProps: Props) {
             </g>
           );
         })()}
-        {/* Imán GEX × lado — ARRIBA DE TODO (Carlos, 12-nov: "hazlo visible"): antes quedaba tapado por
-            posicionamiento/historial/bolas. Línea doble gruesa azul (+) / roja (−) desde "ahora" hasta el
-            cierre y etiqueta con fondo de color: "Imán + 7,635 · fuerza 2,011 · compras 5m +185". */}
-        {layers.iman_gex && props.gexMagnets && (
-          <g style={{ pointerEvents: "none" }}>
-            {(["pos", "neg"] as const).map((k) => {
-              const mg = props.gexMagnets![k];
-              if (!mg || !inView(mg.strike)) return null;
-              const c = k === "pos" ? GEXM_POS : GEXM_NEG;
-              const yy = y(mg.strike);
-              const lado = mg.lado == null ? "" : ` · ${mg.lado > 0 ? "compras" : "ventas"} 5m ${mg.lado > 0 ? "+" : "−"}${Math.abs(Math.round(mg.lado))}`;
-              const label = `Imán GEX ${k === "pos" ? "+" : "−"} ${n2(mg.strike, 0)} · fuerza ${n2(mg.fuerza, 0)}${lado}`;
-              const w = label.length * 7.1 + 18;
-              const right = x(close);
-              const lx = Math.max(nowX + 8, Math.min(nowX + 18, right - w));
-              // + arriba de la línea, − abajo, para que no se tapen si quedan en strikes vecinos.
-              const ly = k === "pos" ? yy - 24 : yy + 5;
-              return (
-                <g key={`gm-${k}`}>
-                  <line x1={nowX} x2={right} y1={yy - 2} y2={yy - 2} stroke={c} strokeWidth={2.5} />
-                  <line x1={nowX} x2={right} y1={yy + 2} y2={yy + 2} stroke={c} strokeWidth={2.5} />
-                  <circle cx={nowX} cy={yy} r={4.5} fill={c} stroke="#0b1220" strokeWidth={1.5} />
-                  <rect x={lx} y={ly} width={w} height={19} rx={9.5} fill={c} stroke="#0b1220" strokeWidth={1} />
-                  <text x={lx + w / 2} y={ly + 13.5} textAnchor="middle" fontSize={12.5} fontWeight={800} fill="#0b1220">{label}</text>
-                </g>
-              );
-            })}
-          </g>
-        )}
       </svg>
       {dotSel && (() => {
         const d = dotSel.d;
