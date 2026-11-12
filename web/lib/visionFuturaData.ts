@@ -27,6 +27,8 @@ import { captureMsDay, loadMsDay, type MsDay, type MsPressureSnap } from "./visi
 import { withSingleLeg } from "./visionFuturaLegs";
 import { unusualExits, type DotExit } from "./visionFuturaUnusualExit";
 import { backingOf, multiExpGex, MULTI_EXP_TUNING } from "./visionFuturaMultiExp";
+import { etfGexToIndex } from "./visionFuturaFlowMagnets";
+import { computeStrikeGex } from "./spxLevels";
 
 // Cadenas de los vencimientos siguientes (para el GEX de varios vencimientos): cambian despacio, 5 min.
 const chainCache = new Map<string, { at: number; c: ExtendedChainContract[] }>();
@@ -74,6 +76,8 @@ export interface VisionFuturaPayload extends VisionFuturaReport {
   expiration: string;
   /** Símbolo del futuro equivalente (/ESZ6, /NQZ6) o null. */
   esSymbol: string | null;
+  /** Solo NQ: GEX neto por strike calculado con la cadena de QQQ y pasado a strikes del NDX (Imán GEX × lado). */
+  etfGex?: { strike: number; netGex: number }[];
   /** Ventana visible en puntos del instrumento (ya escalada). */
   radius: number;
   priceSeries: { time: number; value: number }[];
@@ -492,6 +496,12 @@ export async function loadVisionFutura(
       return me ? { ...r, multiExp: me, backing: backingOf(r.netGex, me) } : r;
     });
   }
+  // NQ: GEX con la cadena de QQQ (las NDXP casi no tienen OI de calls) para el Imán GEX × lado.
+  let etfGex: { strike: number; netGex: number }[] | undefined;
+  if (cfg.id === "NQ" && cfg.chartEtf && etfPx && etfPx > 0) {
+    const qc = await cachedChain(cfg.chartEtf, expiration);
+    if (qc.length) etfGex = etfGexToIndex(computeStrikeGex(qc, etfPx), spot / etfPx, report.rows.map((r) => r.spx));
+  }
   // Una pata vs spreads por strike (lib/visionFuturaLegs.ts): campo `legs` en cada fila con datos.
   const lastPressure = msDay?.pressure.at(-1);
   if (lastPressure?.rows.length) report.rows = withSingleLeg(report.rows, lastPressure.rows, spot);
@@ -511,6 +521,7 @@ export async function loadVisionFutura(
     spreads,
     spreadsError,
     optionQuotes,
+    etfGex,
     backups,
     asOf: now.toISOString(),
     gexAsOf: gexStats?.t ?? null,

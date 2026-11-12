@@ -40,7 +40,7 @@ import VisionFuturaPremarketZones, { usePremarketZones } from "./VisionFuturaPre
 import { useVolumeDelta, VOL_WINDOWS } from "./useVolumeDelta";
 import { detectVolumeSpikes, volDeltaRows } from "@/lib/visionFuturaVolumeDelta";
 import { gridStepFor, nativeStep } from "@/lib/visionFuturaGrid";
-import { CUMULATIVE_MAGNET_TUNING, FLOW_MAGNET_TUNING, SOFIA_MAGNET_TUNING, flowMagnetHistory, flowMagnetsAt, withMagnetTrend } from "@/lib/visionFuturaFlowMagnets";
+import { CUMULATIVE_MAGNET_TUNING, FLOW_MAGNET_TUNING, GEX_SIDE_MAGNET_TUNING, SOFIA_MAGNET_TUNING, aggressorSides, flowMagnetHistory, flowMagnetsAt, gexSideMagnets, withMagnetTrend } from "@/lib/visionFuturaFlowMagnets";
 import VisionFuturaChart, { DEFAULT_LAYERS, LAYERS, type CandleBar, type HistoryPoint, type LayerKey, type VixStrip } from "./VisionFuturaChart";
 import type { ConvertedLevel, DealerLevel, KeyLevel, KeyLevelKind, VisionFuturaReport, VisionStrikeRow } from "@/lib/visionFutura";
 
@@ -102,6 +102,8 @@ const ZOOMS: { min: number | null; label: string }[] = [
 
 interface VisionData extends VisionFuturaReport {
   instrument?: InstrumentId;
+  /** Solo NQ: GEX de QQQ pasado a strikes del NDX (Imán GEX × lado). */
+  etfGex?: { strike: number; netGex: number }[];
   labels?: InstrumentLabels;
   scale?: number;
   strikeStep?: number;
@@ -754,7 +756,7 @@ export default function VisionFuturaTab() {
     expiration: mode === "repeticion" && replay ? replay.expiration || replay.date : data?.expiration ?? null,
     spot: data?.spot.spx ?? null,
     radius: mode === "repeticion" && replay ? replay.radius : data?.radius ?? null,
-    enabled: ((layers.volumen_delta && layers.agresor) || layers.iman_flujo || layers.imanes_sofia || layers.iman_acumulado) && !NIGHT_IDS.includes(inst),
+    enabled: ((layers.volumen_delta && layers.agresor) || layers.iman_flujo || layers.imanes_sofia || layers.iman_acumulado || layers.iman_gex) && !NIGHT_IDS.includes(inst),
   });
 
   if (loading && !data) return <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-md)" }}>{instrumentBar}<div className="card wheel-empty">Cargando VisionFutura · {inst}…</div></div>;
@@ -969,6 +971,22 @@ export default function VisionFuturaTab() {
   const flowMagnets = magnetsFor(layers.iman_flujo, FLOW_MAGNET_TUNING, "15 min");
   const sofiaMagnets = magnetsFor(layers.imanes_sofia, SOFIA_MAGNET_TUNING, "1 min");
   const cumMagnets = magnetsFor(layers.iman_acumulado, CUMULATIVE_MAGNET_TUNING, "día");
+  // Imán GEX × lado (capturas de SofIA 12-nov): fuerza = |GEX neto| del strike, lado = agresor de 5 min.
+  const gexMagnets = (() => {
+    if (!vol || !layers.iman_gex || isNightInst) return null;
+    const volDate = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(vol.sessionOpen * 1000));
+    if (tick && replay?.date !== volDate) return null;
+    const toT = tick ? Math.floor(cursorSec / 60) * 60 : vol.asOfT;
+    const sides = aggressorSides(vol.minutes, toT, GEX_SIDE_MAGNET_TUNING.windowSec);
+    // NQ: GEX total del Nasdaq-100 = NDX propio + QQQ pasado a NDX (el servidor lo manda en vivo;
+    // en repetición no hay → solo el propio). Los dos están en $ por 1 %, se suman.
+    const etf = !tick && data?.etfGex?.length ? new Map(data.etfGex.map((g) => [g.strike, g.netGex])) : null;
+    const gexRows = view.rows.map((r) => ({ strike: r.spx, netGex: r.netGex + (etf?.get(r.spx) ?? 0) }));
+    return gexSideMagnets(gexRows, sides, view.spot.spx, {
+      radius: GEX_SIDE_MAGNET_TUNING.radiusPts * scale,
+      minSideContracts: inst === "NQ" ? GEX_SIDE_MAGNET_TUNING.minSideContractsThin : GEX_SIDE_MAGNET_TUNING.minSideContracts,
+    });
+  })();
 
   return (
     <VisionLabelsContext.Provider value={labels}>
@@ -1293,6 +1311,7 @@ export default function VisionFuturaTab() {
             flowMagnets={flowMagnets}
             sofiaMagnets={sofiaMagnets}
             cumMagnets={cumMagnets}
+            gexMagnets={gexMagnets}
             volDelta={(() => {
               // Sin volumen por contrato (tastytrade no lo manda): el panel cae al $ neto compras − ventas.
               if (!vol || vol.minutes.size === 0 || !layers.volumen_delta) return null;

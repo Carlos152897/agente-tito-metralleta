@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CUMULATIVE_MAGNET_TUNING, flowMagnetHistory, flowMagnetsAt, fmtFuerza, SOFIA_MAGNET_TUNING, withMagnetTrend } from "./visionFuturaFlowMagnets";
+import { CUMULATIVE_MAGNET_TUNING, flowMagnetHistory, flowMagnetsAt, fmtFuerza, SOFIA_MAGNET_TUNING, aggressorSides, etfGexToIndex, gexSideMagnets, withMagnetTrend } from "./visionFuturaFlowMagnets";
 import type { StrikeMinute } from "./visionFuturaVolumeDelta";
 
 const m = (t: number, cA = 0, cB = 0, pA = 0, pB = 0): StrikeMinute => ({ t, cA, cB, cV: cA + cB, pA, pB, pV: pA + pB });
@@ -103,5 +103,50 @@ describe("imán acumulado (todo el día) con tendencia", () => {
   it("sin imán no inventa tendencia", () => {
     const r = withMagnetTrend(by, { pos: null, neg: null }, [], 2400);
     expect(r).toEqual({ pos: null, neg: null });
+  });
+});
+
+describe("imán GEX × lado (como la columna agresor de SofIA)", () => {
+  it("fuerza = GEX del strike; lado = comprador vs vendedor agresivo de 5 min", () => {
+    const by = new Map<number, StrikeMinute[]>([
+      [7640, [m(0, 30, 0, 20, 0)]], // compran calls y puts al ask → compras +50
+      [7645, [m(0, 0, 40, 0, 10)]], // venden al bid → −50
+      [7650, [m(0, 0, 0, 0, 0)]], // sin lado
+      [7500, [m(0, 100)]], // fuera del radio de 75 pts
+    ]);
+    const sides = aggressorSides(by, 400, 300);
+    expect(sides.get(7640)).toBe(0); // m(0) quedó fuera: ventana (100, 400]
+    const sidesNow = aggressorSides(by, 60, 300);
+    expect(sidesNow.get(7640)).toBe(50);
+    expect(sidesNow.get(7645)).toBe(-50);
+    const gex = [
+      { strike: 7640, netGex: 696e6 }, { strike: 7645, netGex: -580e6 },
+      { strike: 7650, netGex: 2000e6 }, // la más grande pero sin lado → no es imán
+      { strike: 7500, netGex: 900e6 },
+    ];
+    const r = gexSideMagnets(gex, sidesNow, 7638);
+    expect(r.pos).toEqual({ strike: 7640, fuerza: 696, lado: 50 });
+    expect(r.neg).toEqual({ strike: 7645, fuerza: 580, lado: -50 });
+  });
+  it("respeta radio y GEX mínimo", () => {
+    const sides = new Map([[7700, 50], [7640, 50]]);
+    const r = gexSideMagnets([{ strike: 7700, netGex: 900e6 }, { strike: 7640, netGex: 1e6 }], sides, 7600);
+    expect(r).toEqual({ pos: null, neg: null });
+  });
+});
+
+describe("GEX de QQQ pasado a strikes del NDX", () => {
+  it("cada strike de QQQ × razón cae en la fila del NDX más cercana (≤ medio paso)", () => {
+    const qqq = new Map([[685, { netGex: 100e6 }], [686, { netGex: -40e6 }], [700, { netGex: 9e6 }]]);
+    const r = etfGexToIndex(qqq, 41.6, [28480, 28490, 28500, 28530, 28540]);
+    // 685 × 41.6 = 28,496 → 28,500; 686 × 41.6 = 28,537.6 → 28,540; 700 × 41.6 = 29,120 → fuera
+    expect(r).toEqual([
+      { strike: 28480, netGex: 0 }, { strike: 28490, netGex: 0 }, { strike: 28500, netGex: 100e6 },
+      { strike: 28530, netGex: 0 }, { strike: 28540, netGex: -40e6 },
+    ]);
+  });
+  it("sin filas o sin razón válida no inventa nada", () => {
+    expect(etfGexToIndex(new Map([[685, { netGex: 1 }]]), 0, [28500])).toEqual([]);
+    expect(etfGexToIndex(new Map([[685, { netGex: 1 }]]), 41.6, [])).toEqual([]);
   });
 });

@@ -53,6 +53,8 @@ export interface FlowMagnet {
   prevFuerza?: number;
   /** Solo imán acumulado: segundo desde el que es el imán sin cambiar de strike. */
   since?: number;
+  /** Solo imán GEX × lado: contratos agresivos netos de la ventana que le dieron el lado (+ compras, − ventas). */
+  lado?: number;
 }
 
 export interface FlowMagnets {
@@ -172,6 +174,83 @@ export function withMagnetTrend(
     return { ...mg, prevFuerza, since };
   };
   return { pos: add(now.pos, "pos"), neg: add(now.neg, "neg") };
+}
+
+/**
+ * Imán GEX × lado (12-nov-2026, capturas de SofIA SPX/NQ 11:08). En SofIA el número de su columna
+ * agresor es el GEX en $M del strike (|agresor| vs su GEX: correlación 0.99) y el imán es el mayor de
+ * cada lado. Su lado no se pudo deducir; usamos el que más coincidió con el suyo (64–72%): comprador
+ * agresivo vs vendedor agresivo de los últimos 5 min, sin importar call/put (cA + pA − cB − pB).
+ * Fuerza = |GEX neto| del strike en millones. PURO.
+ */
+export const GEX_SIDE_MAGNET_TUNING = {
+  windowSec: 300,
+  radiusPts: 75,
+  /** GEX mínimo (millones de $) para marcar un imán. */
+  minGexM: 5,
+  /** Contratos agresivos netos mínimos para darle lado a un strike. */
+  minSideContracts: 5,
+  /**
+   * NQ: las opciones del NDX operan ~10× menos que las de SPX (12-nov: con 5 solo 5 strikes tenían
+   * lado y el imán caía en strikes de GEX chico); con 1 cae en los de mayor GEX total.
+   */
+  minSideContractsThin: 1,
+};
+
+/** Lado agresivo por strike en (toT − ventana, toT]: >0 compran al ask, <0 venden al bid. */
+export function aggressorSides(by: Map<number, StrikeMinute[]>, toT: number, windowSec: number): Map<number, number> {
+  const out = new Map<number, number>();
+  for (const [strike, mins] of by) {
+    let d = 0;
+    for (const m of mins) if (m.t >= toT - windowSec && m.t < toT) d += m.cA + m.pA - (m.cB + m.pB);
+    out.set(strike, d);
+  }
+  return out;
+}
+
+export function gexSideMagnets(
+  gexRows: { strike: number; netGex: number }[], sides: Map<number, number>, spot: number,
+  o: { radius?: number; minGexM?: number; minSideContracts?: number } = {},
+): FlowMagnets {
+  const t = GEX_SIDE_MAGNET_TUNING;
+  const radius = o.radius ?? t.radiusPts;
+  const minG = o.minGexM ?? t.minGexM;
+  const minS = o.minSideContracts ?? t.minSideContracts;
+  let pos: FlowMagnet | null = null;
+  let neg: FlowMagnet | null = null;
+  for (const r of gexRows) {
+    if (Math.abs(r.strike - spot) > radius) continue;
+    const g = Math.abs(r.netGex) / 1e6;
+    if (g < minG) continue;
+    const side = sides.get(r.strike) ?? 0;
+    if (side >= minS && (!pos || g > pos.fuerza)) pos = { strike: r.strike, fuerza: g, lado: side };
+    if (side <= -minS && (!neg || g > neg.fuerza)) neg = { strike: r.strike, fuerza: g, lado: side };
+  }
+  return { pos, neg };
+}
+
+/**
+ * GEX del ETF pasado a strikes del índice (NQ: QQQ → NDX), para SUMARLO al GEX propio del NDX: las
+ * NDXP tienen poco OI y la exposición real de los dealers al Nasdaq-100 está repartida entre las dos
+ * cadenas (mismo criterio que el pre-mercado, que usa QQQ para NQ). Cada strike del ETF × `ratio` (índice ÷ ETF) se suma a la fila del
+ * índice más cercana (si cae a ≤ medio paso). El GEX ya está en $ por 1 %, no se reescala. PURO.
+ */
+export function etfGexToIndex(
+  etfGex: Map<number, { netGex: number }>, ratio: number, indexStrikes: number[],
+): { strike: number; netGex: number }[] {
+  const ks = [...indexStrikes].sort((a, b) => a - b);
+  if (ks.length === 0 || !(ratio > 0)) return [];
+  let step = Infinity;
+  for (let i = 1; i < ks.length; i++) if (ks[i] - ks[i - 1] > 0) step = Math.min(step, ks[i] - ks[i - 1]);
+  const half = Number.isFinite(step) ? step / 2 : Infinity;
+  const sum = new Map<number, number>(ks.map((k) => [k, 0]));
+  for (const [s, g] of etfGex) {
+    const px = s * ratio;
+    let best = ks[0];
+    for (const k of ks) if (Math.abs(k - px) < Math.abs(best - px)) best = k;
+    if (Math.abs(best - px) <= half) sum.set(best, (sum.get(best) ?? 0) + g.netGex);
+  }
+  return ks.map((k) => ({ strike: k, netGex: sum.get(k) ?? 0 }));
 }
 
 /** "2.6K", "591". */

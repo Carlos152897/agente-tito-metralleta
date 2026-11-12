@@ -48,7 +48,8 @@ export type LayerKey =
   | "volumen_delta"
   | "iman_flujo"
   | "imanes_sofia"
-  | "iman_acumulado";
+  | "iman_acumulado"
+  | "iman_gex";
 
 export const LAYERS: { key: LayerKey; label: string; color: string }[] = [
   { key: "precio", label: "Precio", color: "#2dd4bf" },
@@ -75,13 +76,14 @@ export const LAYERS: { key: LayerKey; label: string; color: string }[] = [
   { key: "iman_flujo", label: "Imanes de flujo", color: "#3b82f6" },
   { key: "imanes_sofia", label: "Imán Referencia", color: "#22d3ee" },
   { key: "iman_acumulado", label: "Imán acumulado", color: "#a3e635" },
+  { key: "iman_gex", label: "Imán GEX × lado", color: "#60a5fa" },
 ];
 
 export const DEFAULT_LAYERS: Record<LayerKey, boolean> = {
   precio: true, posicionamiento: true, magneto: true, iman_positivo: true, iman_negativo: true,
   resistencia: true, piso: true, gamma_flip: false, max_pain: false, charm: false,
   dealers: false, rango_vix: false, historial: false, historial_ls: true, agresor: true, vix: true, spreads: true, prima: true, inusuales_ms: true, premarket: true, volumen_delta: true,
-  iman_flujo: true, imanes_sofia: true, iman_acumulado: true,
+  iman_flujo: true, imanes_sofia: true, iman_acumulado: true, iman_gex: true,
 };
 
 const COLOR = Object.fromEntries(LAYERS.map((l) => [l.key, l.color])) as Record<LayerKey, string>;
@@ -95,6 +97,9 @@ const SOFIA_NEG = "#f472b6";
 /** Imán acumulado del día (lib/visionFuturaFlowMagnets.ts CUMULATIVE_MAGNET_TUNING): lima / rosa fuerte. */
 const CUM_POS = "#a3e635";
 const CUM_NEG = "#fb7185";
+/** Imán GEX × lado: azul (+) / rojo (−) como SofIA, línea doble para distinguirlo del de flujo. */
+const GEXM_POS = "#60a5fa";
+const GEXM_NEG = "#f87171";
 // Tono claro de cada lado = la parte que viene de PUTS (el fuerte = CALLS).
 const POS_UP_PUT = "#86efac";
 // Parte de la barra que viene de spreads (varias patas): no dice dirección.
@@ -178,6 +183,8 @@ interface Props {
    * `prevFuerza` (hace 15 min) y `since` (desde cuándo está fijo en ese strike).
    */
   cumMagnets?: { now: FlowMagnets; history: FlowMagnetSegment[]; windowLabel: string } | null;
+  /** Imán GEX × lado (fuerza = |GEX neto| en $M, lado = agresor de 5 min). Solo el momento actual. */
+  gexMagnets?: FlowMagnets | null;
   /** Vista "Gamma": barras de GEX neto por strike en el centro del plot (en lugar del posicionamiento). */
   gexBars?: boolean;
 }
@@ -343,6 +350,7 @@ function griddedProps(p: Props): Props {
     flowMagnets: remapMagnets(p.flowMagnets),
     sofiaMagnets: remapMagnets(p.sofiaMagnets),
     cumMagnets: remapMagnets(p.cumMagnets),
+    gexMagnets: p.gexMagnets ? { pos: p.gexMagnets.pos && remap(p.gexMagnets.pos), neg: p.gexMagnets.neg && remap(p.gexMagnets.neg) } : p.gexMagnets,
   };
 }
 
@@ -601,6 +609,16 @@ export default function VisionFuturaChart(rawProps: Props) {
     };
     if (pos) addChip({ key: `cm-pos-${pos.strike}`, text: cumText("+", pos), color: CUM_POS }, pos.strike);
     if (neg) addChip({ key: `cm-neg-${neg.strike}`, text: cumText("−", neg), color: CUM_NEG }, neg.strike);
+  }
+  if (layers.iman_gex && props.gexMagnets) {
+    const { pos, neg } = props.gexMagnets;
+    // Como SofIA: "Imán + 7,640 · fuerza 696" (fuerza = GEX del strike en millones).
+    // + el lado a la vista: contratos agresivos netos de 5 min que lo hicieron + o −.
+    const lado = (mg: FlowMagnet) => (mg.lado == null ? "" : ` · ${mg.lado > 0 ? "compras" : "ventas"} 5m ${mg.lado > 0 ? "+" : "−"}${Math.abs(Math.round(mg.lado))}`);
+    // Dentro de la ventana lleva su propia etiqueta sobre la línea (abajo, en el SVG) para que no se
+    // amontone con Magneto/Call Wall; aquí solo el chip de borde si quedó fuera de la vista.
+    if (pos && !inView(pos.strike)) addChip({ key: `gm-pos-${pos.strike}`, text: `Imán GEX + ${n2(pos.strike, 0)} · fuerza ${n2(pos.fuerza, 0)}${lado(pos)}`, color: GEXM_POS }, pos.strike);
+    if (neg && !inView(neg.strike)) addChip({ key: `gm-neg-${neg.strike}`, text: `Imán GEX − ${n2(neg.strike, 0)} · fuerza ${n2(neg.fuerza, 0)}${lado(neg)}`, color: GEXM_NEG }, neg.strike);
   }
   if (layers.premarket && props.premarket) {
     const pm = props.premarket;
@@ -1296,6 +1314,35 @@ export default function VisionFuturaChart(rawProps: Props) {
             </g>
           );
         })()}
+        {/* Imán GEX × lado — ARRIBA DE TODO (Carlos, 12-nov: "hazlo visible"): antes quedaba tapado por
+            posicionamiento/historial/bolas. Línea doble gruesa azul (+) / roja (−) desde "ahora" hasta el
+            cierre y etiqueta con fondo de color: "Imán + 7,635 · fuerza 2,011 · compras 5m +185". */}
+        {layers.iman_gex && props.gexMagnets && (
+          <g style={{ pointerEvents: "none" }}>
+            {(["pos", "neg"] as const).map((k) => {
+              const mg = props.gexMagnets![k];
+              if (!mg || !inView(mg.strike)) return null;
+              const c = k === "pos" ? GEXM_POS : GEXM_NEG;
+              const yy = y(mg.strike);
+              const lado = mg.lado == null ? "" : ` · ${mg.lado > 0 ? "compras" : "ventas"} 5m ${mg.lado > 0 ? "+" : "−"}${Math.abs(Math.round(mg.lado))}`;
+              const label = `Imán GEX ${k === "pos" ? "+" : "−"} ${n2(mg.strike, 0)} · fuerza ${n2(mg.fuerza, 0)}${lado}`;
+              const w = label.length * 7.1 + 18;
+              const right = x(close);
+              const lx = Math.max(nowX + 8, Math.min(nowX + 18, right - w));
+              // + arriba de la línea, − abajo, para que no se tapen si quedan en strikes vecinos.
+              const ly = k === "pos" ? yy - 24 : yy + 5;
+              return (
+                <g key={`gm-${k}`}>
+                  <line x1={nowX} x2={right} y1={yy - 2} y2={yy - 2} stroke={c} strokeWidth={2.5} />
+                  <line x1={nowX} x2={right} y1={yy + 2} y2={yy + 2} stroke={c} strokeWidth={2.5} />
+                  <circle cx={nowX} cy={yy} r={4.5} fill={c} stroke="#0b1220" strokeWidth={1.5} />
+                  <rect x={lx} y={ly} width={w} height={19} rx={9.5} fill={c} stroke="#0b1220" strokeWidth={1} />
+                  <text x={lx + w / 2} y={ly + 13.5} textAnchor="middle" fontSize={12.5} fontWeight={800} fill="#0b1220">{label}</text>
+                </g>
+              );
+            })}
+          </g>
+        )}
       </svg>
       {dotSel && (() => {
         const d = dotSel.d;
