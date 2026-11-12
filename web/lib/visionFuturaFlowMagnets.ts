@@ -30,10 +30,29 @@ export const SOFIA_MAGNET_TUNING = {
   minContracts: 10,
 };
 
+/**
+ * Imán ACUMULADO (Carlos, 12-nov-2026, tras el video de SofIA del NQ 11-nov: Imán + 28,480 se quedó
+ * FIJO de 10:19 a 11:50 con fuerza 177 → 245 → 504 → 720 → 769 y el precio llegó a 28,487). Una
+ * fuerza que sube sin parar 90 min no puede ser el neto de 1 min → es lo ACUMULADO del día. Mismo Δ
+ * que el resto, sumado desde la apertura. Se mide aparte (no reemplaza al de 1 min ni al de 15 min).
+ */
+export const CUMULATIVE_MAGNET_TUNING = {
+  /** "Todo el día": más largo que cualquier sesión, la suma arranca en la apertura. */
+  windowSec: 86_400,
+  radiusPts: 75,
+  minContracts: 25,
+  /** Tendencia de la fuerza: contra cuánto tenía el mismo strike hace 15 min. */
+  trendLookbackSec: 900,
+};
+
 export interface FlowMagnet {
   strike: number;
   /** Contratos netos de la ventana (siempre positivo; el lado lo dice `kind`). */
   fuerza: number;
+  /** Solo imán acumulado: fuerza del MISMO strike `trendLookbackSec` antes (mismo lado, puede ser ≤0). */
+  prevFuerza?: number;
+  /** Solo imán acumulado: segundo desde el que es el imán sin cambiar de strike. */
+  since?: number;
 }
 
 export interface FlowMagnets {
@@ -126,6 +145,33 @@ export function flowMagnetHistory(
     }
   }
   return segs;
+}
+
+/**
+ * Agrega a los imanes de `now` la tendencia de su fuerza (`prevFuerza` = neto acumulado del mismo
+ * strike hasta `toT − lookbackSec`, con el signo del lado) y desde cuándo están fijos (`since`, del
+ * tramo vigente del historial). PURA.
+ */
+export function withMagnetTrend(
+  by: Map<number, StrikeMinute[]>, now: FlowMagnets, history: FlowMagnetSegment[], toT: number,
+  lookbackSec: number = CUMULATIVE_MAGNET_TUNING.trendLookbackSec,
+): FlowMagnets {
+  const add = (mg: FlowMagnet | null, kind: "pos" | "neg"): FlowMagnet | null => {
+    if (!mg) return null;
+    let d = 0;
+    for (const m of by.get(mg.strike) ?? []) if (m.t < toT - lookbackSec) d += deltaOf(m);
+    const prevFuerza = kind === "pos" ? d : -d;
+    // Tramo vigente = el último de ese lado; cuenta si sigue en el mismo strike hasta ~ahora.
+    let since: number | undefined;
+    for (let i = history.length - 1; i >= 0; i--) {
+      const sg = history[i];
+      if (sg.kind !== kind) continue;
+      if (sg.strike === mg.strike && sg.end >= toT - 120) since = sg.start - 60;
+      break;
+    }
+    return { ...mg, prevFuerza, since };
+  };
+  return { pos: add(now.pos, "pos"), neg: add(now.neg, "neg") };
 }
 
 /** "2.6K", "591". */

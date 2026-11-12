@@ -40,7 +40,7 @@ import VisionFuturaPremarketZones, { usePremarketZones } from "./VisionFuturaPre
 import { useVolumeDelta, VOL_WINDOWS } from "./useVolumeDelta";
 import { detectVolumeSpikes, volDeltaRows } from "@/lib/visionFuturaVolumeDelta";
 import { gridStepFor, nativeStep } from "@/lib/visionFuturaGrid";
-import { FLOW_MAGNET_TUNING, SOFIA_MAGNET_TUNING, flowMagnetHistory, flowMagnetsAt } from "@/lib/visionFuturaFlowMagnets";
+import { CUMULATIVE_MAGNET_TUNING, FLOW_MAGNET_TUNING, SOFIA_MAGNET_TUNING, flowMagnetHistory, flowMagnetsAt, withMagnetTrend } from "@/lib/visionFuturaFlowMagnets";
 import VisionFuturaChart, { DEFAULT_LAYERS, LAYERS, type CandleBar, type HistoryPoint, type LayerKey, type VixStrip } from "./VisionFuturaChart";
 import type { ConvertedLevel, DealerLevel, KeyLevel, KeyLevelKind, VisionFuturaReport, VisionStrikeRow } from "@/lib/visionFutura";
 
@@ -754,7 +754,7 @@ export default function VisionFuturaTab() {
     expiration: mode === "repeticion" && replay ? replay.expiration || replay.date : data?.expiration ?? null,
     spot: data?.spot.spx ?? null,
     radius: mode === "repeticion" && replay ? replay.radius : data?.radius ?? null,
-    enabled: ((layers.volumen_delta && layers.agresor) || layers.iman_flujo || layers.imanes_sofia) && !NIGHT_IDS.includes(inst),
+    enabled: ((layers.volumen_delta && layers.agresor) || layers.iman_flujo || layers.imanes_sofia || layers.iman_acumulado) && !NIGHT_IDS.includes(inst),
   });
 
   if (loading && !data) return <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-md)" }}>{instrumentBar}<div className="card wheel-empty">Cargando VisionFutura · {inst}…</div></div>;
@@ -958,14 +958,17 @@ export default function VisionFuturaTab() {
     const history = flowMagnetHistory(vol.minutes, vol.sessionOpen, toT, spotAt, o);
     // Mismo precio que el último minuto del historial (cierre de la vela), para que no se contradigan.
     const spotNow = closes.get(toT - 60) ?? view.spot.spx;
+    const now = flowMagnetsAt(vol.minutes, toT, spotNow, o);
     return {
-      now: flowMagnetsAt(vol.minutes, toT, spotNow, o),
+      // El acumulado lleva además la tendencia de la fuerza y desde cuándo está fijo.
+      now: tune === CUMULATIVE_MAGNET_TUNING ? withMagnetTrend(vol.minutes, now, history, toT) : now,
       history,
       windowLabel,
     };
   };
   const flowMagnets = magnetsFor(layers.iman_flujo, FLOW_MAGNET_TUNING, "15 min");
   const sofiaMagnets = magnetsFor(layers.imanes_sofia, SOFIA_MAGNET_TUNING, "1 min");
+  const cumMagnets = magnetsFor(layers.iman_acumulado, CUMULATIVE_MAGNET_TUNING, "día");
 
   return (
     <VisionLabelsContext.Provider value={labels}>
@@ -1289,6 +1292,7 @@ export default function VisionFuturaTab() {
             positions={positionsView}
             flowMagnets={flowMagnets}
             sofiaMagnets={sofiaMagnets}
+            cumMagnets={cumMagnets}
             volDelta={(() => {
               // Sin volumen por contrato (tastytrade no lo manda): el panel cae al $ neto compras − ventas.
               if (!vol || vol.minutes.size === 0 || !layers.volumen_delta) return null;

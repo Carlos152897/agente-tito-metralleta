@@ -3,7 +3,7 @@
 // Chart de velas del subyacente con los niveles del agente dibujados como
 // líneas horizontales: violeta = strikes de mayor volumen (call/put), gris =
 // imán del GEX, amarillo = target de cierre, azul punteado = precio actual.
-// Barras desde /api/0dte/bars (Schwab pricehistory). Ver Proceso 0DTE.
+// Barras desde /api/odte-standalone/bars (Schwab pricehistory, client_credentials). Ver Proceso 0DTE.
 
 import { useEffect, useState } from "react";
 import type { Lang } from "@/lib/odteStandalone/i18n";
@@ -48,7 +48,7 @@ export default function ZeroDteChart({
 
   useEffect(() => {
     let alive = true;
-    fetch(`/api/0dte/bars?ticker=${encodeURIComponent(ticker)}`, { cache: "no-store" })
+    fetch(`/api/odte-standalone/bars?ticker=${encodeURIComponent(ticker)}`, { cache: "no-store" })
       .then((r) => r.json())
       .then((j) => {
         if (!alive) return;

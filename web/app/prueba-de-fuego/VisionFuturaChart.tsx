@@ -15,7 +15,7 @@ import type { RowWithLegs } from "@/lib/visionFuturaLegs";
 import type { MsPremiumMinute } from "@/lib/marketsnack";
 import { premiumNewMoney, premiumSeries } from "@/lib/visionFuturaPremium";
 import { unusualDots, type RowMultiExp, type UnusualDot } from "@/lib/visionFuturaMultiExp";
-import { fmtFuerza, type FlowMagnetSegment, type FlowMagnets } from "@/lib/visionFuturaFlowMagnets";
+import { fmtFuerza, type FlowMagnet, type FlowMagnetSegment, type FlowMagnets } from "@/lib/visionFuturaFlowMagnets";
 import { bucketOf, gridMinutes, gridRows, gridSnapshot, gridSpikes, gridUnusual, gridVolRows } from "@/lib/visionFuturaGrid";
 import type { DotExit } from "@/lib/visionFuturaUnusualExit";
 import type { MsUnusualTrade } from "@/lib/marketsnack";
@@ -47,7 +47,8 @@ export type LayerKey =
   | "premarket"
   | "volumen_delta"
   | "iman_flujo"
-  | "imanes_sofia";
+  | "imanes_sofia"
+  | "iman_acumulado";
 
 export const LAYERS: { key: LayerKey; label: string; color: string }[] = [
   { key: "precio", label: "Precio", color: "#2dd4bf" },
@@ -73,13 +74,14 @@ export const LAYERS: { key: LayerKey; label: string; color: string }[] = [
   { key: "volumen_delta", label: "Volumen delta", color: "#38bdf8" },
   { key: "iman_flujo", label: "Imanes de flujo", color: "#3b82f6" },
   { key: "imanes_sofia", label: "Imán Referencia", color: "#22d3ee" },
+  { key: "iman_acumulado", label: "Imán acumulado", color: "#a3e635" },
 ];
 
 export const DEFAULT_LAYERS: Record<LayerKey, boolean> = {
   precio: true, posicionamiento: true, magneto: true, iman_positivo: true, iman_negativo: true,
   resistencia: true, piso: true, gamma_flip: false, max_pain: false, charm: false,
   dealers: false, rango_vix: false, historial: false, historial_ls: true, agresor: true, vix: true, spreads: true, prima: true, inusuales_ms: true, premarket: true, volumen_delta: true,
-  iman_flujo: true, imanes_sofia: true,
+  iman_flujo: true, imanes_sofia: true, iman_acumulado: true,
 };
 
 const COLOR = Object.fromEntries(LAYERS.map((l) => [l.key, l.color])) as Record<LayerKey, string>;
@@ -90,6 +92,9 @@ const FLOW_NEG = "#ef4444";
 /** Modelo imanesSofia (1 min, como la app SofIA): cian = Imán +, rosa = Imán −, línea punteada. */
 const SOFIA_POS = "#22d3ee";
 const SOFIA_NEG = "#f472b6";
+/** Imán acumulado del día (lib/visionFuturaFlowMagnets.ts CUMULATIVE_MAGNET_TUNING): lima / rosa fuerte. */
+const CUM_POS = "#a3e635";
+const CUM_NEG = "#fb7185";
 // Tono claro de cada lado = la parte que viene de PUTS (el fuerte = CALLS).
 const POS_UP_PUT = "#86efac";
 // Parte de la barra que viene de spreads (varias patas): no dice dirección.
@@ -168,6 +173,11 @@ interface Props {
   flowMagnets?: { now: FlowMagnets; history: FlowMagnetSegment[]; windowLabel: string } | null;
   /** Modelo imanesSofia: mismo formato, ventana de 1 min. */
   sofiaMagnets?: { now: FlowMagnets; history: FlowMagnetSegment[]; windowLabel: string } | null;
+  /**
+   * Imán acumulado del día (12-nov, video de SofIA): neto desde la apertura; `now` trae además
+   * `prevFuerza` (hace 15 min) y `since` (desde cuándo está fijo en ese strike).
+   */
+  cumMagnets?: { now: FlowMagnets; history: FlowMagnetSegment[]; windowLabel: string } | null;
   /** Vista "Gamma": barras de GEX neto por strike en el centro del plot (en lugar del posicionamiento). */
   gexBars?: boolean;
 }
@@ -332,6 +342,7 @@ function griddedProps(p: Props): Props {
       : p.positions,
     flowMagnets: remapMagnets(p.flowMagnets),
     sofiaMagnets: remapMagnets(p.sofiaMagnets),
+    cumMagnets: remapMagnets(p.cumMagnets),
   };
 }
 
@@ -577,6 +588,19 @@ export default function VisionFuturaChart(rawProps: Props) {
     // Nombre visible "Imán Referencia +/−" (Carlos, 11-nov: antes decía "Sofía").
     if (pos) addChip({ key: `sf-pos-${pos.strike}`, text: `Imán Referencia + (${fmtFuerza(pos.fuerza)}) ${n2(pos.strike, 0)}`, color: SOFIA_POS }, pos.strike);
     if (neg) addChip({ key: `sf-neg-${neg.strike}`, text: `Imán Referencia − (${fmtFuerza(neg.fuerza)}) ${n2(neg.strike, 0)}`, color: SOFIA_NEG }, neg.strike);
+  }
+  if (layers.iman_acumulado && props.cumMagnets) {
+    const { pos, neg } = props.cumMagnets.now;
+    // "Imán acum. + (769 ↑+269) 28,480 · 45m": fuerza, cuánto creció en 15 min y cuánto lleva fijo.
+    const cumText = (sign: "+" | "−", mg: FlowMagnet) => {
+      const diff = mg.prevFuerza == null ? null : mg.fuerza - mg.prevFuerza;
+      const trend = diff == null ? "" : diff > 0 ? ` ↑+${fmtFuerza(diff)}` : diff < 0 ? ` ↓−${fmtFuerza(diff)}` : " =";
+      const fixedMin = mg.since != null ? Math.max(0, Math.round((refSec - mg.since) / 60)) : null;
+      const fixed = fixedMin != null && fixedMin >= 1 ? ` · ${fixedMin >= 60 ? `${Math.floor(fixedMin / 60)}h${String(fixedMin % 60).padStart(2, "0")}` : `${fixedMin}m`}` : "";
+      return `Imán acum. ${sign} (${fmtFuerza(mg.fuerza)}${trend}) ${n2(mg.strike, 0)}${fixed}`;
+    };
+    if (pos) addChip({ key: `cm-pos-${pos.strike}`, text: cumText("+", pos), color: CUM_POS }, pos.strike);
+    if (neg) addChip({ key: `cm-neg-${neg.strike}`, text: cumText("−", neg), color: CUM_NEG }, neg.strike);
   }
   if (layers.premarket && props.premarket) {
     const pm = props.premarket;
@@ -896,6 +920,25 @@ export default function VisionFuturaChart(rawProps: Props) {
                   <line key={`sf-${i}`} x1={x0} x2={x1} y1={y(sg.strike)} y2={y(sg.strike)}
                     stroke={sg.kind === "pos" ? SOFIA_POS : SOFIA_NEG} strokeWidth={live ? 3 : 2} strokeDasharray="5 3" opacity={live ? 0.95 : 0.5}>
                     <title>{`Imán Referencia ${sg.kind === "pos" ? "positivo" : "negativo"} ${n2(sg.strike, 0)} · ${hm(sg.start - 60)}–${hm(sg.end)} · fuerza máx ${fmtFuerza(sg.fuerza)}`}</title>
+                  </line>
+                ) : null;
+              })}
+            </g>
+          )}
+
+          {/* Imán acumulado: línea gruesa lima (Imán +) / rosa (Imán −) desde que está fijo en ese strike;
+              los tramos viejos (cuando era otro strike) quedan tenues. */}
+          {layers.iman_acumulado && props.cumMagnets && (
+            <g style={{ pointerEvents: "none" }}>
+              {props.cumMagnets.history.filter((sg) => inView(sg.strike)).map((sg, i) => {
+                const cur = props.cumMagnets!.now[sg.kind];
+                const live = !!cur && cur.strike === sg.strike && sg.end >= refSec - 120;
+                const x0 = x(sg.start - 60);
+                const x1 = live ? nowX : x(sg.end);
+                return x1 > x0 ? (
+                  <line key={`cm-${i}`} x1={x0} x2={x1} y1={y(sg.strike)} y2={y(sg.strike)}
+                    stroke={sg.kind === "pos" ? CUM_POS : CUM_NEG} strokeWidth={live ? 4 : 2} opacity={live ? 0.95 : 0.35} strokeLinecap="round">
+                    <title>{`Imán acumulado ${sg.kind === "pos" ? "positivo" : "negativo"} ${n2(sg.strike, 0)} · ${hm(sg.start - 60)}–${hm(sg.end)} · fuerza máx ${fmtFuerza(sg.fuerza)}`}</title>
                   </line>
                 ) : null;
               })}

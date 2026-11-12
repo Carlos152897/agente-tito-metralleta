@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { flowMagnetHistory, flowMagnetsAt, fmtFuerza, SOFIA_MAGNET_TUNING } from "./visionFuturaFlowMagnets";
+import { CUMULATIVE_MAGNET_TUNING, flowMagnetHistory, flowMagnetsAt, fmtFuerza, SOFIA_MAGNET_TUNING, withMagnetTrend } from "./visionFuturaFlowMagnets";
 import type { StrikeMinute } from "./visionFuturaVolumeDelta";
 
 const m = (t: number, cA = 0, cB = 0, pA = 0, pB = 0): StrikeMinute => ({ t, cA, cB, cV: cA + cB, pA, pB, pV: pA + pB });
@@ -72,5 +72,36 @@ describe("imanesSofia (último minuto)", () => {
     ]);
     const r = flowMagnetsAt(by, 60, 7560, o);
     expect(r.pos).toBeNull();
+  });
+});
+
+describe("imán acumulado (todo el día) con tendencia", () => {
+  const T = CUMULATIVE_MAGNET_TUNING;
+  const o = { windowSec: T.windowSec, minContracts: T.minContracts, radius: T.radiusPts };
+  // Caso del video de SofIA: el mismo strike junta compras netas minuto a minuto y su fuerza crece.
+  const by = new Map<number, StrikeMinute[]>([
+    [7600, Array.from({ length: 40 }, (_, i) => m(i * 60, 20))], // +20 por minuto, 40 min
+    [7590, [m(0, 300)]], // un golpe grande al inicio y nada más
+    [7550, [m(600, 0, 50)]], // −50
+  ]);
+  it("suma desde la apertura (no se olvida de lo viejo como la ventana de 15 min)", () => {
+    const r = flowMagnetsAt(by, 2400, 7580, o);
+    expect(r.pos).toEqual({ strike: 7600, fuerza: 800 });
+    expect(r.neg).toEqual({ strike: 7550, fuerza: 50 });
+    expect(flowMagnetsAt(by, 2400, 7580).pos?.strike).toBe(7600); // 15 min: 300 de 7590 ya salió
+  });
+  it("tendencia: fuerza hace 15 min y desde cuándo está fijo", () => {
+    const toT = 2400;
+    const hist = flowMagnetHistory(by, 0, toT, () => 7580, o);
+    const now = withMagnetTrend(by, flowMagnetsAt(by, toT, 7580, o), hist, toT);
+    expect(now.pos?.fuerza).toBe(800);
+    expect(now.pos?.prevFuerza).toBe(500); // minutos 0..1440 → 25 × 20
+    // 7590 (300) fue el imán hasta que 7600 lo pasó: a las 960 s 7600 suma 320 > 300 → fijo desde ahí.
+    expect(now.pos?.since).toBe(900);
+    expect(now.neg?.prevFuerza).toBe(50);
+  });
+  it("sin imán no inventa tendencia", () => {
+    const r = withMagnetTrend(by, { pos: null, neg: null }, [], 2400);
+    expect(r).toEqual({ pos: null, neg: null });
   });
 });
