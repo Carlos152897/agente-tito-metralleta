@@ -185,7 +185,8 @@ export function withMagnetTrend(
  */
 export const GEX_SIDE_MAGNET_TUNING = {
   windowSec: 300,
-  radiusPts: 75,
+  /** ±20 pts como SofIA (13-nov: con 75 agarraba el Put Wall a 33 pts como Imán +; el suyo queda pegado al precio). */
+  radiusPts: 20,
   /** GEX mínimo (millones de $) para marcar un imán. */
   minGexM: 5,
   /** Contratos agresivos netos mínimos para darle lado a un strike. */

@@ -112,7 +112,7 @@ describe("imán GEX × lado (como la columna agresor de SofIA)", () => {
       [7640, [m(0, 30, 0, 20, 0)]], // compran calls y puts al ask → compras +50
       [7645, [m(0, 0, 40, 0, 10)]], // venden al bid → −50
       [7650, [m(0, 0, 0, 0, 0)]], // sin lado
-      [7500, [m(0, 100)]], // fuera del radio de 75 pts
+      [7500, [m(0, 100)]], // fuera del radio de 20 pts
     ]);
     const sides = aggressorSides(by, 400, 300);
     expect(sides.get(7640)).toBe(0); // m(0) quedó fuera: ventana (100, 400]
