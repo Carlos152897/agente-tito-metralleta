@@ -973,7 +973,19 @@ export default function VisionFuturaTab() {
   const cumMagnets = magnetsFor(layers.iman_acumulado, CUMULATIVE_MAGNET_TUNING, "día");
   // Imán GEX × lado (capturas de SofIA 12-nov): fuerza = |GEX neto| del strike, lado = agresor de 5 min.
   const gexMagnets = (() => {
-    if (!vol || !layers.iman_gex || isNightInst) return null;
+    if (!layers.iman_gex) return null;
+    // Modo noche (/ES, /NQ): sin velas de opciones por minuto → el lado sale del $ comprado − vendido
+    // de la sesión que trae cada fila (streamer de futuros). Si el streamer no corre, no hay lado → sin imán.
+    if (isNightInst) {
+      if (tick) return null;
+      const sides = new Map(view.rows.map((r) => [r.spx, r.compras - r.ventas] as [number, number]));
+      const r = gexSideMagnets(view.rows.map((x) => ({ strike: x.spx, netGex: x.netGex })), sides, view.spot.spx, {
+        radius: GEX_SIDE_MAGNET_TUNING.radiusPts * scale,
+        minSideContracts: GEX_SIDE_MAGNET_TUNING.minSideUsdNight,
+      });
+      return { ...r, ladoFuente: "sesion_usd" as const };
+    }
+    if (!vol) return null;
     const volDate = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(vol.sessionOpen * 1000));
     if (tick && replay?.date !== volDate) return null;
     const toT = tick ? Math.floor(cursorSec / 60) * 60 : vol.asOfT;

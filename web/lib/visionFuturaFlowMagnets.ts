@@ -60,6 +60,9 @@ export interface FlowMagnet {
 export interface FlowMagnets {
   pos: FlowMagnet | null;
   neg: FlowMagnet | null;
+  /** Solo imán GEX × lado: de dónde sale `lado`. "5m" = contratos agresivos de 5 min (día);
+   *  "sesion_usd" = $ comprado − vendido de la sesión (modo noche, streamer de futuros). */
+  ladoFuente?: "5m" | "sesion_usd";
 }
 
 export interface FlowMagnetSegment {
@@ -185,6 +188,8 @@ export function withMagnetTrend(
  */
 export const GEX_SIDE_MAGNET_TUNING = {
   windowSec: 300,
+  /** Modo noche: $ netos (comprado − vendido de la sesión) mínimos para darle lado a un strike. */
+  minSideUsdNight: 10_000,
   /** ±20 pts como SofIA (13-nov: con 75 agarraba el Put Wall a 33 pts como Imán +; el suyo queda pegado al precio). */
   radiusPts: 20,
   /** GEX mínimo (millones de $) para marcar un imán. */

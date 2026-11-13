@@ -614,7 +614,16 @@ export default function VisionFuturaChart(rawProps: Props) {
     const { pos, neg } = props.gexMagnets;
     // Como SofIA: "Imán + 7,640 · fuerza 696" (fuerza = GEX del strike en millones).
     // + el lado a la vista: contratos agresivos netos de 5 min que lo hicieron + o −.
-    const lado = (mg: FlowMagnet) => (mg.lado == null ? "" : ` · ${mg.lado > 0 ? "compras" : "ventas"} 5m ${mg.lado > 0 ? "+" : "−"}${Math.abs(Math.round(mg.lado))}`);
+    // De noche el lado es $ de la sesión (streamer de futuros), no contratos de 5 min.
+    const night = props.gexMagnets.ladoFuente === "sesion_usd";
+    const lado = (mg: FlowMagnet) => {
+      if (mg.lado == null) return "";
+      const s = mg.lado > 0 ? "+" : "−";
+      const v = Math.abs(mg.lado);
+      return night
+        ? ` · ${mg.lado > 0 ? "compras" : "ventas"} sesión ${s}$${v >= 1e6 ? `${(v / 1e6).toFixed(1)}M` : `${Math.round(v / 1e3)}K`}`
+        : ` · ${mg.lado > 0 ? "compras" : "ventas"} 5m ${s}${Math.round(v)}`;
+    };
     // Chip en la columna de etiquetas, igual que los demás imanes (Carlos, 12-nov: la etiqueta grande
     // sobre la gráfica tapaba el precio).
     if (pos) addChip({ key: `gm-pos-${pos.strike}`, text: `Imán GEX + ${n2(pos.strike, 0)} · fuerza ${n2(pos.fuerza, 0)}${lado(pos)}`, color: GEXM_POS }, pos.strike);
