@@ -99,6 +99,8 @@ const CUM_POS = "#a3e635";
 const CUM_NEG = "#fb7185";
 /** Imán GEX × lado: azul (+) / rojo (−) como SofIA, línea doble para distinguirlo del de flujo. */
 const GEXM_POS = "#60a5fa";
+/** Fila del Magneto en la columna de precios. */
+const MAGNETO_YELLOW = "#fde047";
 const GEXM_NEG = "#f87171";
 // Tono claro de cada lado = la parte que viene de PUTS (el fuerte = CALLS).
 const POS_UP_PUT = "#86efac";
@@ -118,6 +120,8 @@ export interface HistoryPoint {
 
 interface Props {
   rows: VisionStrikeRow[];
+  /** Gamma (GEX neto) total del vencimiento, en $; va arriba de la columna GEX. */
+  netGexTotal?: number | null;
   spot: number;
   priceSeries: { time: number; value: number }[];
   /**
@@ -562,6 +566,13 @@ export default function VisionFuturaChart(rawProps: Props) {
   const POS_SPAN = plotW / 2 - POS_EDGE - 4;
 
 
+  // Magneto pintado en amarillo en la columna de precios. Sigue al Magneto en cada refresco.
+  // Todos los instrumentos (Carlos, 13-nov: primero SPX/SPY, luego "hazlo para todos").
+  const magnetoLvl = keyLevels.find((k) => k.kind === "magneto")?.spx ?? null;
+  const magnetoRowIdx = magnetoLvl == null || rows.length === 0 || !inView(magnetoLvl)
+    ? -1
+    : rows.reduce((best, r, i) => (Math.abs(r.spx - magnetoLvl) < Math.abs(rows[best].spx - magnetoLvl) ? i : best), 0);
+
   // ── Chips de niveles (franja derecha del plot, sin taparse) ──
   const chips: Chip[] = [];
   // Un nivel activo fuera de la ventana de strikes no se pierde: se muestra
@@ -578,6 +589,8 @@ export default function VisionFuturaChart(rawProps: Props) {
   for (const k of keyLevels) {
     const layer = kindLayer[k.kind];
     if (!layers[layer]) continue;
+    // El Magneto ya no lleva etiqueta ni línea: va en amarillo en la columna de precios (Carlos, 13-nov).
+    if (k.kind === "magneto") continue;
     // Charm − con su propio color para distinguirlo de Charm + (mismo interruptor).
     const color = k.label === "Charm −" ? CHARM_NEG : COLOR[layer];
     const lvl = Math.abs(k.spx % 1) < 0.005 ? n2(k.spx, 0) : n2(k.spx, 2);
@@ -761,6 +774,24 @@ export default function VisionFuturaChart(rawProps: Props) {
   return (
     <div ref={wrapRef} style={{ overflowX: "auto" }}>
       <div style={{ position: "relative", width }}>
+      {/* Gamma total arriba de la columna GEX (Carlos, 13-nov): relleno rojo si es negativo, verde si es positivo. */}
+      {layers.agresor && props.netGexTotal != null && (
+        <div style={{ height: 30, position: "relative" }}>
+          <div
+            title="Gamma (GEX neto) total del vencimiento"
+            style={{
+              position: "absolute", top: 2, right: width - (aggX + AGG_GEX_W - 2),
+              padding: "3px 8px", borderRadius: 6, fontSize: 14, fontWeight: 800, whiteSpace: "nowrap",
+              background: props.netGexTotal < 0 ? "#d92d20" : "#12b76a", color: "#fff",
+            }}
+          >
+            Γ {props.netGexTotal < 0 ? "−" : "+"}$
+            {Math.abs(props.netGexTotal) >= 1e9
+              ? `${(Math.abs(props.netGexTotal) / 1e9).toFixed(1)}B`
+              : `${(Math.abs(props.netGexTotal) / 1e6).toFixed(0)}M`}
+          </div>
+        </div>
+      )}
       <svg width={width} height={height} style={{ display: "block", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
         <defs>
           <clipPath id="vf-plot"><rect x={plotL} y={TOP} width={plotW} height={rows.length * ROW_H} /></clipPath>
@@ -777,13 +808,15 @@ export default function VisionFuturaChart(rawProps: Props) {
           const ry = TOP + i * ROW_H;
           const c = conv(r.spx);
           const isSpot = i === spotRowIdx;
+          const isMag = i === magnetoRowIdx;
           return (
             <g key={r.spx}>
               <rect x={0} y={ry} width={width} height={ROW_H} fill={isSpot ? "rgba(47,107,255,0.14)" : i % 2 ? "rgba(255,255,255,0.015)" : "transparent"} />
-              <text x={6} y={ry + rowMid + 14} fontSize={LBL_FONT} fill={isSpot ? "#f5f7fb" : "#9aa5c0"} fontWeight={isSpot ? 700 : 400}>
+              {isMag && <rect x={2} y={ry + 1} width={LABEL_W - 6} height={ROW_H - 2} rx={3} fill={MAGNETO_YELLOW}><title>{`Magneto ${n2(magnetoLvl ?? r.spx, 0)}`}</title></rect>}
+              <text x={6} y={ry + rowMid + 14} fontSize={LBL_FONT} fill={isMag ? "#1a1400" : isSpot ? "#f5f7fb" : "#9aa5c0"} fontWeight={isSpot || isMag ? 700 : 400}>
                 {n2(r.spx, 0)}
                 {(c.spy != null || c.es != null) && (
-                  <tspan fill="#6b7591">{c.spy != null ? ` · ${n2(c.spy, 1)}` : ""}{c.es != null ? ` · ${n2(c.es, 0)}` : ""}</tspan>
+                  <tspan fill={isMag ? "#3d3200" : "#6b7591"}>{c.spy != null ? ` · ${n2(c.spy, 1)}` : ""}{c.es != null ? ` · ${n2(c.es, 0)}` : ""}</tspan>
                 )}
               </text>
             </g>
@@ -909,7 +942,7 @@ export default function VisionFuturaChart(rawProps: Props) {
           {/* Historial de niveles */}
           {layers.historial && (
             <>
-              <path d={stepPath((h) => h.magnet)} fill="none" stroke={COLOR.magneto} strokeWidth={3} opacity={0.5} />
+              {/* Sin línea del Magneto: va en amarillo en la columna de precios (Carlos, 13-nov). */}
               <path d={stepPath((h) => h.callWall)} fill="none" stroke={COLOR.resistencia} strokeWidth={2.5} opacity={0.45} />
               <path d={stepPath((h) => h.putWall)} fill="none" stroke={COLOR.piso} strokeWidth={2.5} opacity={0.45} />
               <path d={stepPath((h) => h.gammaFlip)} fill="none" stroke={COLOR.gamma_flip} strokeWidth={1.5} strokeDasharray="4 3" opacity={0.6} />

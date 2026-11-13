@@ -415,7 +415,8 @@ export default function VisionFuturaTab() {
         setRecientes((rec.includes("TSLA") ? rec : ["TSLA", ...rec]).slice(0, 6));
       }
       const savedLayers = JSON.parse(window.localStorage.getItem(KEY_LAYERS) ?? "null");
-      if (savedLayers && typeof savedLayers === "object") setLayers({ ...DEFAULT_LAYERS, ...savedLayers });
+      // Magneto siempre prendido: ya no tiene botón (Carlos, 13-nov; en SPX/SPY va en amarillo en la columna de precios).
+      if (savedLayers && typeof savedLayers === "object") setLayers({ ...DEFAULT_LAYERS, ...savedLayers, magneto: true });
       const savedZoom = Number(window.localStorage.getItem(KEY_ZOOM));
       if (ZOOMS.some((z) => z.min === savedZoom)) setZoom(savedZoom);
       if (window.localStorage.getItem(KEY_FIT) === "1") setFitHeight(true);
@@ -690,7 +691,7 @@ export default function VisionFuturaTab() {
   };
   const toggleLayer = (k: LayerKey) => saveLayers({ ...layers, [k]: !layers[k] });
   const setAllLayers = (on: boolean) =>
-    saveLayers(Object.fromEntries(LAYERS.map((l) => [l.key, on])) as Record<LayerKey, boolean>);
+    saveLayers({ ...(Object.fromEntries(LAYERS.map((l) => [l.key, on])) as Record<LayerKey, boolean>), magneto: true });
 
   const instrumentBar = (
     <div className="card" style={{ gap: 10, padding: 14 }}>
@@ -1195,7 +1196,7 @@ export default function VisionFuturaTab() {
           </div>
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
-          {LAYERS.filter((l) => l.key !== "posicionamiento").map((l) => {
+          {LAYERS.filter((l) => l.key !== "posicionamiento" && l.key !== "magneto").map((l) => {
             const on = layers[l.key];
             return (
               <button
@@ -1299,6 +1300,7 @@ export default function VisionFuturaTab() {
         ) : (
           <VisionFuturaChart
             rows={view.rows}
+            netGexTotal={view.netGex ?? null}
             spot={view.spot.spx}
             priceSeries={view.priceSeries}
             candles={chartCandles}
