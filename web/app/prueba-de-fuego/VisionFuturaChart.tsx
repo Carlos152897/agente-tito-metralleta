@@ -778,7 +778,7 @@ export default function VisionFuturaChart(rawProps: Props) {
   };
   const maxSideAgg = Math.max(1, ...rows.map((r) => { const s = sidesOf(r); return Math.max(s.buy, s.sell); }));
   const cmpArrow = (cur: number, prev: number | null) => (prev == null ? "" : cur > prev ? "▲" : cur < prev ? "▼" : "=");
-  const fmtNet = (v: number) => (volOn ? (v >= 10_000 ? `${(v / 1000).toFixed(1)}K` : v.toLocaleString("en-US")) : money1(v));
+  const fmtNet = (v: number) => (volOn ? (v >= 10_000 ? `${(v / 1000).toFixed(1)}K` : v.toLocaleString("en-US", { maximumFractionDigits: v < 100 ? 2 : 0 })) : money1(v));
   const spotStrike = rows.reduce((a, b) => (Math.abs(b.spx - spot) < Math.abs(a.spx - spot) ? b : a), rows[0]).spx;
   const pressureLit = new Map(
     (props.positions?.events ?? [])

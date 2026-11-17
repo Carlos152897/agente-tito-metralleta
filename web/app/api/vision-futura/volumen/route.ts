@@ -11,7 +11,7 @@ export async function GET(req: Request) {
   const q = new URL(req.url).searchParams;
   const exp = q.get("exp") ?? "";
   const spot = Number(q.get("spot"));
-  const radius = Math.min(200, Math.max(5, Number(q.get("radius")) || 60));
+  const radius = Math.min(600, Math.max(5, Number(q.get("radius")) || 60));
   const since = q.get("since") != null ? Number(q.get("since")) : null;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(exp) || !(spot > 0)) return Response.json({ error: "Faltan exp o spot." }, { status: 400 });
   try {

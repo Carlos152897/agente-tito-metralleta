@@ -6,7 +6,7 @@
 
 import { DXLinkWebSocketClient } from "@dxfeed/dxlink-websocket-client";
 import { DXLinkFeed, FeedContract } from "@dxfeed/dxlink-feed";
-import { fetchQuoteToken, type NestedChainStrike } from "./tastytrade";
+import { fetchLiveQuotes, fetchQuoteToken, type NestedChainStrike } from "./tastytrade";
 import { fetchContractTradeSummary } from "./marketsnack";
 import { nestedFor } from "./visionFuturaData";
 import { instrumentOf } from "./visionFuturaInstruments";
@@ -78,6 +78,7 @@ function sessionOpenMs(now: number): number {
 }
 
 /** Pide velas de 1 min de varios símbolos en una sola conexión, cada uno desde su `fromMs`. */
+const PULL_CHUNK = 40;
 async function pullMany(reqs: { sym: string; fromMs: number }[], timeoutMs = 15_000): Promise<Map<string, OptBar[]>> {
   const out = new Map<string, OptBar[]>();
   if (reqs.length === 0 || typeof (globalThis as { WebSocket?: unknown }).WebSocket === "undefined") return out;
@@ -97,6 +98,11 @@ async function pullMany(reqs: { sym: string; fromMs: number }[], timeoutMs = 15_
     const hard = setTimeout(finish, timeoutMs);
     client.addAuthStateChangeListener((state) => {
       if (state !== "AUTHORIZED") return;
+      // DXLink rechaza canales con muchas velas ("subscription size for event type 'Candle' is too big"):
+      // con NQ a ±400 pts (~130 contratos) se caía la mitad del agresor. Un canal por cada 40 contratos,
+      // misma conexión (varias conexiones chocan con el límite de sesiones de tastytrade).
+      for (let i = 0; i < reqs.length; i += PULL_CHUNK) {
+      const chunk = reqs.slice(i, i + PULL_CHUNK);
       const feed = new DXLinkFeed(client, FeedContract.HISTORY);
       feed.configure({ acceptEventFields: { Candle: ["eventSymbol", "time", "close", "volume", "bidVolume", "askVolume"] } });
       feed.addEventListener((events) => {
@@ -112,7 +118,8 @@ async function pullMany(reqs: { sym: string; fromMs: number }[], timeoutMs = 15_
         if (quiet) clearTimeout(quiet);
         quiet = setTimeout(finish, 1500);
       });
-      feed.addSubscriptions(reqs.map((r) => ({ type: "Candle", symbol: `${r.sym}{=1m}`, fromTime: r.fromMs })));
+      feed.addSubscriptions(chunk.map((r) => ({ type: "Candle", symbol: `${r.sym}{=1m}`, fromTime: r.fromMs })));
+      }
     });
     client.connect(dxlinkUrl);
     client.setAuthToken(token);
@@ -137,6 +144,8 @@ export interface VolumeDeltaPayload {
   source?: "tastytrade" | "marketsnack";
   /** Segundos que cubre cada fila de `strikes` (60 tastytrade, 300 MarketSnack). */
   resolutionSec?: number;
+  /** NQ: ETF sumado (QQQ) y su ratio índice ÷ ETF; las cifras van en contratos equivalentes del índice. */
+  etf?: { symbol: string; ratio: number };
 }
 
 const inflight = new Map<string, Promise<void>>();
@@ -155,9 +164,14 @@ export async function loadVolumeDelta(inst: string, expiration: string, spot: nu
     .map((s) => ({ k: Number(s["strike-price"]), call: streamerOf(s, "call"), put: streamerOf(s, "put"), callOcc: occOf(s.call), putOcc: occOf(s.put) }))
     .filter((s) => Number.isFinite(s.k) && Math.abs(s.k - spot) <= radius && s.call && s.put);
 
+  // NQ: el NDX 0DTE casi no se negocia (17-nov: ~2,900 contratos en la mañana vs ~147,000 del SPX) y el
+  // agresor salía casi vacío. Se suman las opciones de QQQ del mismo vencimiento, cada strike × (NDX ÷ QQQ)
+  // a la fila del NDX más cercana y en contratos EQUIVALENTES de NDX (contratos QQQ ÷ ratio, por nocional).
+  const etf = cfg.chartEtf && cfg.id === "NQ" ? await etfLeg(cfg.chartEtf, expiration, spot, radius).catch(() => null) : null;
+
   // Pide lo que falta: lo nunca pedido desde la apertura, el resto solo los últimos 3 min.
   const reqs: { sym: string; fromMs: number }[] = [];
-  for (const s of strikes) {
+  for (const s of [...strikes, ...(etf?.strikes ?? [])]) {
     for (const sym of [s.call!, s.put!]) {
       const st = store.get(sym);
       if (!st || st.bars.size === 0) reqs.push({ sym, fromMs: open });
@@ -190,11 +204,31 @@ export async function loadVolumeDelta(inst: string, expiration: string, spot: nu
     const mins: StrikeMinute[] = strikeMinutes(bars(s.call!), bars(s.put!));
     if (mins.length) out[String(s.k)] = mins.map((m) => [m.t, m.cA, m.cB, m.cV, m.pA, m.pB, m.pV]);
   }
+  if (etf && strikes.length) {
+    const ks = strikes.map((s) => s.k).sort((a, b) => a - b);
+    const nearest = (px: number) => ks.reduce((b, k) => (Math.abs(k - px) < Math.abs(b - px) ? k : b), ks[0]);
+    const r2 = (v: number) => Math.round(v * 100) / 100;
+    for (const s of etf.strikes) {
+      const bars = (sym: string) => [...(store.get(sym)?.bars.values() ?? [])].filter((b) => b.t >= fromT);
+      const mins = strikeMinutes(bars(s.call!), bars(s.put!));
+      if (!mins.length) continue;
+      const key = String(nearest(s.k * etf.ratio));
+      const byT = new Map((out[key] ?? []).map((row) => [row[0], row]));
+      for (const m of mins) {
+        const add = [m.cA, m.cB, m.cV, m.pA, m.pB, m.pV].map((v) => v / etf.ratio);
+        const row = byT.get(m.t) ?? [m.t, 0, 0, 0, 0, 0, 0];
+        for (let i = 0; i < 6; i++) row[i + 1] = r2(row[i + 1] + add[i]);
+        byT.set(m.t, row);
+      }
+      out[key] = [...byT.values()].sort((a, b) => a[0] - b[0]);
+    }
+  }
   const asOfT = Math.floor(now / 60_000) * 60;
   // Velas viejas: si la última vela de tastytrade tiene > 3 min con la sesión abierta, DXLink se
   // trabó y la ventana de "1 min" saldría vacía (el panel se borraba entero) → respaldo MarketSnack.
   let newest = -Infinity;
-  for (const s of strikes) for (const sym of [s.call!, s.put!]) for (const t of store.get(sym)?.bars.keys() ?? []) if (t > newest) newest = t;
+  // Incluye QQQ: el NDX pasa minutos sin operaciones y eso no es que DXLink esté trabado.
+  for (const s of [...strikes, ...(etf?.strikes ?? [])]) for (const sym of [s.call!, s.put!]) for (const t of store.get(sym)?.bars.keys() ?? []) if (t > newest) newest = t;
   const inSession = now - open > STALE_SEC * 1000 && now - open < 6.5 * 3600_000; // 9:33–16:00 NY
   const stale = inSession && newest > -Infinity && asOfT - newest > STALE_SEC;
   if (stale) dxDownUntil = Math.max(dxDownUntil, now + DX_RETRY_MS);
@@ -206,5 +240,25 @@ export async function loadVolumeDelta(inst: string, expiration: string, spot: nu
       return { inst: cfg.id, expiration, sessionOpen: open / 1000, asOfT, strikes: ms, source: "marketsnack", resolutionSec: MS_BUCKET_SEC };
     }
   }
-  return { inst: cfg.id, expiration, sessionOpen: open / 1000, asOfT, strikes: out, source: "tastytrade", resolutionSec: 60 };
+  return { inst: cfg.id, expiration, sessionOpen: open / 1000, asOfT, strikes: out, source: "tastytrade", resolutionSec: 60, etf: etf ? { symbol: cfg.chartEtf!, ratio: etf.ratio } : undefined };
+}
+
+/** Precio del ETF (caché 60 s) y sus strikes del vencimiento dentro del rango del índice. */
+const etfPx = new Map<string, { at: number; px: number }>();
+async function etfLeg(sym: string, expiration: string, spot: number, radius: number) {
+  let c = etfPx.get(sym);
+  if (!c || Date.now() - c.at > 60_000) {
+    const q = (await fetchLiveQuotes({ equity: [sym] })).get(sym);
+    if (!q) return null;
+    c = { at: Date.now(), px: q.price };
+    etfPx.set(sym, c);
+  }
+  const ratio = spot / c.px;
+  if (!(ratio > 0)) return null;
+  const exp = (await nestedFor(sym)).find((e) => e["expiration-date"] === expiration);
+  if (!exp) return null;
+  const strikes = exp.strikes
+    .map((s) => ({ k: Number(s["strike-price"]), call: streamerOf(s, "call"), put: streamerOf(s, "put") }))
+    .filter((s) => Number.isFinite(s.k) && Math.abs(s.k * ratio - spot) <= radius && s.call && s.put);
+  return { ratio, strikes };
 }
