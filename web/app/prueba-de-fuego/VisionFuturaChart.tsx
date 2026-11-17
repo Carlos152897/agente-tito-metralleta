@@ -40,6 +40,7 @@ export type LayerKey =
   | "historial"
   | "historial_ls"
   | "agresor"
+  | "agresor_neto"
   | "vix"
   | "spreads"
   | "prima"
@@ -68,6 +69,9 @@ export const LAYERS: { key: LayerKey; label: string; color: string }[] = [
   { key: "historial", label: "Historial de niveles", color: "#a78bfa" },
   { key: "historial_ls", label: "Historial Long/Short", color: "#12b76a" },
   { key: "agresor", label: "Agresor", color: "#2f6bff" },
+  // Interruptor del agresor (Carlos, 16-nov): apagado = ask/bid puro (todo lo llenado al ask → azul,
+  // todo lo llenado al bid → rojo, calls y puts juntas); prendido = neto como SofIA (11-nov).
+  { key: "agresor_neto", label: "Agresor neto (SofIA)", color: "#7aa2ff" },
   { key: "vix", label: "Mini VIX", color: "#f97066" },
   { key: "prima", label: "Prima neta", color: "#7aa2ff" },
   { key: "inusuales_ms", label: "Inusuales MarketSnack", color: "#facc15" },
@@ -82,7 +86,7 @@ export const LAYERS: { key: LayerKey; label: string; color: string }[] = [
 export const DEFAULT_LAYERS: Record<LayerKey, boolean> = {
   precio: true, posicionamiento: true, magneto: true, iman_positivo: true, iman_negativo: true,
   resistencia: true, piso: true, gamma_flip: false, max_pain: false, charm: false,
-  dealers: false, rango_vix: false, historial: false, historial_ls: true, agresor: true, vix: true, spreads: true, prima: true, inusuales_ms: true, premarket: true, volumen_delta: true,
+  dealers: false, rango_vix: false, historial: false, historial_ls: true, agresor: true, agresor_neto: false, vix: true, spreads: true, prima: true, inusuales_ms: true, premarket: true, volumen_delta: true,
   iman_flujo: true, imanes_sofia: true, iman_acumulado: true, iman_gex: true,
 };
 
@@ -747,8 +751,19 @@ export default function VisionFuturaChart(rawProps: Props) {
   // Agresor como SofIA (Carlos, 11-nov, "sí, como SofIA"): NETO por strike en el lado que gana, el
   // otro en 0. Neto = (calls compradas + puts vendidas) − (calls vendidas + puts compradas), el mismo de
   // imanesSofia → la barra azul más grande = Imán +, la roja más grande = Imán −. ▲▼= vs la ventana anterior.
+  // Ask/Bid puro (Carlos, 16-nov, default): derecha = TODO lo llenado al ask (calls + puts), izquierda =
+  // TODO lo llenado al bid. No netea ni dice dirección: dice quién tiene prisa (compradores vs vendedores).
+  const netMode = layers.agresor_neto;
   const split = (net: number) => ({ buy: Math.max(net, 0), sell: Math.max(-net, 0) });
   const sidesOf = (r: VisionStrikeRow) => {
+    if (!netMode) {
+      if (volOn) {
+        const v = volBy.get(r.spx);
+        return { buy: v ? v.cA + v.pA : 0, sell: v ? v.cB + v.pB : 0, prevBuy: v?.prevBuy ?? null, prevSell: v?.prevSell ?? null };
+      }
+      const p = prevAggressor?.get(r.spx);
+      return { buy: r.compras, sell: r.ventas, prevBuy: p ? p.compras : null, prevSell: p ? p.ventas : null };
+    }
     if (volOn) {
       const v = volBy.get(r.spx);
       const cur = split(v?.delta ?? 0);
@@ -1297,7 +1312,7 @@ export default function VisionFuturaChart(rawProps: Props) {
               );
             })}
             <text x={aggX + AGG_GEX_W - 6} y={height - 8} fontSize={10} textAnchor="end" fill="#6b7591">GEX $M</text>
-            <text x={aggC} y={height - 16} fontSize={10} textAnchor="middle"><tspan fill="#f97066">← ventas</tspan><tspan fill="#6b7591"> | </tspan><tspan fill="#7aa2ff">compras →</tspan><tspan fill="#6b7591">{volOn ? ` (netas, contratos · ${props.volDelta!.windowLabel})` : " (netas, $)"}</tspan></text>
+            <text x={aggC} y={height - 16} fontSize={10} textAnchor="middle"><tspan fill="#f97066">{netMode ? "← ventas" : "← al bid"}</tspan><tspan fill="#6b7591"> | </tspan><tspan fill="#7aa2ff">{netMode ? "compras →" : "al ask →"}</tspan><tspan fill="#6b7591">{volOn ? ` (${netMode ? "netas" : "ask/bid"}, contratos · ${props.volDelta!.windowLabel})` : netMode ? " (netas, $)" : " (ask/bid, $)"}</tspan></text>
             <text x={aggC} y={height - 4} fontSize={9} textAnchor="middle" fill="#6b7591">{volOn ? `▲▼= vs los ${props.volDelta!.windowLabel.replace(/^últ\.\s*/, "")} anteriores` : "▲▼= vs refresco anterior"}</text>
             <text x={strikeX} y={height - 8} fontSize={10} fill="#6b7591">Strike</text>
           </g>

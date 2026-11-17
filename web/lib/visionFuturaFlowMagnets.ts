@@ -190,8 +190,11 @@ export const GEX_SIDE_MAGNET_TUNING = {
   windowSec: 300,
   /** Modo noche: $ netos (comprado − vendido de la sesión) mínimos para darle lado a un strike. */
   minSideUsdNight: 10_000,
-  /** ±20 pts como SofIA (13-nov: con 75 agarraba el Put Wall a 33 pts como Imán +; el suyo queda pegado al precio). */
-  radiusPts: 20,
+  /**
+   * ±40 pts (16-nov): las capturas de SofIA de ese día tenían imanes a 29–37 pts del precio (7,450 con
+   * spot 7,487 y 7,421); con ±20 nunca salían. Antes: 75 (13-nov agarraba el Put Wall lejano) → 20.
+   */
+  radiusPts: 40,
   /** GEX mínimo (millones de $) para marcar un imán. */
   minGexM: 5,
   /** Contratos agresivos netos mínimos para darle lado a un strike. */

@@ -691,7 +691,7 @@ export default function VisionFuturaTab() {
   };
   const toggleLayer = (k: LayerKey) => saveLayers({ ...layers, [k]: !layers[k] });
   const setAllLayers = (on: boolean) =>
-    saveLayers({ ...(Object.fromEntries(LAYERS.map((l) => [l.key, on])) as Record<LayerKey, boolean>), magneto: true });
+    saveLayers({ ...(Object.fromEntries(LAYERS.map((l) => [l.key, on])) as Record<LayerKey, boolean>), magneto: true, agresor_neto: layers.agresor_neto }); // el modo del agresor no es una capa: Todo/Nada no lo cambia
 
   const instrumentBar = (
     <div className="card" style={{ gap: 10, padding: 14 }}>
@@ -1196,7 +1196,7 @@ export default function VisionFuturaTab() {
           </div>
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
-          {LAYERS.filter((l) => l.key !== "posicionamiento" && l.key !== "magneto").map((l) => {
+          {LAYERS.filter((l) => l.key !== "posicionamiento" && l.key !== "magneto" && l.key !== "agresor_neto").map((l) => {
             const on = layers[l.key];
             return (
               <button
@@ -1258,8 +1258,25 @@ export default function VisionFuturaTab() {
             );
           })}
         </div>
-        {layers.volumen_delta && layers.agresor && !isNightInst && (
+        {layers.agresor && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+            {/* Interruptor del agresor junto al Δ volumen (Carlos, 16-nov: "ponlo a lado de volumen delta"). */}
+            <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600, letterSpacing: 0.5 }}>AGRESOR</span>
+            {([["Ask/Bid", false, "Derecha = todo lo llenado al ask · izquierda = todo lo llenado al bid (calls y puts juntas): quién tiene prisa"], ["Neto (SofIA)", true, "Neto por strike (calls compradas + puts vendidas − calls vendidas − puts compradas): la azul más grande = Imán +"]] as const).map(([label, net, tip]) => {
+              const on = layers.agresor_neto === net;
+              return (
+                <button key={label} onClick={() => saveLayers({ ...layers, agresor_neto: net })} aria-pressed={on} title={tip}
+                  style={{
+                    padding: "4px 12px", borderRadius: 999, fontSize: 12, cursor: "pointer",
+                    border: `1px solid ${on ? "var(--accent)" : "var(--border)"}`,
+                    background: on ? "var(--accent-dim)" : "transparent", color: on ? "var(--text)" : "var(--muted)", fontWeight: on ? 700 : 500,
+                  }}>
+                  {label}
+                </button>
+              );
+            })}
+            {layers.volumen_delta && !isNightInst && <>
+            <span style={{ width: 1, height: 18, background: "var(--border)", margin: "0 6px" }} />
             <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600, letterSpacing: 0.5 }}>Δ VOLUMEN</span>
             {VOL_WINDOWS.map((w) => {
               const on = volWin === w.sec;
@@ -1276,8 +1293,9 @@ export default function VisionFuturaTab() {
               );
             })}
             <span style={{ fontSize: 11, color: "var(--faint)" }}>
-              {vol && vol.minutes.size === 0 ? "ni tastytrade ni MarketSnack están mandando el volumen de cada contrato ahora mismo — el panel derecho muestra el $ neto (compras − ventas) mientras tanto" : vol?.source === "marketsnack" ? "respaldo: volumen de cada contrato de MarketSnack en tramos de 5 min (tastytrade no responde) · Δ = (calls compradas − vendidas) − (puts compradas − vendidas) · ventanas menores a 5 min muestran el tramo en curso" : vol ? `panel derecho en contratos reales · Δ = (calls compradas − vendidas) − (puts compradas − vendidas) · ◆ naranja = volumen delta inusual en 1 min (se queda 3 min) · click en un strike = minuto a minuto` : "cargando el volumen de cada contrato (la primera vez tarda ~10 s)…"}
+              {vol && vol.minutes.size === 0 ? "ni tastytrade ni MarketSnack están mandando el volumen de cada contrato ahora mismo — el panel derecho muestra el $ neto (compras − ventas) mientras tanto" : vol?.source === "marketsnack" ? "respaldo: volumen de cada contrato de MarketSnack en tramos de 5 min (tastytrade no responde) · Δ = (calls compradas − vendidas) − (puts compradas − vendidas) · ventanas menores a 5 min muestran el tramo en curso" : vol ? `panel derecho en contratos reales · ${layers.agresor_neto ? "Δ = (calls compradas − vendidas) − (puts compradas − vendidas)" : "contratos al ask → vs al bid ← (calls + puts)"} ·◆ naranja = volumen delta inusual en 1 min (se queda 3 min) · click en un strike = minuto a minuto` : "cargando el volumen de cada contrato (la primera vez tarda ~10 s)…"}
             </span>
+            </>}
           </div>
         )}
         {changesToShow.length > 0 && (
