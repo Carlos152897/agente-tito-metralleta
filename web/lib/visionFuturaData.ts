@@ -269,7 +269,9 @@ function atmIvOf(contracts: ExtendedChainContract[], spot: number): number | nul
 
 const snap = (v: number, step: number) => Math.max(step, Math.round(v / step) * step);
 /** Botón de ventana de SPX (±30/±60/±120) → strikes por lado para el resto de los instrumentos. */
-export const strikesPerSide = (radius: number) => (radius <= 30 ? 10 : radius <= 60 ? 20 : 30);
+export const strikesPerSide = (radius: number, instrument = "") =>
+  (radius <= 30 ? 10 : radius <= 60 ? 20 : 30) * (instrument === "NQ" ? 2 : 1);
+// NQ va al doble de strikes (±400 pts por defecto): SofIA marca muros a ~330 pts del precio (17-nov 27,480 con spot 27,153).
 
 export async function loadVisionFutura(
   now: Date,
@@ -328,7 +330,7 @@ export async function loadVisionFutura(
       // Compras/ventas por strike (posicionamiento, agresor, dealers): trade_summaries de MarketSnack
       // contrato por contrato — otro endpoint, sigue respondiendo cuando la cadena da 500.
       const step = strikeStepNear(tc.map((c) => c.strike), spot);
-      const win = (cfg.id === "SPX" ? radius : strikesPerSide(radius) * step) + 2 * step;
+      const win = (cfg.id === "SPX" ? radius : strikesPerSide(radius, cfg.id) * step) + 2 * step;
       const filled = await fillFlowFromSummaries(contracts, spot, win).catch(() => 0);
       backups.push(filled > 0
         ? "Cadena de opciones: tastytrade (MarketSnack no respondió); compras/ventas por strike: MarketSnack contrato por contrato"
@@ -380,7 +382,7 @@ export async function loadVisionFutura(
   const scale = scaleFor(cfg, spot, { spxSpot: spxRef, vix: vixRef?.last ?? null, atmIv });
   const strikeStep = strikeStepNear(contracts.map((c) => c.strike), spot);
   // Ventana visible fuera de SPX: los botones ±30/±60/±120 de SPX equivalen a 10/20/30 strikes por lado.
-  const effRadius = cfg.id === "SPX" ? radius : strikesPerSide(radius) * strikeStep;
+  const effRadius = cfg.id === "SPX" ? radius : strikesPerSide(radius, cfg.id) * strikeStep;
 
   // Volatilidad: VIX para SPX; IV ATM de la propia cadena para el resto (sin % del día).
   const vix: VixReading | null = vixQuote

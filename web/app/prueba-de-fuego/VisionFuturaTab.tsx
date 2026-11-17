@@ -940,7 +940,7 @@ export default function VisionFuturaTab() {
   const levelsSrc = isNightInst ? "opciones de CME en tastytrade" : "MarketSnack";
   // Ventana real de cada botón (misma regla que el servidor: 10/20/30 strikes por lado fuera de SPX).
   const step = (tick ? replay?.strikeStep : data.strikeStep) ?? 5;
-  const windowFor = (r: number) => (isSpx || inst === "ESN" ? r : (r <= 30 ? 10 : r <= 60 ? 20 : 30) * step);
+  const windowFor = (r: number) => (isSpx || inst === "ESN" ? r : (r <= 30 ? 10 : r <= 60 ? 20 : 30) * (inst === "NQ" ? 2 : 1) * step);
 
   // Imanes por FLUJO (últimos 15 min, ±70 pts × escala) y dónde estuvieron en el día. El mismo cálculo
   // con 1 min y ±75 pts = modelo "imanesSofia" (copia del imán de la app SofIA).
