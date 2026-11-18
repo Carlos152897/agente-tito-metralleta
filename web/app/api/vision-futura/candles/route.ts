@@ -38,7 +38,9 @@ interface CandlesResponse {
   symbol: string;
   /** De dónde salieron las velas: tastytrade (DXLink) o Yahoo (respaldo). */
   source?: "tastytrade" | "yahoo";
-  candles: Pick<Candle, "time" | "open" | "high" | "low" | "close">[];
+  candles: Pick<Candle, "time" | "open" | "high" | "low" | "close" | "volume">[];
+  /** De dónde sale el volumen de cada vela (para el POC): el propio símbolo o el futuro (/ES, /NQ). */
+  volumeFrom?: string | null;
 }
 
 /** Fecha (YYYY-MM-DD) y minuto del día en Nueva York. */
@@ -62,7 +64,25 @@ const prevDay = (date: string) => {
   return d.toISOString().slice(0, 10);
 };
 
-const slim = (b: Candle[]) => b.map(({ time, open, high, low, close }) => ({ time, open, high, low, close }));
+// El volumen va para el POC de la gráfica (Carlos, 18-nov-2026: "márcame el POC en naranja en el precio").
+const slim = (b: Candle[]) => b.map(({ time, open, high, low, close, volume }) => (volume != null && volume > 0 ? { time, open, high, low, close, volume } : { time, open, high, low, close }));
+
+/**
+ * Los índices (SPX, NDX) no tienen volumen: a cada vela se le pone el volumen del futuro (/ES, /NQ)
+ * en ese mismo minuto. Nunca lanza: sin futuro, las velas quedan como estaban.
+ */
+async function withFutureVolume(bars: Candle[], product: string, fromMs: number): Promise<{ bars: Candle[]; from: string | null }> {
+  try {
+    const sym = await activeStreamerSymbol(product);
+    if (!sym || bars.length === 0) return { bars, from: null };
+    const fut = await fetchFutureCandles(sym, fromMs, "1m", 10_000, LIVE_CACHE_MS);
+    const vol = new Map(fut.filter((f) => (f.volume ?? 0) > 0).map((f) => [f.time, f.volume!]));
+    if (vol.size === 0) return { bars, from: null };
+    return { bars: bars.map((b) => ({ ...b, volume: vol.get(b.time) })), from: `/${product}` };
+  } catch {
+    return { bars, from: null };
+  }
+}
 
 export async function GET(req: Request) {
   const params = new URL(req.url).searchParams;
@@ -80,7 +100,7 @@ export async function GET(req: Request) {
       const sym = await activeStreamerSymbol(cfg.night.product);
       if (!sym) return Response.json({ error: `tastytrade no devolvió el futuro activo de /${cfg.night.product}.` }, { status: 502 });
       const got = await candlesWithFallback(sym, sessionStartMs(new Date(now)), now + 60_000, now);
-      body = { instrument: cfg.id, date: null, symbol: sym, source: got.source, candles: slim(got.bars) };
+      body = { instrument: cfg.id, date: null, symbol: sym, source: got.source, candles: slim(got.bars), volumeFrom: sym };
     } else {
       const sym = cfg.tastyMain.index ?? cfg.tastyMain.equity ?? cfg.main;
       // Sesión pedida, o la de hoy; si no tiene velas (fin de semana, antes de abrir), la anterior.
@@ -99,7 +119,13 @@ export async function GET(req: Request) {
       }
       const sessionDone = now >= openMs(date) + 390 * 60_000;
       if (sessionDone) ttl = CLOSED_CACHE_MS;
-      body = { instrument: cfg.id, date, symbol: sym, source, candles: slim(bars) };
+      let volumeFrom: string | null = bars.some((b) => (b.volume ?? 0) > 0) ? sym : null;
+      if (cfg.tastyMain.index && cfg.future) {
+        const fv = await withFutureVolume(bars, cfg.future, openMs(date));
+        bars = fv.bars;
+        volumeFrom = fv.from;
+      }
+      body = { instrument: cfg.id, date, symbol: sym, source, candles: slim(bars), volumeFrom };
     }
     if (body.candles.length > 0) cache.set(key, { at: now, ttl, body });
     return Response.json(body);

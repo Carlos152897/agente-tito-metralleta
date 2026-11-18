@@ -21,6 +21,7 @@ import { bucketOf, gridMinutes, gridRows, gridSnapshot, gridSpikes, gridUnusual,
 import type { DotExit } from "@/lib/visionFuturaUnusualExit";
 import type { MsUnusualTrade } from "@/lib/marketsnack";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { analyzePremarket } from "@/lib/visionFuturaPremarketChart";
 import { useVisionLabels } from "./visionLabels";
 import { POSITION_LABEL, type StrikeMinute, type VolDeltaRow, type VolSpike } from "@/lib/visionFuturaVolumeDelta";
 import type { DealerLevel, KeyLevel, KeyLevelKind, VisionStrikeRow, ExpectedMove, Conversion } from "@/lib/visionFutura";
@@ -51,7 +52,8 @@ export type LayerKey =
   | "iman_flujo"
   | "imanes_sofia"
   | "iman_acumulado"
-  | "iman_gex";
+  | "iman_gex"
+  | "poc";
 
 export const LAYERS: { key: LayerKey; label: string; color: string }[] = [
   { key: "precio", label: "Precio", color: "#2dd4bf" },
@@ -82,13 +84,15 @@ export const LAYERS: { key: LayerKey; label: string; color: string }[] = [
   { key: "imanes_sofia", label: "Imán Referencia", color: "#22d3ee" },
   { key: "iman_acumulado", label: "Imán acumulado", color: "#a3e635" },
   { key: "iman_gex", label: "Imán GEX × lado", color: "#60a5fa" },
+  // POC del día = precio con más volumen (Carlos, 18-nov-2026: "márcame el POC en naranja en el precio").
+  { key: "poc", label: "POC (más volumen)", color: "#f97316" },
 ];
 
 export const DEFAULT_LAYERS: Record<LayerKey, boolean> = {
   precio: true, posicionamiento: true, magneto: true, iman_positivo: true, iman_negativo: true,
   resistencia: true, piso: true, gamma_flip: false, max_pain: false, charm: false,
   dealers: false, rango_vix: false, historial: false, historial_ls: true, agresor: true, agresor_neto: false, vix: true, spreads: true, prima: true, inusuales_ms: true, premarket: true, volumen_delta: true,
-  iman_flujo: true, imanes_sofia: true, iman_acumulado: true, iman_gex: true,
+  iman_flujo: true, imanes_sofia: true, iman_acumulado: true, iman_gex: true, poc: true,
 };
 
 const COLOR = Object.fromEntries(LAYERS.map((l) => [l.key, l.color])) as Record<LayerKey, string>;
@@ -208,7 +212,11 @@ interface Props {
 const GEX_POS = "#12b76a";
 const GEX_NEG = "#f97066";
 
-export interface CandleBar { time: number; open: number; high: number; low: number; close: number }
+export interface CandleBar {
+  time: number; open: number; high: number; low: number; close: number;
+  /** Volumen de la vela (índices: el del futuro /ES o /NQ en ese minuto). Para el POC. */
+  volume?: number;
+}
 
 const CANDLE_UP = "#22c55e";
 const CANDLE_DOWN = "#ef4444";
@@ -653,6 +661,11 @@ export default function VisionFuturaChart(rawProps: Props) {
     // sobre la gráfica tapaba el precio).
     if (pos) addChip({ key: `gm-pos-${pos.strike}`, text: `Imán GEX + ${n2(pos.strike, 0)} · fuerza ${n2(pos.fuerza, 0)}${lado(pos)}`, color: GEXM_POS }, pos.strike);
     if (neg) addChip({ key: `gm-neg-${neg.strike}`, text: `Imán GEX − ${n2(neg.strike, 0)} · fuerza ${n2(neg.fuerza, 0)}${lado(neg)}`, color: GEXM_NEG }, neg.strike);
+  }
+  // POC: precio con más volumen de las velas a la vista (en la repetición, hasta el cursor).
+  if (layers.poc && props.candles?.length) {
+    const poc = analyzePremarket(props.candles).poc;
+    if (poc != null) addChip({ key: "poc", text: `POC ${n2(poc, 0)}`, color: COLOR.poc }, poc);
   }
   if (layers.premarket && props.premarket) {
     const pm = props.premarket;
