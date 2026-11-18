@@ -41,6 +41,7 @@ import { useVolumeDelta, VOL_WINDOWS } from "./useVolumeDelta";
 import { detectVolumeSpikes, volDeltaRows } from "@/lib/visionFuturaVolumeDelta";
 import { gridStepFor, nativeStep } from "@/lib/visionFuturaGrid";
 import { CUMULATIVE_MAGNET_TUNING, FLOW_MAGNET_TUNING, GEX_SIDE_MAGNET_TUNING, SOFIA_MAGNET_TUNING, aggressorSides, flowMagnetHistory, flowMagnetsAt, gexSideMagnets, withMagnetTrend } from "@/lib/visionFuturaFlowMagnets";
+import { NET_PERIODS, netBars, pickBase, snapOf, type NetPeriod, type NetSnap } from "@/lib/visionFuturaNetPeriod";
 import VisionFuturaChart, { DEFAULT_LAYERS, LAYERS, type CandleBar, type HistoryPoint, type LayerKey, type VixStrip } from "./VisionFuturaChart";
 import type { ConvertedLevel, DealerLevel, KeyLevel, KeyLevelKind, VisionFuturaReport, VisionStrikeRow } from "@/lib/visionFutura";
 
@@ -91,8 +92,10 @@ const KEY_ZOOM = "visionary.visionFutura.zoom";
 const KEY_FIT = "visionary.visionFutura.fitHeight";
 /** Vista de la escalera (Carlos, 10-nov): "Long/Short" = barras de posicionamiento siempre prendidas;
  *  "Gamma" = barras de GEX neto por strike en su lugar, con todo lo demás pero sin el posicionamiento. */
-type LadderMode = "longshort" | "gamma";
+type LadderMode = "longshort" | "gamma" | "neto";
 const KEY_LADDER = "visionary.visionFutura.ladderMode";
+/** Periodo de la vista "Neto" (Carlos, 17-nov: como la versión v3 — barra neta 5/15/30 min/día, tenue = poco dinero). */
+const KEY_NET_PERIOD = "visionary.visionFutura.netPeriod";
 /** Zoom de la gráfica: minutos visibles (null = todo el día / toda la noche). */
 const ZOOMS: { min: number | null; label: string }[] = [
   { min: 60, label: "Última hora" },
@@ -374,6 +377,9 @@ export default function VisionFuturaTab() {
   const prevLevelsRef = useRef<Map<string, number> | null>(null);
   const [, setTick] = useState(0); // para que "hace Xs" avance solo
   const prevAggRef = useRef<Map<number, FlowSnapshot> | null>(null);
+  /** Fotos de las lecturas en vivo (máx. ~65 min) para la vista "Neto" por periodo. */
+  const netSnapsRef = useRef<NetSnap[]>([]);
+  const [netPeriod, setNetPeriod] = useState<NetPeriod>(15);
   const [prevAgg, setPrevAgg] = useState<Map<number, FlowSnapshot> | null>(null);
   // Compras/ventas inusuales (salto grande en un strike): quedan encendidas 3 min.
   const [unusual, setUnusual] = useState<UnusualHit[]>([]);
@@ -420,7 +426,11 @@ export default function VisionFuturaTab() {
       const savedZoom = Number(window.localStorage.getItem(KEY_ZOOM));
       if (ZOOMS.some((z) => z.min === savedZoom)) setZoom(savedZoom);
       if (window.localStorage.getItem(KEY_FIT) === "1") setFitHeight(true);
-      if (window.localStorage.getItem(KEY_LADDER) === "gamma") setLadder("gamma");
+      const savedLadder = window.localStorage.getItem(KEY_LADDER);
+      if (savedLadder === "gamma" || savedLadder === "neto") setLadder(savedLadder);
+      const savedNet = window.localStorage.getItem(KEY_NET_PERIOD);
+      const np = NET_PERIODS.find((x) => String(x) === savedNet);
+      if (np != null) setNetPeriod(np);
     } catch { /* sin storage: queda el default */ }
   }, []);
 
@@ -437,6 +447,7 @@ export default function VisionFuturaTab() {
       setUnusual((cur) => mergeUnusual(cur, fresh, nowMs));
       setPrevAgg(prevAggRef.current);
       prevAggRef.current = snapshotOf(next.rows);
+      netSnapsRef.current = [...netSnapsRef.current.filter((x) => nowMs - x.t <= 65 * 60_000), snapOf(next.rows, nowMs)];
       // ¿Se movió algún nivel desde el refresco anterior? (Magneto, imanes, paredes, flip…)
       const levelsNow = levelMap(next.keyLevels, next.vixMagnet);
       const before = prevLevelsRef.current;
@@ -470,6 +481,7 @@ export default function VisionFuturaTab() {
     setLevelChanges([]);
     prevLevelsRef.current = null;
     prevAggRef.current = null;
+    netSnapsRef.current = [];
     setPrevAgg(null);
     setUnusual([]);
     // La repetición es por instrumento: se descarta la anterior y, si se estaba viendo, se arma la nueva.
@@ -513,6 +525,7 @@ export default function VisionFuturaTab() {
     setLevelChanges([]);
     prevLevelsRef.current = null;
     prevAggRef.current = null;
+    netSnapsRef.current = [];
     setPrevAgg(null);
     setUnusual([]);
   };
@@ -681,6 +694,10 @@ export default function VisionFuturaTab() {
     setLadder(m);
     try { window.localStorage.setItem(KEY_LADDER, m); } catch { /* ignorar */ }
   };
+  const pickNetPeriod = (x: NetPeriod) => {
+    setNetPeriod(x);
+    try { window.localStorage.setItem(KEY_NET_PERIOD, String(x)); } catch { /* ignorar */ }
+  };
   const pickZoom = (z: number | null) => {
     setZoom(z);
     try { window.localStorage.setItem(KEY_ZOOM, z == null ? "" : String(z)); } catch { /* ignorar */ }
@@ -836,6 +853,21 @@ export default function VisionFuturaTab() {
       }
     : liveView;
   const replayPrevAgg = tick && replay && replayIdx > 0 ? snapshotOf(replay.ticks[replayIdx - 1].rows) : null;
+  // Vista "Neto": se resta la foto de hace N min (en vivo, las lecturas guardadas; en la repetición, sus pasos).
+  // Sin foto anterior todavía → la más vieja, o el día completo, marcado con "*".
+  const netView = (() => {
+    if (ladder !== "neto") return null;
+    const nowMs = tick ? tick.time * 1000 : Date.now();
+    const snaps = tick && replay
+      ? replay.ticks.slice(0, replayIdx).map((tk) => snapOf(tk.rows, tk.time * 1000))
+      : netSnapsRef.current.slice(0, -1);
+    const base = pickBase(snaps, nowMs, netPeriod);
+    return {
+      period: netPeriod,
+      bars: netBars(view.rows, base?.snap.rows ?? null, netPeriod),
+      stale: netPeriod !== "dia" && (!base || base.stale),
+    };
+  })();
   // En la repetición cada paso son 5 min: se compara contra el paso anterior, sin retener.
   const replayUnusual = tick && replayPrevAgg ? detectUnusual(tick.rows, replayPrevAgg, tick.time * 1000) : [];
   const liveUnusual = unusual.filter((h) => Date.now() - h.at <= UNUSUAL_TUNING.holdMs);
@@ -1185,7 +1217,15 @@ export default function VisionFuturaTab() {
           <div className="view-toggle">
             <button className={ladder === "longshort" ? "active" : ""} onClick={() => pickLadder("longshort")} title="Barras de posicionamiento: verde = apuestas arriba, morado = apuestas abajo">Long/Short</button>
             <button className={ladder === "gamma" ? "active" : ""} onClick={() => pickLadder("gamma")} title="Barras de GEX neto por strike: verde = frena el precio, rojo = lo acelera">Gamma</button>
+            <button className={ladder === "neto" ? "active" : ""} onClick={() => pickLadder("neto")} title="Una barra neta por strike del periodo: verde → Long (calls compradas + puts vendidas), morada ← Short; tenue = poco dinero">Neto</button>
           </div>
+          {ladder === "neto" && (
+            <div className="view-toggle">
+              {NET_PERIODS.map((x) => (
+                <button key={String(x)} className={netPeriod === x ? "active" : ""} onClick={() => pickNetPeriod(x)} title={x === "dia" ? "Todo lo acumulado desde la apertura" : `Solo lo que entró en los últimos ${x} min${x === 5 ? " (strikes con < 300 contratos nuevos no salen)" : ""}`}>{x === "dia" ? "Día" : `${x} min`}</button>
+              ))}
+            </div>
+          )}
           {tick ? (
             <span style={{ fontSize: 12, color: "var(--muted)" }}>±{view.radius} pts (fijo en la repetición)</span>
           ) : <div className="view-toggle">
@@ -1333,6 +1373,7 @@ export default function VisionFuturaTab() {
             conversion={view.conversion}
             layers={{ ...layers, posicionamiento: ladder === "longshort", historial_ls: ladder === "gamma" ? false : layers.historial_ls }}
             gexBars={ladder === "gamma"}
+            netPos={netView}
             prevAggressor={tick ? replayPrevAgg : prevAgg}
             unusual={tick ? replayUnusual : liveUnusual}
             vix={vixStrip}

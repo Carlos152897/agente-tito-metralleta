@@ -11,6 +11,7 @@
 
 import type { PosHistory } from "@/lib/visionFuturaPositioning";
 import { positioningParts, positioningSides, type FlowSnapshot, type UnusualHit } from "@/lib/visionFuturaFlowChanges";
+import { gridNetBars, tierBars, type NetBar, type NetPeriod } from "@/lib/visionFuturaNetPeriod";
 import type { RowWithLegs } from "@/lib/visionFuturaLegs";
 import type { MsPremiumMinute } from "@/lib/marketsnack";
 import { premiumNewMoney, premiumSeries } from "@/lib/visionFuturaPremium";
@@ -195,6 +196,12 @@ interface Props {
   gexMagnets?: FlowMagnets | null;
   /** Vista "Gamma": barras de GEX neto por strike en el centro del plot (en lugar del posicionamiento). */
   gexBars?: boolean;
+  /**
+   * Vista "Neto" de la escalera (lib/visionFuturaNetPeriod.ts): UNA barra por strike, verde → Long /
+   * morada ← Short, del periodo elegido (5/15/30 min o día); tenue = poco dinero. `stale` = no hay foto
+   * de hace N min todavía (se usó la más vieja) → "*".
+   */
+  netPos?: { period: NetPeriod; bars: NetBar[]; stale: boolean } | null;
 }
 
 /** Barras de gamma: verde = GEX + (los dealers frenan), rojo = GEX − (los dealers aceleran). */
@@ -349,6 +356,7 @@ function griddedProps(p: Props): Props {
     rows: gridRows(p.rows, g, priceRange(p)),
     prevAggressor: gridSnapshot(p.prevAggressor, g),
     unusual: gridUnusual(p.unusual, g),
+    netPos: p.netPos ? { ...p.netPos, bars: gridNetBars(p.netPos.bars, (s) => bucketOf(s, g)) } : p.netPos,
     volDelta: p.volDelta
       ? { ...p.volDelta, rows: gridVolRows(p.volDelta.rows, g), minutes: gridMinutes(p.volDelta.minutes, g), spikes: gridSpikes(p.volDelta.spikes, g) }
       : p.volDelta,
@@ -901,6 +909,34 @@ export default function VisionFuturaChart(rawProps: Props) {
             <text x={posX + 6} y={height - 24} fontSize={10}><tspan fill="#6b7591">C</tspan><tspan fill={COLOR.posicionamiento}>■</tspan><tspan fill="#6b7591">P</tspan><tspan fill={POS_UP_PUT}>■</tspan> <tspan fill={COLOR.posicionamiento}>arriba →</tspan>{layers.spreads && pos.some((q) => q.callShare != null || q.putShare != null) && <> <tspan fill={SPREAD_GRAY}>■</tspan><tspan fill="#6b7591"> spreads</tspan></>}</text>
           </g>
         )}
+
+        {/* Vista Neto: una barra por strike del periodo elegido — verde → Long, morada ← Short; tenue = poco dinero. */}
+        {props.netPos && (() => {
+          const np = props.netPos;
+          const shown = new Set(rows.map((r) => r.spx));
+          const tiers = tierBars(np.bars.filter((b) => shown.has(b.strike)));
+          const label = np.period === "dia" ? "día" : `últimos ${np.period} min${np.stale ? "*" : ""}`;
+          return (
+            <g>
+              <line x1={posX} x2={posX} y1={TOP} y2={plotBottom} stroke="#3a4560" strokeDasharray="2 3" />
+              {tiers.map(({ bar, tier, frac }) => {
+                const long = bar.net > 0;
+                const w = Math.max(4, frac * POS_SPAN);
+                const ry = y(bar.strike) - 6;
+                const fill = long ? COLOR.posicionamiento : POS_DOWN;
+                return (
+                  <g key={`net-${bar.strike}`}>
+                    <rect x={long ? posX : posX - w} y={ry} width={w} height={12} rx={1} fill={fill} opacity={tier === "fuerte" ? 0.85 : 0.28} />
+                    {w >= 44 && <text x={long ? posX + w - 4 : posX - w + 4} y={ry + 10} fontSize={9} textAnchor={long ? "end" : "start"} fill="#fff" opacity={tier === "fuerte" ? 1 : 0.7} style={{ pointerEvents: "none" }}>{long ? "" : "−"}{money(bar.net)}</text>}
+                  </g>
+                );
+              })}
+              <text x={posX - 6} y={height - 24} fontSize={10} textAnchor="end" fill={POS_DOWN}>← Short</text>
+              <text x={posX + 6} y={height - 24} fontSize={10} fill={COLOR.posicionamiento}>Long →</text>
+              <text x={posX} y={height - 36} fontSize={10} textAnchor="middle" fill="#6b7591">Posicionamiento neto ({label}) · tenue = poco dinero</text>
+            </g>
+          );
+        })()}
 
         {/* Vista Gamma: GEX neto por strike, eje al centro — rojo ← (acelera) y verde → (frena). */}
         {props.gexBars && (() => {

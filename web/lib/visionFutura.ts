@@ -79,6 +79,11 @@ export interface VisionStrikeRow extends ConvertedLevel {
   compras: number;
   /** Premium total pegando al bid (calls + puts) — el agresor vendedor. */
   ventas: number;
+  /** Prima al ask / al bid por tipo (modo "Neto" de la escalera). Opcional: repeticiones viejas no lo traen. */
+  callAsk?: number;
+  callBid?: number;
+  putAsk?: number;
+  putBid?: number;
   callVolume: number;
   putVolume: number;
   /** Qué hacen los dealers con los calls de este strike según el flujo de hoy. */
@@ -313,6 +318,8 @@ export function buildVisionFutura(input: {
       callFlow, putFlow,
       compras: (p?.call?.askPremium ?? 0) + (p?.put?.askPremium ?? 0),
       ventas: (p?.call?.bidPremium ?? 0) + (p?.put?.bidPremium ?? 0),
+      callAsk: p?.call?.askPremium ?? 0, callBid: p?.call?.bidPremium ?? 0,
+      putAsk: p?.put?.askPremium ?? 0, putBid: p?.put?.bidPremium ?? 0,
       callVolume: v.call, putVolume: v.put,
       dealerCalls: sideOf(callFlow),
       dealerPuts: sideOf(putFlow),
