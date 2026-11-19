@@ -79,6 +79,8 @@ function sessionOpenMs(now: number): number {
 
 /** Pide velas de 1 min de varios símbolos en una sola conexión, cada uno desde su `fromMs`. */
 const PULL_CHUNK = 40;
+/** Velas con hora más allá de ahora + esto son basura de DXLink. */
+const FUTURE_TOL_MS = 2 * 60_000;
 async function pullMany(reqs: { sym: string; fromMs: number }[], timeoutMs = 15_000): Promise<Map<string, OptBar[]>> {
   const out = new Map<string, OptBar[]>();
   if (reqs.length === 0 || typeof (globalThis as { WebSocket?: unknown }).WebSocket === "undefined") return out;
@@ -108,7 +110,9 @@ async function pullMany(reqs: { sym: string; fromMs: number }[], timeoutMs = 15_
       feed.addEventListener((events) => {
         for (const ev of events as unknown as Record<string, unknown>[]) {
           const t = Number(ev.time);
-          if (!Number.isFinite(t) || t <= 0) continue;
+          // DXLink a veces manda velas vacías con hora FUTURA (19-nov: 10:11:08 pm con el mercado abierto).
+          // Con ellas el repull pedía "desde 10 pm" y el agresor se congelaba → se descartan.
+          if (!Number.isFinite(t) || t <= 0 || t > Date.now() + FUTURE_TOL_MS) continue;
           const num = (v: unknown) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : 0);
           const sym = bareSymbol(String(ev.eventSymbol));
           const arr = out.get(sym) ?? [];
@@ -174,6 +178,8 @@ export async function loadVolumeDelta(inst: string, expiration: string, spot: nu
   for (const s of [...strikes, ...(etf?.strikes ?? [])]) {
     for (const sym of [s.call!, s.put!]) {
       const st = store.get(sym);
+      // Limpia velas futuras que hayan quedado guardadas (ver FUTURE_TOL_MS).
+      if (st) for (const t of [...st.bars.keys()]) if (t * 1000 > now + FUTURE_TOL_MS) st.bars.delete(t);
       if (!st || st.bars.size === 0) reqs.push({ sym, fromMs: open });
       else if (now - st.pulledAt > REPULL_MS) reqs.push({ sym, fromMs: Math.max(open, (Math.max(...st.bars.keys()) - 180) * 1000) });
     }
