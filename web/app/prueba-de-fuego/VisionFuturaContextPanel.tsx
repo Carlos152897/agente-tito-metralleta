@@ -118,6 +118,11 @@ export default function VisionFuturaContextPanel({ zoomMinutes, replayDate, unti
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12, flex: "0 0 360px", minWidth: 300 }}>
+      {data && win && (
+        <TechWatch data={data} win={win} until={until} index={index} measure={measure}
+          setIndex={(i) => { setIndex(i); save("techIndex", i); }}
+          setMeasure={(m) => { setMeasure(m); save("techMeasure", m); }} />
+      )}
       <div className="card" style={{ gap: 8, padding: 16 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
           <b style={{ fontSize: 14 }}>VIX · SPY · QQQ</b>
@@ -148,11 +153,6 @@ export default function VisionFuturaContextPanel({ zoomMinutes, replayDate, unti
           </>
         )}
       </div>
-      {data && win && (
-        <TechWatch data={data} win={win} until={until} index={index} measure={measure}
-          setIndex={(i) => { setIndex(i); save("techIndex", i); }}
-          setMeasure={(m) => { setMeasure(m); save("techMeasure", m); }} />
-      )}
     </div>
   );
 }
