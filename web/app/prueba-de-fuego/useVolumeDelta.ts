@@ -15,6 +15,10 @@ export interface VolumeDeltaState {
   /** tastytrade (1 min) o marketsnack (respaldo, tramos de 5 min). */
   source: string;
   resolutionSec: number;
+  /** Minuto en curso según el servidor (sin recortar al último minuto con datos). */
+  serverT: number;
+  /** Último minuto con velas (cualquier strike); -Infinity si no hay. */
+  newestT: number;
 }
 
 export const VOL_WINDOWS: { sec: number | null; label: string }[] = [
@@ -55,8 +59,11 @@ export function useVolumeDelta(p: { inst: string; expiration: string | null; spo
         // Cambió la fuente (tastytrade ↔ MarketSnack): no se mezclan, se arranca de cero.
         const fresh = full || (prev != null && prev.source !== source);
         const minutes = new Map<number, StrikeMinute[]>(fresh ? [] : [...(prev?.minutes ?? [])].map(([k, v]) => [k, [...v]]));
-        for (const [k, rows] of Object.entries(j.strikes as Record<string, number[][]>)) {
+        // Velas con hora futura (basura de DXLink, 19-nov) no entran: congelaban la ventana del agresor.
+        const maxT = Number(j.asOfT) + 120;
+        for (const [k, rows0] of Object.entries(j.strikes as Record<string, number[][]>)) {
           const strike = Number(k);
+          const rows = rows0.filter((row) => row[0] <= maxT);
           const byT = new Map((minutes.get(strike) ?? []).map((m) => [m.t, m]));
           for (const [t, cA, cB, cV, pA, pB, pV] of rows) byT.set(t, { t, cA, cB, cV, pA, pB, pV });
           minutes.set(strike, [...byT.values()].sort((a, b) => a.t - b.t));
@@ -68,7 +75,7 @@ export function useVolumeDelta(p: { inst: string; expiration: string | null; spo
         let newest = -Infinity;
         for (const rows of minutes.values()) { const t = rows.at(-1)?.t; if (t != null && t > newest) newest = t; }
         const asOfT = resolutionSec === 60 && newest > -Infinity ? Math.min(j.asOfT, newest + 60) : j.asOfT;
-        setState({ key, sessionOpen: j.sessionOpen, asOfT, minutes, source, resolutionSec });
+        setState({ key, sessionOpen: j.sessionOpen, asOfT, minutes, source, resolutionSec, serverT: j.asOfT, newestT: newest });
       } catch { /* sin red: se reintenta en el próximo ciclo */ }
     };
     load();

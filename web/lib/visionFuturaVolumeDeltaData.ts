@@ -81,6 +81,8 @@ function sessionOpenMs(now: number): number {
 const PULL_CHUNK = 40;
 /** Velas con hora más allá de ahora + esto son basura de DXLink. */
 const FUTURE_TOL_MS = 2 * 60_000;
+/** Con velas ya guardadas, lo más que se espera a la descarga nueva antes de responder. */
+const FRESH_WAIT_MS = 2_500;
 async function pullMany(reqs: { sym: string; fromMs: number }[], timeoutMs = 15_000): Promise<Map<string, OptBar[]>> {
   const out = new Map<string, OptBar[]>();
   if (reqs.length === 0 || typeof (globalThis as { WebSocket?: unknown }).WebSocket === "undefined") return out;
@@ -185,6 +187,10 @@ export async function loadVolumeDelta(inst: string, expiration: string, spot: nu
     }
   }
   const key = `${cfg.id}|${expiration}`;
+  // Sin retrasos (Carlos, 19-nov: "nunca quiero retrasos"): solo se espera la descarga completa si hay
+  // contratos que nunca se pidieron; si ya hay velas guardadas, se espera como máximo FRESH_WAIT_MS y
+  // se responde con lo que haya (la descarga sigue en segundo plano y entra en el próximo ciclo).
+  const firstTime = reqs.some((r) => !store.has(r.sym));
   if (reqs.length > 0 && now >= dxDownUntil) {
     let p = inflight.get(key);
     if (!p) {
@@ -200,7 +206,8 @@ export async function loadVolumeDelta(inst: string, expiration: string, spot: nu
       }).catch(() => { dxDownUntil = Date.now() + DX_RETRY_MS; }).finally(() => inflight.delete(key));
       inflight.set(key, p);
     }
-    await p;
+    if (firstTime) await p;
+    else await Promise.race([p, new Promise((r) => setTimeout(r, FRESH_WAIT_MS))]);
   }
 
   const fromT = since != null && Number.isFinite(since) ? since : open / 1000;

@@ -777,6 +777,17 @@ export default function VisionFuturaTab() {
     radius: mode === "repeticion" && replay ? replay.radius : data?.radius ?? null,
     enabled: ((layers.volumen_delta && layers.agresor) || layers.iman_flujo || layers.imanes_sofia || layers.iman_acumulado || layers.iman_gex) && !NIGHT_IDS.includes(inst),
   });
+  // Frescura del volumen delta (Carlos, 19-nov: "nunca quiero retrasos, siempre respaldo y que siempre
+  // salga"). En vivo con la sesión abierta, si la última vela tiene más de 3 min (10 con MarketSnack de
+  // 5 min) el agresor cae al $ compras/ventas del refresco principal en vez de quedarse vacío.
+  const volLagSec = (() => {
+    if (!vol || mode === "repeticion") return 0;
+    const nowS = Date.now() / 1000;
+    if (nowS - vol.sessionOpen < 180 || nowS - vol.sessionOpen > 6.5 * 3600) return 0;
+    const lag = vol.newestT > -Infinity ? nowS - vol.newestT : Infinity;
+    return lag > (vol.resolutionSec > 60 ? 600 : 180) ? lag : 0;
+  })();
+  const volStale = volLagSec > 0;
 
   if (loading && !data) return <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-md)" }}>{instrumentBar}<div className="card wheel-empty">Cargando VisionFutura · {inst}…</div></div>;
   if (error && !data) return <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-md)" }}>{instrumentBar}<div className="card" style={{ color: "var(--red-soft)" }}>{error}</div></div>;
@@ -1105,7 +1116,9 @@ export default function VisionFuturaTab() {
             ...(view.backups ?? []),
             ...(candles?.source === "yahoo" ? ["Velas 1 min: Yahoo (tastytrade DXLink no respondió)"] : []),
             ...(vol && vol.minutes.size === 0 && layers.volumen_delta ? ["Agresor: $ neto compras − ventas (sin volumen por contrato de tastytrade ni MarketSnack)"] : []),
-            ...(vol && vol.minutes.size > 0 && vol.source === "marketsnack" && layers.volumen_delta ? ["Volumen delta: MarketSnack en tramos de 5 min (tastytrade DXLink no respondió)"] : []),
+            ...(vol && vol.minutes.size > 0 && vol.source === "marketsnack" && layers.volumen_delta && !volStale ? ["Volumen delta: MarketSnack en tramos de 5 min (tastytrade DXLink no respondió)"] : []),
+            ...(vol && vol.minutes.size > 0 && volStale && layers.volumen_delta ? [`Agresor: $ compras/ventas (el volumen delta va ${Number.isFinite(volLagSec) ? `${Math.round(volLagSec / 60)} min` : "sin datos"} atrasado)`] : []),
+            ...(!vol && layers.volumen_delta && layers.agresor && !NIGHT_IDS.includes(inst) ? ["Agresor: $ compras/ventas mientras carga el volumen delta"] : []),
           ];
           return list.length > 0 ? (
             <div style={{ fontSize: 12, color: "var(--amber-text)", border: "1px solid var(--amber)", borderRadius: 8, padding: "6px 10px" }}>
@@ -1406,7 +1419,8 @@ export default function VisionFuturaTab() {
             gexMagnets={gexMagnets}
             volDelta={(() => {
               // Sin volumen por contrato (tastytrade no lo manda): el panel cae al $ neto compras − ventas.
-              if (!vol || vol.minutes.size === 0 || !layers.volumen_delta) return null;
+              // Atrasado en vivo → null = el agresor usa el $ compras/ventas (respaldo, nunca vacío).
+              if (!vol || vol.minutes.size === 0 || !layers.volumen_delta || (volStale && !tick)) return null;
               // Repetición: solo si es el mismo día que trae tastytrade; hasta el paso elegido.
               const volDate = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(vol.sessionOpen * 1000));
               if (tick && replay?.date !== volDate) return null;
