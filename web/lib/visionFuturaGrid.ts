@@ -41,7 +41,7 @@ export const bucketOf = (strike: number, step: number) => Math.round(strike / st
 
 type Row = VisionStrikeRow & Record<string, unknown>;
 
-const SUM_KEYS = ["callGex", "putGex", "netGex", "charm", "callFlow", "putFlow", "compras", "ventas", "callVolume", "putVolume"] as const;
+const SUM_KEYS = ["callGex", "putGex", "netGex", "charm", "callFlow", "putFlow", "compras", "ventas", "callVolume", "putVolume", "callOI", "putOI"] as const;
 
 /** Peso de un strike dentro de su fila: el que más GEX y flujo tiene manda en lo que no se suma. */
 const weight = (r: VisionStrikeRow) => Math.abs(r.netGex) + Math.abs(r.callFlow) + Math.abs(r.putFlow);
@@ -80,7 +80,7 @@ export function gridRows<R extends VisionStrikeRow>(rows: R[], step: number, cov
     }
     const top = list.reduce((a, b) => (weight(b) > weight(a) ? b : a));
     const merged = { ...top } as Row;
-    for (const key of SUM_KEYS) merged[key] = list.reduce((s, r) => s + (r[key] as number), 0);
+    for (const key of SUM_KEYS) merged[key] = list.reduce((s, r) => s + ((r[key] as number | undefined) ?? 0), 0);
     merged.spx = k;
     merged.spy = top.spy != null ? (top.spy * k) / top.spx : null;
     merged.es = top.es != null ? top.es + (k - top.spx) : null;

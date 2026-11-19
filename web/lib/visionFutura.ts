@@ -86,6 +86,9 @@ export interface VisionStrikeRow extends ConvertedLevel {
   putBid?: number;
   callVolume: number;
   putVolume: number;
+  /** Interés abierto (OI) con el que abrió el día, por tipo (filtro de posiciones abiertas del Imán Referencia). */
+  callOI?: number;
+  putOI?: number;
   /** Qué hacen los dealers con los calls de este strike según el flujo de hoy. */
   dealerCalls: DealerSide;
   dealerPuts: DealerSide;
@@ -217,10 +220,14 @@ export function buildVisionFutura(input: {
   const charmByStrike = input.yearsToExpiry ? computeStrikeCharm(contracts, spot, input.yearsToExpiry) : new Map<number, number>();
   const premiums = toStrikePremiumsFromExtendedChain(contracts);
   const volume = new Map<number, { call: number; put: number }>();
+  const oiBy = new Map<number, { call: number; put: number }>();
   for (const c of contracts) {
     const v = volume.get(c.strike) ?? { call: 0, put: 0 };
     if (c.type === "call") v.call += c.volume || 0; else v.put += c.volume || 0;
     volume.set(c.strike, v);
+    const o = oiBy.get(c.strike) ?? { call: 0, put: 0 };
+    if (c.type === "call") o.call += c.open_interest || 0; else o.put += c.open_interest || 0;
+    oiBy.set(c.strike, o);
   }
 
   const allStrikes = [...new Set([...premiums.keys(), ...gexByStrike.keys()])];
@@ -321,6 +328,7 @@ export function buildVisionFutura(input: {
       callAsk: p?.call?.askPremium ?? 0, callBid: p?.call?.bidPremium ?? 0,
       putAsk: p?.put?.askPremium ?? 0, putBid: p?.put?.bidPremium ?? 0,
       callVolume: v.call, putVolume: v.put,
+      callOI: oiBy.get(strike)?.call ?? 0, putOI: oiBy.get(strike)?.put ?? 0,
       dealerCalls: sideOf(callFlow),
       dealerPuts: sideOf(putFlow),
       dealerRole: roleOf(strike, spot, callFlow, putFlow),

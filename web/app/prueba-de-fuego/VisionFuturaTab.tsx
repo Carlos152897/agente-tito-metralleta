@@ -40,7 +40,8 @@ import VisionFuturaPremarketZones, { usePremarketZones } from "./VisionFuturaPre
 import { useVolumeDelta, VOL_WINDOWS } from "./useVolumeDelta";
 import { detectVolumeSpikes, volDeltaRows } from "@/lib/visionFuturaVolumeDelta";
 import { gridStepFor, nativeStep } from "@/lib/visionFuturaGrid";
-import { CUMULATIVE_MAGNET_TUNING, FLOW_MAGNET_TUNING, GEX_SIDE_MAGNET_TUNING, SOFIA_MAGNET_TUNING, aggressorSides, flowMagnetHistory, flowMagnetsAt, gexSideMagnets, withMagnetTrend } from "@/lib/visionFuturaFlowMagnets";
+import { OPEN_MAGNET_TUNING, openMagnets } from "@/lib/visionFuturaOpenMagnets";
+import { CUMULATIVE_MAGNET_TUNING, FLOW_MAGNET_TUNING, GEX_SIDE_MAGNET_TUNING, aggressorSides, flowMagnetHistory, flowMagnetsAt, gexSideMagnets, withMagnetTrend } from "@/lib/visionFuturaFlowMagnets";
 import { NET_PERIODS, netBars, pickBase, snapOf, type NetPeriod, type NetSnap } from "@/lib/visionFuturaNetPeriod";
 import VisionFuturaChart, { DEFAULT_LAYERS, LAYERS, type CandleBar, type HistoryPoint, type LayerKey, type VixStrip } from "./VisionFuturaChart";
 import type { ConvertedLevel, DealerLevel, KeyLevel, KeyLevelKind, VisionFuturaReport, VisionStrikeRow } from "@/lib/visionFutura";
@@ -1002,7 +1003,25 @@ export default function VisionFuturaTab() {
     };
   };
   const flowMagnets = magnetsFor(layers.iman_flujo, FLOW_MAGNET_TUNING, "15 min");
-  const sofiaMagnets = magnetsFor(layers.imanes_sofia, SOFIA_MAGNET_TUNING, "1 min");
+  // Imán Referencia = como Sofía (19-nov): neto call/put ACUMULADO del día con filtro de posiciones
+  // abiertas (solo cuenta lo que pasa del OI de apertura). Motor: lib/visionFuturaOpenMagnets.ts.
+  const sofiaMagnets = (() => {
+    if (!vol || !layers.imanes_sofia || isNightInst) return null;
+    const volDate = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(vol.sessionOpen * 1000));
+    if (tick && replay?.date !== volDate) return null;
+    const toT = tick ? Math.floor(cursorSec / 60) * 60 : vol.asOfT;
+    const closes = new Map(chartCandles.map((b) => [b.time, b.close]));
+    let lastClose: number | null = null;
+    const spotAt = (t: number) => {
+      const c = closes.get(t - 60);
+      if (c != null) lastClose = c;
+      return lastClose ?? (closes.size === 0 ? view.spot.spx : null);
+    };
+    const oi = new Map(view.rows.map((r) => [r.spx, { call: r.callOI ?? 0, put: r.putOI ?? 0 }] as [number, { call: number; put: number }]));
+    const spotNow = closes.get(toT - 60) ?? view.spot.spx;
+    const r = openMagnets(vol.minutes, oi, vol.sessionOpen, toT, spotNow, spotAt, { radius: OPEN_MAGNET_TUNING.radiusPts * scale });
+    return { ...r, windowLabel: "día · abiertas" };
+  })();
   const cumMagnets = magnetsFor(layers.iman_acumulado, CUMULATIVE_MAGNET_TUNING, "día");
   // Imán GEX × lado (capturas de SofIA 12-nov): fuerza = |GEX neto| del strike, lado = agresor de 5 min.
   const gexMagnets = (() => {

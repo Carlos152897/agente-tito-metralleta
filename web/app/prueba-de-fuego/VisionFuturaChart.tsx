@@ -597,6 +597,47 @@ export default function VisionFuturaChart(rawProps: Props) {
   const chips: Chip[] = [];
   // Un nivel activo fuera de la ventana de strikes no se pierde: se muestra
   // pegado al borde de arriba/abajo con una flecha, sin línea.
+  // Modo volumen delta (contratos reales al bid/ask, por minuto) o el $ neto de siempre.
+  const volOn = !!props.volDelta && layers.volumen_delta;
+  const volBy = new Map((props.volDelta?.rows ?? []).map((v) => [v.strike, v]));
+  const spikeBy = new Map((volOn ? props.volDelta?.spikes ?? [] : []).map((v) => [v.strike, v]));
+  // Agresor como SofIA (Carlos, 11-nov, "sí, como SofIA"): NETO por strike en el lado que gana, el
+  // otro en 0. Neto = (calls compradas + puts vendidas) − (calls vendidas + puts compradas), el mismo de
+  // imanesSofia → la barra azul más grande = Imán +, la roja más grande = Imán −. ▲▼= vs la ventana anterior.
+  // Ask/Bid puro (Carlos, 16-nov, default): derecha = TODO lo llenado al ask (calls + puts), izquierda =
+  // TODO lo llenado al bid. No netea ni dice dirección: dice quién tiene prisa (compradores vs vendedores).
+  const netMode = layers.agresor_neto;
+  // Strikes con más dinero en la columna GEX (Carlos, 19-nov): los 3 mayores GEX + y los 3 mayores GEX −
+  // de las filas visibles; el #1 de cada lado lleva ★ y marco amarillo.
+  const gexTop = new Map<number, number>(); // strike → puesto (1 = el mayor de su lado)
+  {
+    const pos = rows.filter((r) => r.netGex > 0).sort((a, b) => b.netGex - a.netGex).slice(0, 3);
+    const neg = rows.filter((r) => r.netGex < 0).sort((a, b) => a.netGex - b.netGex).slice(0, 3);
+    pos.forEach((r, k) => gexTop.set(r.spx, k + 1));
+    neg.forEach((r, k) => gexTop.set(r.spx, k + 1));
+  }
+  const split = (net: number) => ({ buy: Math.max(net, 0), sell: Math.max(-net, 0) });
+  const sidesOf = (r: VisionStrikeRow) => {
+    if (!netMode) {
+      if (volOn) {
+        const v = volBy.get(r.spx);
+        return { buy: v ? v.cA + v.pA : 0, sell: v ? v.cB + v.pB : 0, prevBuy: v?.prevBuy ?? null, prevSell: v?.prevSell ?? null };
+      }
+      const p = prevAggressor?.get(r.spx);
+      return { buy: r.compras, sell: r.ventas, prevBuy: p ? p.compras : null, prevSell: p ? p.ventas : null };
+    }
+    if (volOn) {
+      const v = volBy.get(r.spx);
+      const cur = split(v?.delta ?? 0);
+      const prev = v?.prevDelta != null ? split(v.prevDelta) : null;
+      return { ...cur, prevBuy: prev ? prev.buy : null, prevSell: prev ? prev.sell : null };
+    }
+    // En $: arriba − abajo = flujo neto de calls − flujo neto de puts.
+    const { up, down } = positioningSides(r);
+    const p = prevAggressor?.get(r.spx);
+    const prev = p ? split(p.up - p.down) : null;
+    return { ...split(up - down), prevBuy: prev ? prev.buy : null, prevSell: prev ? prev.sell : null };
+  };
   const addChip = (c: Omit<Chip, "y" | "offscreen">, price: number) => {
     if (inView(price)) { chips.push({ ...c, y: y(price) }); return; }
     const above = price > maxStrike;
@@ -624,11 +665,15 @@ export default function VisionFuturaChart(rawProps: Props) {
     if (pos) addChip({ key: `fm-pos-${pos.strike}`, text: `Imán + flujo (${fmtFuerza(pos.fuerza)}) ${n2(pos.strike, 0)}`, color: FLOW_POS }, pos.strike);
     if (neg) addChip({ key: `fm-neg-${neg.strike}`, text: `Imán − flujo (${fmtFuerza(neg.fuerza)}) ${n2(neg.strike, 0)}`, color: FLOW_NEG }, neg.strike);
   }
-  if (layers.imanes_sofia && props.sofiaMagnets) {
-    const { pos, neg } = props.sofiaMagnets.now;
+  // Imán Referencia como Sofía (Carlos, 19-nov): neto call/put acumulado del día, solo posiciones que
+  // tentativamente quedan abiertas (lib/visionFuturaOpenMagnets.ts). Fuerza = contratos netos abiertos.
+  const colMagnets: FlowMagnets = props.sofiaMagnets?.now ?? { pos: null, neg: null };
+  const colFuerza = (v: number) => fmtFuerza(v);
+  if (layers.imanes_sofia) {
+    const { pos, neg } = colMagnets;
     // Nombre visible "Imán Referencia +/−" (Carlos, 11-nov: antes decía "Sofía").
-    if (pos) addChip({ key: `sf-pos-${pos.strike}`, text: `Imán Referencia + (${fmtFuerza(pos.fuerza)}) ${n2(pos.strike, 0)}`, color: SOFIA_POS }, pos.strike);
-    if (neg) addChip({ key: `sf-neg-${neg.strike}`, text: `Imán Referencia − (${fmtFuerza(neg.fuerza)}) ${n2(neg.strike, 0)}`, color: SOFIA_NEG }, neg.strike);
+    if (pos) addChip({ key: `sf-pos-${pos.strike}`, text: `Imán Referencia + ${n2(pos.strike, 0)} · fuerza ${colFuerza(pos.fuerza)}`, color: SOFIA_POS }, pos.strike);
+    if (neg) addChip({ key: `sf-neg-${neg.strike}`, text: `Imán Referencia − ${n2(neg.strike, 0)} · fuerza ${colFuerza(neg.fuerza)}`, color: SOFIA_NEG }, neg.strike);
   }
   if (layers.iman_acumulado && props.cumMagnets) {
     const { pos, neg } = props.cumMagnets.now;
@@ -765,38 +810,6 @@ export default function VisionFuturaChart(rawProps: Props) {
   const aggC = aggX + AGG_GEX_W + AGG_TXT_W + AGG_HALF;
   const strikeX = aggX + RIGHT_W - AGG_STRIKE_W + 4;
   const unusX = aggX + RIGHT_W + 4;
-  // Modo volumen delta (contratos reales al bid/ask, por minuto) o el $ neto de siempre.
-  const volOn = !!props.volDelta && layers.volumen_delta;
-  const volBy = new Map((props.volDelta?.rows ?? []).map((v) => [v.strike, v]));
-  const spikeBy = new Map((volOn ? props.volDelta?.spikes ?? [] : []).map((v) => [v.strike, v]));
-  // Agresor como SofIA (Carlos, 11-nov, "sí, como SofIA"): NETO por strike en el lado que gana, el
-  // otro en 0. Neto = (calls compradas + puts vendidas) − (calls vendidas + puts compradas), el mismo de
-  // imanesSofia → la barra azul más grande = Imán +, la roja más grande = Imán −. ▲▼= vs la ventana anterior.
-  // Ask/Bid puro (Carlos, 16-nov, default): derecha = TODO lo llenado al ask (calls + puts), izquierda =
-  // TODO lo llenado al bid. No netea ni dice dirección: dice quién tiene prisa (compradores vs vendedores).
-  const netMode = layers.agresor_neto;
-  const split = (net: number) => ({ buy: Math.max(net, 0), sell: Math.max(-net, 0) });
-  const sidesOf = (r: VisionStrikeRow) => {
-    if (!netMode) {
-      if (volOn) {
-        const v = volBy.get(r.spx);
-        return { buy: v ? v.cA + v.pA : 0, sell: v ? v.cB + v.pB : 0, prevBuy: v?.prevBuy ?? null, prevSell: v?.prevSell ?? null };
-      }
-      const p = prevAggressor?.get(r.spx);
-      return { buy: r.compras, sell: r.ventas, prevBuy: p ? p.compras : null, prevSell: p ? p.ventas : null };
-    }
-    if (volOn) {
-      const v = volBy.get(r.spx);
-      const cur = split(v?.delta ?? 0);
-      const prev = v?.prevDelta != null ? split(v.prevDelta) : null;
-      return { ...cur, prevBuy: prev ? prev.buy : null, prevSell: prev ? prev.sell : null };
-    }
-    // En $: arriba − abajo = flujo neto de calls − flujo neto de puts.
-    const { up, down } = positioningSides(r);
-    const p = prevAggressor?.get(r.spx);
-    const prev = p ? split(p.up - p.down) : null;
-    return { ...split(up - down), prevBuy: prev ? prev.buy : null, prevSell: prev ? prev.sell : null };
-  };
   const maxSideAgg = Math.max(1, ...rows.map((r) => { const s = sidesOf(r); return Math.max(s.buy, s.sell); }));
   const cmpArrow = (cur: number, prev: number | null) => (prev == null ? "" : cur > prev ? "▲" : cur < prev ? "▼" : "=");
   const fmtNet = (v: number) => (volOn ? (v >= 10_000 ? `${(v / 1000).toFixed(1)}K` : v.toLocaleString("en-US", { maximumFractionDigits: v < 100 ? 2 : 0 })) : money1(v));
@@ -1036,8 +1049,8 @@ export default function VisionFuturaChart(rawProps: Props) {
           {layers.imanes_sofia && props.sofiaMagnets && (
             <g style={{ pointerEvents: "none" }}>
               {props.sofiaMagnets.history.filter((sg) => inView(sg.strike)).map((sg, i) => {
-                const cur = props.sofiaMagnets!.now[sg.kind];
-                const live = !!cur && cur.strike === sg.strike && sg.end >= refSec - 120;
+                // El vigente lo dibuja la línea sólida de la columna del agresor (abajo); esto es solo el rastro.
+                const live = false;
                 const x0 = x(sg.start - 60);
                 const x1 = live ? nowX : x(sg.end);
                 return x1 > x0 ? (
@@ -1049,6 +1062,17 @@ export default function VisionFuturaChart(rawProps: Props) {
               })}
             </g>
           )}
+          {/* Imán Referencia vigente = el de la columna del agresor: línea sólida de lado a lado, como la referencia. */}
+          {layers.imanes_sofia && (["pos", "neg"] as const).map((k) => {
+            const mg = colMagnets[k];
+            if (!mg || !inView(mg.strike)) return null;
+            return (
+              <line key={`col-mg-${k}`} x1={plotL} x2={plotR} y1={y(mg.strike)} y2={y(mg.strike)}
+                stroke={k === "pos" ? SOFIA_POS : SOFIA_NEG} strokeWidth={2.5} opacity={0.95} style={{ pointerEvents: "none" }}>
+                <title>{`Imán Referencia ${k === "pos" ? "+" : "−"} ${n2(mg.strike, 0)} · fuerza ${colFuerza(mg.fuerza)} contratos netos abiertos del día`}</title>
+              </line>
+            );
+          })}
 
           {/* Imán acumulado: línea gruesa lima (Imán +) / rosa (Imán −) desde que está fijo en ese strike;
               los tramos viejos (cuando era otro strike) quedan tenues. */}
@@ -1318,7 +1342,20 @@ export default function VisionFuturaChart(rawProps: Props) {
                     <rect x={aggX + AGG_GEX_W} y={ry0 + 1} width={rightW - AGG_GEX_W - 4} height={ROW_H - 2} rx={4}
                       fill={pr.side === "S" ? "rgba(168,85,247,0.12)" : "rgba(18,183,106,0.12)"} stroke={pr.side === "S" ? POS_DOWN : COLOR.posicionamiento} strokeDasharray="4 3" />
                   )}
-                  <text x={aggX + AGG_GEX_W - 6} y={ry + 14} fontSize={10} textAnchor="end" fill={r.netGex > 0 ? "#12b76a" : r.netGex < 0 ? "#f97066" : "#6b7591"}>{gexM(r.netGex)}</text>
+                  {(() => {
+                    const rank = gexTop.get(r.spx);
+                    if (!rank) return null;
+                    const up = r.netGex > 0;
+                    return (
+                      <rect x={aggX + 1} y={ry0 + 1} width={AGG_GEX_W - 3} height={ROW_H - 2} rx={3}
+                        fill={up ? `rgba(18,183,106,${rank === 1 ? 0.32 : 0.18})` : `rgba(249,112,102,${rank === 1 ? 0.32 : 0.18})`}
+                        stroke={rank === 1 ? "#facc15" : up ? "#12b76a" : "#f97066"} strokeWidth={rank === 1 ? 1.6 : 0.8} />
+                    );
+                  })()}
+                  <text x={aggX + AGG_GEX_W - 6} y={ry + 14} fontSize={10} textAnchor="end" fontWeight={gexTop.has(r.spx) ? 700 : 400}
+                    fill={gexTop.get(r.spx) === 1 ? "#facc15" : r.netGex > 0 ? "#12b76a" : r.netGex < 0 ? "#f97066" : "#6b7591"}>
+                    {gexTop.get(r.spx) === 1 ? "★" : ""}{gexM(r.netGex)}
+                  </text>
                   {any && (
                     <>
                       {/* Ventas al bid ← : flecha afuera, número, barra roja hacia la izquierda */}
