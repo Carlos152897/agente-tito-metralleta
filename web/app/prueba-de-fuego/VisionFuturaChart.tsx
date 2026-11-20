@@ -25,6 +25,22 @@ import { analyzePremarket } from "@/lib/visionFuturaPremarketChart";
 import { useVisionLabels } from "./visionLabels";
 import { POSITION_LABEL, type StrikeMinute, type VolDeltaRow, type VolSpike } from "@/lib/visionFuturaVolumeDelta";
 import type { DealerLevel, KeyLevel, KeyLevelKind, VisionStrikeRow, ExpectedMove, Conversion } from "@/lib/visionFutura";
+import { BUCKETS, BUCKET_LABEL, type PruebaBar, type PruebaLadder } from "@/lib/visionFuturaPrueba";
+
+/** Vista "Prueba" (lib/visionFuturaPrueba.ts): barras, pisos/techos clave e imanes del flujo trade por trade. */
+export interface PruebaChart {
+  ladder: PruebaLadder;
+  /** Agresor por strike con la regla del Paso 1 ($ de prima) y la ventana anterior. */
+  agg: Map<number, { buy: number; sell: number; prevBuy: number; prevSell: number }>;
+  /** "15m", "1h", "1D"… */
+  label: string;
+  /** Pisos/techos marcados en la celda del precio; opacity < 1 = se está desvaneciendo. */
+  marks: Map<number, { techo?: { rank: number; opacity: number }; piso?: { rank: number; opacity: number } }>;
+}
+const PRUEBA_TECHO = "#F5C518";
+const PRUEBA_PISO = "#4FC3F7";
+const PRUEBA_LONG = "#12b76a";
+const PRUEBA_SHORT = "#ef4444";
 
 export type LayerKey =
   | "precio"
@@ -206,6 +222,8 @@ interface Props {
    * de hace N min todavía (se usó la más vieja) → "*".
    */
   netPos?: { period: NetPeriod; bars: NetBar[]; stale: boolean } | null;
+  /** Vista "Prueba": posicionamiento con la fórmula oficial (delta $, spreads, apertura). */
+  prueba?: PruebaChart | null;
 }
 
 /** Barras de gamma: verde = GEX + (los dealers frenan), rojo = GEX − (los dealers aceleran). */
@@ -388,6 +406,8 @@ export default function VisionFuturaChart(rawProps: Props) {
     if (!cur || h.delta > cur.delta) unusualBy.set(h.strike, h);
   }
   const wrapRef = useRef<HTMLDivElement>(null);
+  // Detalle de la barra de la vista Prueba (al pasar el cursor o tocarla).
+  const [prHover, setPrHover] = useState<{ bar: PruebaBar; x: number; y: number } | null>(null);
   const [boxW, setWidth] = useState(900);
   // Tarjeta de detalle al hacer CLICK en una fila (posicionamiento, strike o agresor). Carlos: "solo cuando le dé click".
   const [hover, setHover] = useState<{ strike: number; cx: number; cy: number } | null>(null);
@@ -618,6 +638,11 @@ export default function VisionFuturaChart(rawProps: Props) {
   }
   const split = (net: number) => ({ buy: Math.max(net, 0), sell: Math.max(-net, 0) });
   const sidesOf = (r: VisionStrikeRow) => {
+    // Vista Prueba: agresor con la regla del Paso 1 (mismo flujo que el posicionamiento), en $ de prima.
+    if (props.prueba) {
+      const a = props.prueba.agg.get(r.spx);
+      return { buy: a?.buy ?? 0, sell: a?.sell ?? 0, prevBuy: a ? a.prevBuy : null, prevSell: a ? a.prevSell : null };
+    }
     if (!netMode) {
       if (volOn) {
         const v = volBy.get(r.spx);
@@ -706,6 +731,13 @@ export default function VisionFuturaChart(rawProps: Props) {
     // sobre la gráfica tapaba el precio).
     if (pos) addChip({ key: `gm-pos-${pos.strike}`, text: `Imán GEX + ${n2(pos.strike, 0)} · fuerza ${n2(pos.fuerza, 0)}${lado(pos)}`, color: GEXM_POS }, pos.strike);
     if (neg) addChip({ key: `gm-neg-${neg.strike}`, text: `Imán GEX − ${n2(neg.strike, 0)} · fuerza ${n2(neg.fuerza, 0)}${lado(neg)}`, color: GEXM_NEG }, neg.strike);
+  }
+  // Imanes de la vista Prueba: 🧲+ atrae (objetivos de débito / largos), 🧲− rechaza (piso/techo clave).
+  if (props.prueba) {
+    const { magnetPos, magnetNeg } = props.prueba.ladder;
+    const d = (m: { distPts: number; distPct: number }) => `${m.distPts >= 0 ? "+" : "−"}${n2(Math.abs(m.distPts), 0)} pts (${Math.abs(m.distPct).toFixed(2)}%)`;
+    if (magnetPos) addChip({ key: `pr-pos-${magnetPos.strike}`, text: `🧲+ ${d(magnetPos)} ${n2(magnetPos.strike, 0)}`, color: PRUEBA_LONG }, magnetPos.strike);
+    if (magnetNeg) addChip({ key: `pr-neg-${magnetNeg.strike}`, text: `🧲− ${d(magnetNeg)} ${n2(magnetNeg.strike, 0)}`, color: magnetNeg.why === "techo clave" ? PRUEBA_TECHO : PRUEBA_PISO }, magnetNeg.strike);
   }
   // POC: precio con más volumen de las velas a la vista (en la repetición, hasta el cursor).
   if (layers.poc && props.candles?.length) {
@@ -857,15 +889,39 @@ export default function VisionFuturaChart(rawProps: Props) {
           const ry = TOP + i * ROW_H;
           const c = conv(r.spx);
           const isSpot = i === spotRowIdx;
-          const isMag = i === magnetoRowIdx;
+          // Vista Prueba: el Magneto queda como franja delgada (el amarillo sólido es del techo clave).
+          const pm = props.prueba?.marks.get(r.spx);
+          const isMag = i === magnetoRowIdx && !props.prueba;
+          const magStripe = i === magnetoRowIdx && !!props.prueba;
+          const solid = (pm?.techo?.rank === 1 && pm.techo.opacity >= 0.99) || (pm?.piso?.rank === 1 && pm.piso.opacity >= 0.99);
+          const dark = isMag || solid;
+          const tag = pm?.techo?.rank === 1 && pm?.piso?.rank === 1 ? "TECHO·PISO" : pm?.techo?.rank === 1 ? "TECHO" : pm?.piso?.rank === 1 ? "PISO" : null;
+          const cellW = LABEL_W - 6;
+          const markRect = (kind: "techo" | "piso", m: { rank: number; opacity: number }, half: "full" | "left" | "right") => {
+            const color = kind === "techo" ? PRUEBA_TECHO : PRUEBA_PISO;
+            const fo = (m.rank === 1 ? 1 : 0.35) * m.opacity;
+            const w = half === "full" ? cellW : cellW / 2;
+            const x0 = half === "right" ? 2 + cellW / 2 : 2;
+            return (
+              <rect key={kind} x={x0} y={ry + 1} width={w} height={ROW_H - 2} rx={3} fill={color}
+                style={{ fillOpacity: fo, strokeOpacity: m.opacity, transition: "fill-opacity 600ms ease, stroke-opacity 600ms ease" }}
+                stroke={m.rank === 1 ? "none" : color} strokeWidth={1}>
+                <title>{`${kind === "techo" ? "Techo" : "Piso"} clave #${m.rank} · ${n2(r.spx, 0)}${m.opacity < 1 ? " (perdiendo fuerza)" : ""}`}</title>
+              </rect>
+            );
+          };
           return (
             <g key={r.spx}>
               <rect x={0} y={ry} width={width} height={ROW_H} fill={isSpot ? "rgba(47,107,255,0.14)" : i % 2 ? "rgba(255,255,255,0.015)" : "transparent"} />
               {isMag && <rect x={2} y={ry + 1} width={LABEL_W - 6} height={ROW_H - 2} rx={3} fill={MAGNETO_YELLOW}><title>{`Magneto ${n2(magnetoLvl ?? r.spx, 0)}`}</title></rect>}
-              <text x={6} y={ry + rowMid + 14} fontSize={LBL_FONT} fill={isMag ? "#1a1400" : isSpot ? "#f5f7fb" : "#9aa5c0"} fontWeight={isSpot || isMag ? 700 : 400}>
+              {pm?.techo && pm?.piso
+                ? <>{markRect("techo", pm.techo, "left")}{markRect("piso", pm.piso, "right")}</>
+                : pm?.techo ? markRect("techo", pm.techo, "full") : pm?.piso ? markRect("piso", pm.piso, "full") : null}
+              {magStripe && <rect x={2} y={ry + 1} width={4} height={ROW_H - 2} fill={MAGNETO_YELLOW}><title>{`Magneto ${n2(magnetoLvl ?? r.spx, 0)}`}</title></rect>}
+              <text x={magStripe ? 10 : 6} y={ry + rowMid + 14} fontSize={LBL_FONT} fill={dark ? "#1a1400" : isSpot ? "#f5f7fb" : "#9aa5c0"} fontWeight={isSpot || dark ? 700 : 400}>
                 {n2(r.spx, 0)}
-                {(c.spy != null || c.es != null) && (
-                  <tspan fill={isMag ? "#3d3200" : "#6b7591"}>{c.spy != null ? ` · ${n2(c.spy, 1)}` : ""}{c.es != null ? ` · ${n2(c.es, 0)}` : ""}</tspan>
+                {tag ? <tspan dx={6} fontSize={9} fontWeight={800} fill={solid ? "#1a1400" : "#f5f7fb"}>{tag}</tspan> : (c.spy != null || c.es != null) && (
+                  <tspan fill={dark ? "#3d3200" : "#6b7591"}>{c.spy != null ? ` · ${n2(c.spy, 1)}` : ""}{c.es != null ? ` · ${n2(c.es, 0)}` : ""}</tspan>
                 )}
               </text>
             </g>
@@ -960,6 +1016,50 @@ export default function VisionFuturaChart(rawProps: Props) {
               <text x={posX - 6} y={height - 24} fontSize={10} textAnchor="end" fill={POS_DOWN}>← Short</text>
               <text x={posX + 6} y={height - 24} fontSize={10} fill={COLOR.posicionamiento}>Long →</text>
               <text x={posX} y={height - 36} fontSize={10} textAnchor="middle" fill="#6b7591">Posicionamiento neto ({label}) · tenue = poco dinero</text>
+            </g>
+          );
+        })()}
+
+        {/* Vista Prueba: neto por strike con la fórmula oficial — verde → LARGO, roja ← CORTO; ▲ ENTRANDO / ▼ SALIENDO (tenue). */}
+        {props.prueba && (() => {
+          const pr = props.prueba;
+          const shown = new Set(rows.map((r) => r.spx));
+          const bars = pr.ladder.bars.filter((b) => shown.has(b.strike) && b.net !== 0);
+          const maxAbs = Math.max(0, ...bars.map((b) => Math.abs(b.net)));
+          return (
+            <g>
+              <line x1={posX} x2={posX} y1={TOP} y2={plotBottom} stroke="#3a4560" strokeDasharray="2 3" />
+              {bars.map((b) => {
+                const long = b.net > 0;
+                const w = maxAbs > 0 ? Math.max(3, (Math.abs(b.net) / maxAbs) * POS_SPAN) : 0;
+                const ry = y(b.strike) - 6;
+                const fill = long ? PRUEBA_LONG : PRUEBA_SHORT;
+                const op = b.trend === "saliendo" ? 0.35 : b.frac >= 0.1 ? 0.88 : 0.5;
+                const arrow = b.trend === "entrando" ? "▲ ENTRANDO" : b.trend === "saliendo" ? "▼ SALIENDO" : "";
+                const txt = `${long ? "+" : "−"}${money(Math.abs(b.net))} Δ${b.dominant ? ` · ${b.dominant}` : ""}`;
+                // Si el texto no cabe afuera de la barra (choca con la columna de precios o con el
+                // agresor), va DENTRO de la barra, pegado al eje, en blanco.
+                const estW = (txt.length + (arrow ? arrow.length + 1 : 0)) * 5.3;
+                const fitsOut = long ? posX + w + 4 + estW <= plotR - 4 : posX - w - 4 - estW >= plotL + 4;
+                const inside = !fitsOut && w >= estW * 0.6;
+                const outX = inside ? (long ? posX + 4 : posX - 4) : long ? posX + w + 4 : posX - w - 4;
+                const arrowCol = inside ? "#ffffff" : b.trend === "entrando" ? "#f5f7fb" : "#9aa5c0";
+                return (
+                  <g key={`pr-${b.strike}`}>
+                    <rect y={ry} height={12} rx={1} fill={fill}
+                      style={{ x: long ? posX : posX - w, width: w, opacity: op, transition: "x 300ms ease, width 300ms ease, opacity 300ms ease" } as React.CSSProperties} />
+                    <text x={outX} y={ry + 10} fontSize={9} fontWeight={b.frac >= 0.1 ? 700 : 400} textAnchor={long ? "start" : "end"}
+                      fill={inside ? "#ffffff" : fill} opacity={b.trend === "saliendo" ? 0.6 : 1} style={{ pointerEvents: "none" }}>
+                      {long
+                        ? <>{txt}{arrow && <tspan fill={arrowCol}> {arrow}</tspan>}</>
+                        : <>{arrow && <tspan fill={arrowCol}>{arrow} </tspan>}{txt}</>}
+                    </text>
+                  </g>
+                );
+              })}
+              <text x={posX - 6} y={height - 24} fontSize={10} textAnchor="end" fill={PRUEBA_SHORT}>← CORTO / bajista</text>
+              <text x={posX + 6} y={height - 24} fontSize={10} fill={PRUEBA_LONG}>LARGO / alcista →</text>
+              <text x={posX} y={height - 36} fontSize={10} textAnchor="middle" fill="#6b7591">Posicionamiento Prueba ({pr.label}) · delta $ × apertura · tenue = saliendo</text>
             </g>
           );
         })()}
@@ -1420,6 +1520,23 @@ export default function VisionFuturaChart(rawProps: Props) {
             </g>
           );
         })}
+        {/* Vista Prueba: zonas invisibles ENCIMA de todo sobre cada barra (la cruz de lectura del plot se quedaba
+            con el mouse) → detalle al pasar el cursor o al tocar. */}
+        {props.prueba && (() => {
+          const shown = new Set(rows.map((r) => r.spx));
+          const bars = props.prueba.ladder.bars.filter((b) => shown.has(b.strike) && b.net !== 0);
+          const maxAbs = Math.max(0, ...bars.map((b) => Math.abs(b.net)));
+          return bars.map((b) => {
+            const w = maxAbs > 0 ? Math.max(3, (Math.abs(b.net) / maxAbs) * POS_SPAN) : 0;
+            const set = (e: React.MouseEvent) => setPrHover({ bar: b, x: e.clientX, y: e.clientY });
+            return (
+              <rect key={`prhit-${b.strike}`} data-vf-hit="" x={b.net > 0 ? posX : posX - w} y={y(b.strike) - ROW_H / 2} width={Math.max(w, 8)} height={ROW_H}
+                fill="transparent" style={{ cursor: "pointer" }}
+                onMouseEnter={set} onMouseMove={set} onMouseLeave={() => setPrHover(null)}
+                onClick={(e) => setPrHover((h) => (h?.bar.strike === b.strike ? null : { bar: b, x: e.clientX, y: e.clientY }))} />
+            );
+          });
+        })()}
         {/* Operaciones inusuales de MarketSnack: punto en la hora y SOBRE EL PRECIO de ese minuto (Carlos, 2-nov-2026:
             "que salga en el momento que se da, encima del precio"; antes iba en la fila del strike del contrato y
             las de strikes lejanos salían arriba/abajo de todo). El strike va en la tarjeta. Tamaño = prima; color = dirección. */}
@@ -1458,6 +1575,38 @@ export default function VisionFuturaChart(rawProps: Props) {
           );
         })()}
       </svg>
+      {prHover && props.prueba && (() => {
+        const b = prHover.bar;
+        const W = 300;
+        const vw = typeof window !== "undefined" ? window.innerWidth : 1200;
+        const left = prHover.x + 14 + W > vw - 8 ? Math.max(8, prHover.x - W - 14) : prHover.x + 14;
+        const top = Math.max(84, prHover.y - 90);
+        const sgn = (v: number) => `${v > 0 ? "+" : v < 0 ? "−" : ""}$${money1(Math.abs(v))}`;
+        const line = (k: (typeof BUCKETS)[number]) => (
+          <div key={k} style={{ display: "flex", justifyContent: "space-between", gap: 8, color: b.buckets[k] === 0 ? "#6b7591" : "#c7cede" }}>
+            <span>{BUCKET_LABEL[k]}</span>
+            <span style={{ color: b.buckets[k] > 0 ? PRUEBA_LONG : b.buckets[k] < 0 ? PRUEBA_SHORT : undefined }}>{sgn(b.buckets[k])}</span>
+          </div>
+        );
+        return (
+          <div data-vf-prcard="" style={{ position: "fixed", left, top, width: W, zIndex: 50, background: "#0f1522", border: `1px solid ${b.net >= 0 ? PRUEBA_LONG : PRUEBA_SHORT}`, borderRadius: 10, padding: "10px 12px", boxShadow: "0 8px 24px rgba(0,0,0,0.45)", fontSize: 12, fontVariantNumeric: "tabular-nums", display: "flex", flexDirection: "column", gap: 3, color: "#c7cede", pointerEvents: "none" }}>
+            <div style={{ fontWeight: 800, color: "#f5f7fb" }}>
+              {n2(b.strike, 0)} · {b.net >= 0 ? "LARGO / alcista" : "CORTO / bajista"} {sgn(b.net)} Δ
+            </div>
+            <div style={{ color: "#9aa5c0" }}>
+              {props.prueba.label} · antes {sgn(b.prevNet)} · {b.trend === "entrando" ? "▲ ENTRANDO" : b.trend === "saliendo" ? "▼ SALIENDO" : "sin cambio"}{b.dominant ? ` · domina ${b.dominant}` : ""}
+            </div>
+            <div style={{ marginTop: 4, fontWeight: 700, color: "#f5f7fb" }}>Los 4 casos (opciones sueltas)</div>
+            {BUCKETS.slice(0, 4).map(line)}
+            <div style={{ marginTop: 4, fontWeight: 700, color: "#f5f7fb" }}>Subagentes (en el strike vendido)</div>
+            {BUCKETS.slice(4).map(line)}
+            <div style={{ marginTop: 4, color: "#9aa5c0" }}>
+              {b.trades.toLocaleString("en-US")} trades · {Math.round(b.openShare * 100)}% apertura{b.closes ? ` · ${b.closes.toLocaleString("en-US")} cierres restados` : ""}
+            </div>
+            <div style={{ color: "#6b7591" }}>Defensa piso ${money1(b.defensePiso)} · techo ${money1(b.defenseTecho)}</div>
+          </div>
+        );
+      })()}
       {dotSel && (() => {
         const d = dotSel.d;
         const W = 270;

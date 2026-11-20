@@ -39,11 +39,13 @@ import VisionFuturaContextPanel from "./VisionFuturaContextPanel";
 import VisionFuturaPremarketZones, { usePremarketZones } from "./VisionFuturaPremarketZones";
 import { useVolumeDelta, VOL_WINDOWS } from "./useVolumeDelta";
 import { detectVolumeSpikes, volDeltaRows } from "@/lib/visionFuturaVolumeDelta";
-import { gridStepFor, nativeStep } from "@/lib/visionFuturaGrid";
+import { gridRows, gridStepFor, nativeStep } from "@/lib/visionFuturaGrid";
 import { OPEN_MAGNET_TUNING, openMagnets } from "@/lib/visionFuturaOpenMagnets";
 import { CUMULATIVE_MAGNET_TUNING, FLOW_MAGNET_TUNING, GEX_SIDE_MAGNET_TUNING, aggressorSides, flowMagnetHistory, flowMagnetsAt, gexSideMagnets, withMagnetTrend } from "@/lib/visionFuturaFlowMagnets";
 import { NET_PERIODS, netBars, pickBase, snapOf, type NetPeriod, type NetSnap } from "@/lib/visionFuturaNetPeriod";
-import VisionFuturaChart, { DEFAULT_LAYERS, LAYERS, type CandleBar, type HistoryPoint, type LayerKey, type VixStrip } from "./VisionFuturaChart";
+import { buildLadder, PRUEBA_WINDOWS, windowLabel, type PruebaLadder, type PruebaResponse, type PruebaWindow } from "@/lib/visionFuturaPrueba";
+import VisionFuturaPruebaPanel from "./VisionFuturaPruebaPanel";
+import VisionFuturaChart, { DEFAULT_LAYERS, LAYERS, type CandleBar, type HistoryPoint, type LayerKey, type PruebaChart, type VixStrip } from "./VisionFuturaChart";
 import type { ConvertedLevel, DealerLevel, KeyLevel, KeyLevelKind, VisionFuturaReport, VisionStrikeRow } from "@/lib/visionFutura";
 
 /** Niveles (MarketSnack, pesado). */
@@ -93,7 +95,12 @@ const KEY_ZOOM = "visionary.visionFutura.zoom";
 const KEY_FIT = "visionary.visionFutura.fitHeight";
 /** Vista de la escalera (Carlos, 10-nov): "Long/Short" = barras de posicionamiento siempre prendidas;
  *  "Gamma" = barras de GEX neto por strike en su lugar, con todo lo demás pero sin el posicionamiento. */
-type LadderMode = "longshort" | "gamma" | "neto";
+type LadderMode = "longshort" | "gamma" | "neto" | "prueba";
+const KEY_PRUEBA_WIN = "visionary.visionFutura.pruebaWin";
+/** Vista Prueba: refresco del flujo trade por trade. */
+const PRUEBA_REFRESH_MS = 15_000;
+/** Un piso/techo que deja de ser clave se desvanece en este tiempo en vez de desaparecer de golpe. */
+const PRUEBA_FADE_MS = 60_000;
 const KEY_LADDER = "visionary.visionFutura.ladderMode";
 /** Periodo de la vista "Neto" (Carlos, 17-nov: como la versión v3 — barra neta 5/15/30 min/día, tenue = poco dinero). */
 const KEY_NET_PERIOD = "visionary.visionFutura.netPeriod";
@@ -381,6 +388,13 @@ export default function VisionFuturaTab() {
   /** Fotos de las lecturas en vivo (máx. ~65 min) para la vista "Neto" por periodo. */
   const netSnapsRef = useRef<NetSnap[]>([]);
   const [netPeriod, setNetPeriod] = useState<NetPeriod>(15);
+  // Vista "Prueba" (posicionamiento con la fórmula oficial sobre el flujo trade por trade).
+  const [pruebaWin, setPruebaWin] = useState<PruebaWindow>(15);
+  const [prueba, setPrueba] = useState<{ data: PruebaResponse; at: number } | null>(null);
+  const [pruebaErr, setPruebaErr] = useState<string | null>(null);
+  const [pruebaLoading, setPruebaLoading] = useState(false);
+  /** Pisos/techos clave vistos: strike → último momento en que fueron clave (para desvanecerlos). */
+  const pruebaMarksRef = useRef<Map<string, { strike: number; kind: "techo" | "piso"; rank: number; seen: number }>>(new Map());
   const [prevAgg, setPrevAgg] = useState<Map<number, FlowSnapshot> | null>(null);
   // Compras/ventas inusuales (salto grande en un strike): quedan encendidas 3 min.
   const [unusual, setUnusual] = useState<UnusualHit[]>([]);
@@ -428,12 +442,42 @@ export default function VisionFuturaTab() {
       if (ZOOMS.some((z) => z.min === savedZoom)) setZoom(savedZoom);
       if (window.localStorage.getItem(KEY_FIT) === "1") setFitHeight(true);
       const savedLadder = window.localStorage.getItem(KEY_LADDER);
-      if (savedLadder === "gamma" || savedLadder === "neto") setLadder(savedLadder);
+      if (savedLadder === "gamma" || savedLadder === "neto" || savedLadder === "prueba") setLadder(savedLadder);
+      const savedPw = window.localStorage.getItem(KEY_PRUEBA_WIN);
+      const pw = PRUEBA_WINDOWS.find((x) => String(x) === savedPw);
+      if (pw != null) setPruebaWin(pw);
       const savedNet = window.localStorage.getItem(KEY_NET_PERIOD);
       const np = NET_PERIODS.find((x) => String(x) === savedNet);
       if (np != null) setNetPeriod(np);
     } catch { /* sin storage: queda el default */ }
   }, []);
+
+  // Vista Prueba: flujo trade por trade cada 15 s (solo SPX en vivo; la repetición no tiene trades).
+  useEffect(() => {
+    if (ladder !== "prueba" || inst !== "SPX" || mode !== "vivo") return;
+    let alive = true;
+    const pull = async () => {
+      setPruebaLoading(true);
+      try {
+        const res = await fetch(`/api/vision-futura/prueba?inst=SPX&w=${pruebaWin}`, { cache: "no-store" });
+        const json = await res.json();
+        if (!alive) return;
+        if (!res.ok || json.error) {
+          setPruebaErr(json.cookieExpired ? "Cookie de MarketSnack expirada" : json.error ?? `Error ${res.status}`);
+        } else {
+          setPrueba({ data: json as PruebaResponse, at: Date.now() });
+          setPruebaErr(null);
+        }
+      } catch (e) {
+        if (alive) setPruebaErr(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (alive) setPruebaLoading(false);
+      }
+    };
+    pull();
+    const id = window.setInterval(pull, PRUEBA_REFRESH_MS);
+    return () => { alive = false; window.clearInterval(id); };
+  }, [ladder, inst, mode, pruebaWin]);
 
   const load = useCallback(async () => {
     const key = `${radius}|${inst}|${expIdx}`;
@@ -695,6 +739,10 @@ export default function VisionFuturaTab() {
     setLadder(m);
     try { window.localStorage.setItem(KEY_LADDER, m); } catch { /* ignorar */ }
   };
+  const pickPruebaWin = (x: PruebaWindow) => {
+    setPruebaWin(x);
+    try { window.localStorage.setItem(KEY_PRUEBA_WIN, String(x)); } catch { /* ignorar */ }
+  };
   const pickNetPeriod = (x: NetPeriod) => {
     setNetPeriod(x);
     try { window.localStorage.setItem(KEY_NET_PERIOD, String(x)); } catch { /* ignorar */ }
@@ -880,6 +928,10 @@ export default function VisionFuturaTab() {
       stale: netPeriod !== "dia" && (!base || base.stale),
     };
   })();
+  // Vista "Prueba": escalera con la fórmula oficial; la gamma sale de las mismas filas (columna GEX).
+  const pruebaUnavailable = ladder !== "prueba" ? null
+    : inst !== "SPX" ? "La vista Prueba por ahora es solo para SPX (el flujo trade por trade de los demás instrumentos todavía no se baja)."
+    : tick ? "La vista Prueba es solo en vivo: la repetición no guarda el flujo trade por trade." : null;
   // En la repetición cada paso son 5 min: se compara contra el paso anterior, sin retener.
   const replayUnusual = tick && replayPrevAgg ? detectUnusual(tick.rows, replayPrevAgg, tick.time * 1000) : [];
   const liveUnusual = unusual.filter((h) => Date.now() - h.at <= UNUSUAL_TUNING.holdMs);
@@ -965,6 +1017,39 @@ export default function VisionFuturaTab() {
     }
     chartCandles = out;
   }
+  const pruebaView = ((): { ladder: PruebaLadder; chart: PruebaChart } | null => {
+    if (ladder !== "prueba" || pruebaUnavailable || !prueba) return null;
+    const d = prueba.data;
+    // Las MISMAS filas que dibuja la escalera: cuadrícula + filas vacías hasta cubrir el rango del precio.
+    const pxVals = (chartCandles.length ? chartCandles.flatMap((c) => [c.high, c.low]) : view.priceSeries.map((x) => x.value))
+      .concat(view.spot.spx).filter((v) => Number.isFinite(v) && v > 0);
+    const cover = pxVals.length ? { lo: Math.min(...pxVals), hi: Math.max(...pxVals) } : null;
+    const strikes = gridRows(view.rows, gridStep, cover).map((r) => r.spx);
+    const gexBy = new Map(view.rows.map((r) => [r.spx, r.netGex] as [number, number]));
+    const lad = buildLadder(new Map(d.cur.map((p) => [p.strike, p])), new Map(d.prev.map((p) => [p.strike, p])), strikes, gexBy, view.spot.spx);
+    // Desvanecido: lo que deja de ser clave se queda tenue PRUEBA_FADE_MS (se recalcula en cada refresco).
+    const seenMap = pruebaMarksRef.current;
+    const now = prueba.at;
+    for (const k of [...lad.techos, ...lad.pisos]) seenMap.set(`${k.kind}|${k.strike}`, { strike: k.strike, kind: k.kind, rank: k.rank, seen: now });
+    const marks: PruebaChart["marks"] = new Map();
+    for (const [key, m] of seenMap) {
+      const age = now - m.seen;
+      if (age > PRUEBA_FADE_MS) { seenMap.delete(key); continue; }
+      const opacity = age <= 0 ? 1 : Math.max(0.15, 1 - age / PRUEBA_FADE_MS);
+      const cur = marks.get(m.strike) ?? {};
+      cur[m.kind] = { rank: age <= 0 ? m.rank : Math.max(2, m.rank), opacity };
+      marks.set(m.strike, cur);
+    }
+    return {
+      ladder: lad,
+      chart: {
+        ladder: lad,
+        agg: new Map(d.agg.map((a) => [a.strike, a])),
+        label: windowLabel(d.window),
+        marks,
+      },
+    };
+  })();
   // Ganada / perdida / abierta de cada alerta con las velas de 1 min (máximo y mínimo): en vivo
   // rellena las que no traen resultado del servidor (las de antes de este cambio); en la repetición
   // reemplaza el cálculo de 5 min, que no ve los stops que se tocan en 1–2 min.
@@ -1250,7 +1335,15 @@ export default function VisionFuturaTab() {
             <button className={ladder === "longshort" ? "active" : ""} onClick={() => pickLadder("longshort")} title="Barras de posicionamiento: verde = apuestas arriba, morado = apuestas abajo">Long/Short</button>
             <button className={ladder === "gamma" ? "active" : ""} onClick={() => pickLadder("gamma")} title="Barras de GEX neto por strike: verde = frena el precio, rojo = lo acelera">Gamma</button>
             <button className={ladder === "neto" ? "active" : ""} onClick={() => pickLadder("neto")} title="Una barra neta por strike del periodo: verde → Long (calls compradas + puts vendidas), morada ← Short; tenue = poco dinero">Neto</button>
+            <button className={ladder === "prueba" ? "active" : ""} onClick={() => pickLadder("prueba")} title="Fórmula oficial sobre el flujo trade por trade: delta $ × apertura, spreads en su strike vendido; verde → LARGO, roja ← CORTO; pisos celestes y techos amarillos">Prueba</button>
           </div>
+          {ladder === "prueba" && (
+            <div className="view-toggle">
+              {PRUEBA_WINDOWS.map((x) => (
+                <button key={String(x)} className={pruebaWin === x ? "active" : ""} onClick={() => pickPruebaWin(x)} title={x === "1D" ? "Todo el día (se compara con el día hasta hace 15 min)" : `Flujo de los últimos ${windowLabel(x)} (se compara con los ${windowLabel(x)} anteriores)`}>{windowLabel(x)}</button>
+              ))}
+            </div>
+          )}
           {ladder === "neto" && (
             <div className="view-toggle">
               {NET_PERIODS.map((x) => (
@@ -1385,6 +1478,17 @@ export default function VisionFuturaTab() {
         {!tick && data.priceSeriesApprox && chartCandles.length === 0 && (
           <div style={{ fontSize: 12, color: "var(--amber-text)" }}>La línea de precio de hoy sale de {instrumentOf(inst).chartEtf ?? labels.etf} convertido a {labels.main} (MarketSnack no tiene la gráfica intradía del índice); el punto en vivo es el {labels.main} real.</div>
         )}
+        {ladder === "prueba" && (
+          <VisionFuturaPruebaPanel
+            data={prueba?.data ?? null}
+            ladder={pruebaView?.ladder ?? null}
+            error={pruebaErr}
+            loading={pruebaLoading}
+            unavailable={pruebaUnavailable}
+            receivedAt={prueba?.at ?? null}
+            windowName={prueba ? windowLabel(prueba.data.window) : windowLabel(pruebaWin)}
+          />
+        )}
         {view.rows.length === 0 ? (
           <div className="wheel-empty">{levelsSrc} no devolvió contratos para {view.expiration}.</div>
         ) : (
@@ -1406,6 +1510,7 @@ export default function VisionFuturaTab() {
             layers={{ ...layers, posicionamiento: ladder === "longshort", historial_ls: ladder === "gamma" ? false : layers.historial_ls }}
             gexBars={ladder === "gamma"}
             netPos={netView}
+            prueba={pruebaView?.chart ?? null}
             prevAggressor={tick ? replayPrevAgg : prevAgg}
             unusual={tick ? replayUnusual : liveUnusual}
             vix={vixStrip}
@@ -1420,6 +1525,8 @@ export default function VisionFuturaTab() {
             volDelta={(() => {
               // Sin volumen por contrato (tastytrade no lo manda): el panel cae al $ neto compras − ventas.
               // Atrasado en vivo → null = el agresor usa el $ compras/ventas (respaldo, nunca vacío).
+              // Vista Prueba: el agresor sale del mismo flujo trade por trade (regla del Paso 1), en $.
+              if (pruebaView) return null;
               if (!vol || vol.minutes.size === 0 || !layers.volumen_delta || (volStale && !tick)) return null;
               // Repetición: solo si es el mismo día que trae tastytrade; hasta el paso elegido.
               const volDate = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(vol.sessionOpen * 1000));
