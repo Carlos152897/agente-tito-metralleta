@@ -25,7 +25,7 @@ import { analyzePremarket } from "@/lib/visionFuturaPremarketChart";
 import { useVisionLabels } from "./visionLabels";
 import { POSITION_LABEL, type StrikeMinute, type VolDeltaRow, type VolSpike } from "@/lib/visionFuturaVolumeDelta";
 import type { DealerLevel, KeyLevel, KeyLevelKind, VisionStrikeRow, ExpectedMove, Conversion } from "@/lib/visionFutura";
-import { BUCKETS, BUCKET_LABEL, type PruebaBar, type PruebaLadder } from "@/lib/visionFuturaPrueba";
+import { BUCKETS, BUCKET_LABEL, fmtPrueba, type PruebaBar, type PruebaLadder, type PruebaUnit } from "@/lib/visionFuturaPrueba";
 
 /** Vista "Prueba" (lib/visionFuturaPrueba.ts): barras, pisos/techos clave e imanes del flujo trade por trade. */
 export interface PruebaChart {
@@ -34,6 +34,8 @@ export interface PruebaChart {
   agg: Map<number, { buy: number; sell: number; prevBuy: number; prevSell: number }>;
   /** "15m", "1h", "1D"… */
   label: string;
+  /** Medida de las barras: contratos o $ de delta. */
+  unit?: PruebaUnit;
   /** Pisos/techos marcados en la celda del precio; opacity < 1 = se está desvaneciendo. */
   marks: Map<number, { techo?: { rank: number; opacity: number }; piso?: { rank: number; opacity: number } }>;
 }
@@ -1046,7 +1048,7 @@ export default function VisionFuturaChart(rawProps: Props) {
               })}
               <text x={posX - 6} y={height - 24} fontSize={10} textAnchor="end" fill={PRUEBA_SHORT}>← CORTO / bajista</text>
               <text x={posX + 6} y={height - 24} fontSize={10} fill={PRUEBA_LONG}>LARGO / alcista →</text>
-              <text x={posX} y={height - 36} fontSize={10} textAnchor="middle" fill="#6b7591">Posicionamiento Prueba ({pr.label}) · delta $ × apertura · tenue = saliendo</text>
+              <text x={posX} y={height - 36} fontSize={10} textAnchor="middle" fill="#6b7591">Posicionamiento Prueba ({pr.label}) · {pr.unit === "contratos" ? "contratos" : "delta $"} × apertura · tenue = saliendo</text>
             </g>
           );
         })()}
@@ -1568,7 +1570,8 @@ export default function VisionFuturaChart(rawProps: Props) {
         const vw = typeof window !== "undefined" ? window.innerWidth : 1200;
         const left = prHover.x + 14 + W > vw - 8 ? Math.max(8, prHover.x - W - 14) : prHover.x + 14;
         const top = Math.max(84, prHover.y - 90);
-        const sgn = (v: number) => `${v > 0 ? "+" : v < 0 ? "−" : ""}$${money1(Math.abs(v))}`;
+        const unit = props.prueba.unit ?? "delta";
+        const sgn = (v: number) => (unit === "delta" ? `${v > 0 ? "+" : v < 0 ? "−" : ""}$${money1(Math.abs(v))}` : fmtPrueba(v, unit));
         const line = (k: (typeof BUCKETS)[number]) => (
           <div key={k} style={{ display: "flex", justifyContent: "space-between", gap: 8, color: b.buckets[k] === 0 ? "#6b7591" : "#c7cede" }}>
             <span>{BUCKET_LABEL[k]}</span>
@@ -1578,7 +1581,7 @@ export default function VisionFuturaChart(rawProps: Props) {
         return (
           <div data-vf-prcard="" style={{ position: "fixed", left, top, width: W, zIndex: 50, background: "#0f1522", border: `1px solid ${b.net >= 0 ? PRUEBA_LONG : PRUEBA_SHORT}`, borderRadius: 10, padding: "10px 12px", boxShadow: "0 8px 24px rgba(0,0,0,0.45)", fontSize: 12, fontVariantNumeric: "tabular-nums", display: "flex", flexDirection: "column", gap: 3, color: "#c7cede", pointerEvents: "none" }}>
             <div style={{ fontWeight: 800, color: "#f5f7fb" }}>
-              {n2(b.strike, 0)} · {b.net >= 0 ? "LARGO / alcista" : "CORTO / bajista"} {sgn(b.net)} Δ
+              {n2(b.strike, 0)} · {b.net >= 0 ? "LARGO / alcista" : "CORTO / bajista"} {sgn(b.net)}{unit === "delta" ? " Δ" : ""}
             </div>
             <div style={{ color: "#9aa5c0" }}>
               {props.prueba.label} · antes {sgn(b.prevNet)} · {b.trend === "entrando" ? "▲ ENTRANDO" : b.trend === "saliendo" ? "▼ SALIENDO" : "sin cambio"}{b.dominant ? ` · domina ${b.dominant}` : ""}
@@ -1590,7 +1593,7 @@ export default function VisionFuturaChart(rawProps: Props) {
             <div style={{ marginTop: 4, color: "#9aa5c0" }}>
               {b.trades.toLocaleString("en-US")} trades · {Math.round(b.openShare * 100)}% apertura{b.closes ? ` · ${b.closes.toLocaleString("en-US")} cierres restados` : ""}
             </div>
-            <div style={{ color: "#6b7591" }}>Defensa piso ${money1(b.defensePiso)} · techo ${money1(b.defenseTecho)}</div>
+            <div style={{ color: "#6b7591" }}>Defensa piso {sgn(b.defensePiso).replace("+", "")} · techo {sgn(b.defenseTecho).replace("+", "")}</div>
           </div>
         );
       })()}

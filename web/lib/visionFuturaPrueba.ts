@@ -231,9 +231,16 @@ interface Contribution {
   subagent: StructureKind;
 }
 
+/**
+ * Medida de las barras (Carlos, 20-nov): "delta" = $ de delta (fórmula oficial); "contratos" = contratos
+ * del agresor con el mismo signo (como la columna de SofIA). La delta en $ achica lo muy OTM (delta
+ * 0.05 → una compra grande de puts lejanos casi no se ve); en contratos pesa igual que cerca del precio.
+ */
+export type PruebaUnit = "delta" | "contratos";
+
 /** A qué strike/bucket va cada estructura y con cuánto delta (sin factor). */
-export function contributionsOf(s: Structure): Contribution[] {
-  const notional = (l: Leg) => l.tr.size * 100 * l.tr.spot;
+export function contributionsOf(s: Structure, unit: PruebaUnit = "delta"): Contribution[] {
+  const notional = (l: Leg) => (unit === "contratos" ? l.tr.size / Math.max(1e-9, absDelta(l.tr)) : l.tr.size * 100 * l.tr.spot);
   if (s.kind === "suelta") {
     const l = s.legs[0];
     const d = legDelta(l.tr, l.side) * notional(l);
@@ -242,7 +249,8 @@ export function contributionsOf(s: Structure): Contribution[] {
   }
   const vertical = (legs: Leg[], bucket: Bucket, sign: 1 | -1): Contribution => {
     const sold = legs.find((l) => l.side === "venta")!;
-    const net = legs.reduce((acc, l) => acc + legDelta(l.tr, l.side) * notional(l), 0);
+    // En contratos el spread cuenta sus contratos UNA vez (los de la pata vendida), no el neto de delta.
+    const net = unit === "contratos" ? sold.tr.size : legs.reduce((acc, l) => acc + legDelta(l.tr, l.side) * notional(l), 0);
     return { strike: sold.tr.strike, bucket, delta: sign * Math.abs(net), factor: openingFactor(sold.tr), subagent: s.kind };
   };
   switch (s.kind) {
@@ -306,7 +314,7 @@ export function prepare(trades: PruebaTrade[]): { structures: Structure[]; mids:
  * Posicionamiento en la ventana (from, to]. Recorre TODO lo anterior a `to` en orden para saber qué se
  * abrió hoy (y poder detectar cierres), pero solo suma lo que pasó dentro de la ventana.
  */
-export function positionWindow(prep: { structures: Structure[]; mids: number[] }, from: number, to: number): PositionResult {
+export function positionWindow(prep: { structures: Structure[]; mids: number[] }, from: number, to: number, unit: PruebaUnit = "delta"): PositionResult {
   const byStrike = new Map<number, StrikePos>();
   const openGross = new Map<number, number>(); // strike → Σ |delta| de aperturas en la ventana
   const openWeighted = new Map<number, number>();
@@ -324,7 +332,7 @@ export function positionWindow(prep: { structures: Structure[]; mids: number[] }
     if (s.t > to) break;
     const inWin = s.t > from;
     if (inWin) { classified += s.legs.length; structures[s.kind] += 1; }
-    const contribs = contributionsOf(s);
+    const contribs = contributionsOf(s, unit);
     // ¿Cierra algo abierto hoy en la dirección contraria?
     const against = opened.get(flipped(s));
     const closedBy: number[] = contribs.map(() => 0);
@@ -383,6 +391,16 @@ export const PRUEBA_WINDOWS: PruebaWindow[] = [5, 15, 30, 60, "1D"];
 export const windowLabel = (w: PruebaWindow) => (w === "1D" ? "1D" : w === 60 ? "1h" : `${w}m`);
 /** En 1D la "ventana anterior" es el día hasta hace 15 min (no hay otro día igual con qué comparar). */
 export const DAY_PREV_MS = 15 * 60_000;
+
+/**
+ * Posicionamiento ACUMULADO (Carlos, 20-nov: "si no se salen que se quede ahí y vaya aumentando la
+ * barra"): la barra siempre es el día desde la apertura (solo baja con cierres); la ventana elegida solo
+ * define contra cuándo se compara (▲ ENTRANDO / tenue = SALIENDO): el día hasta hace N min.
+ */
+export function cumulativeBounds(w: PruebaWindow, now: number, dayStart: number): { cur: [number, number]; prev: [number, number] } {
+  const back = w === "1D" ? DAY_PREV_MS : w * 60_000;
+  return { cur: [dayStart, now], prev: [dayStart, Math.max(dayStart, now - back)] };
+}
 
 /** Ventana actual y anterior del mismo tamaño. */
 export function windowBounds(w: PruebaWindow, now: number, dayStart: number): { cur: [number, number]; prev: [number, number] } {
@@ -567,10 +585,23 @@ export function findConflicts(bars: PruebaBar[], tune = PRUEBA_TUNING): Conflict
 
 export interface PruebaAgg { strike: number; buy: number; sell: number; prevBuy: number; prevSell: number }
 
+/** Valor de una barra / bucket en su unidad: "+$1.2M" o "+1,234 ctos". */
+export function fmtPrueba(v: number, unit: PruebaUnit = "delta"): string {
+  const sg = v > 0 ? "+" : v < 0 ? "−" : "";
+  const a = Math.abs(v);
+  if (unit === "contratos") return `${sg}${a >= 10_000 ? `${(a / 1000).toFixed(1)}K` : Math.round(a).toLocaleString("en-US")} ctos`;
+  const s = a >= 1e9 ? `${(a / 1e9).toFixed(2)}B` : a >= 1e6 ? `${(a / 1e6).toFixed(1)}M` : a >= 1e3 ? `${(a / 1e3).toFixed(0)}K` : a.toFixed(0);
+  return `${sg}$${s}`;
+}
+
 export interface PruebaResponse {
   inst: string;
   date: string;
   window: PruebaWindow;
+  /** Medida de las barras (cur/prev/bySubagent): $ de delta o contratos. */
+  unit: PruebaUnit;
+  /** true = cur es el día acumulado y prev el día hasta hace `window` (barras que no se borran). */
+  cumulative: boolean;
   asOf: number;
   cur: StrikePos[];
   prev: StrikePos[];

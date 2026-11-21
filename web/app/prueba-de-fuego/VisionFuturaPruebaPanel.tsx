@@ -4,15 +4,10 @@
 // no recomienda entrar ni salir. Motor: lib/visionFuturaPrueba.ts · datos: /api/vision-futura/prueba.
 
 import {
-  BUCKET_LABEL, CASES, findConflicts, isClosing, SUBAGENT_LABEL,
+  BUCKET_LABEL, CASES, findConflicts, fmtPrueba, isClosing, SUBAGENT_LABEL,
   type Bucket, type PruebaLadder, type PruebaResponse, type StrikePos, type StructureKind,
 } from "@/lib/visionFuturaPrueba";
 
-const usd = (v: number) => {
-  const a = Math.abs(v);
-  const s = a >= 1e9 ? `${(a / 1e9).toFixed(2)}B` : a >= 1e6 ? `${(a / 1e6).toFixed(1)}M` : a >= 1e3 ? `${(a / 1e3).toFixed(0)}K` : a.toFixed(0);
-  return `${v > 0 ? "+" : v < 0 ? "−" : ""}$${s}`;
-};
 const n0 = (v: number) => v.toLocaleString("en-US", { maximumFractionDigits: 0 });
 const hhmm = (ms: number, sec = false) =>
   new Date(ms).toLocaleTimeString("es-MX", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", ...(sec ? { second: "2-digit" } : {}), hour12: false });
@@ -54,6 +49,13 @@ export default function VisionFuturaPruebaPanel(props: {
     );
   }
 
+  // Todo lo del posicionamiento va en la unidad de las barras (contratos o $ de delta).
+  const unit = data.unit ?? "delta";
+  const usd = (v: number) => fmtPrueba(v, unit);
+  const dTag = unit === "delta" ? " Δ" : "";
+  const vsLabel = data.cumulative
+    ? `el día hasta hace ${data.window === "1D" ? "15 min" : data.window === 60 ? "1 h" : `${data.window} min`}`
+    : data.window === "1D" ? "hace 15 min" : "la ventana anterior";
   const view = new Set(ladder.bars.map((b) => b.strike));
   const curB = sumBuckets(data.cur, view);
   const prevB = sumBuckets(data.prev, view);
@@ -101,7 +103,7 @@ export default function VisionFuturaPruebaPanel(props: {
           <div style={head}>1. ¿Dónde hay más posicionamiento?</div>
           {top ? (
             <div>
-              <b>{n0(top.strike)}</b>: <span style={{ color: top.net >= 0 ? LONG : SHORT, fontWeight: 700 }}>{top.net >= 0 ? "LARGO" : "CORTO"} {usd(top.net)} Δ</span>
+              <b>{n0(top.strike)}</b>: <span style={{ color: top.net >= 0 ? LONG : SHORT, fontWeight: 700 }}>{top.net >= 0 ? "LARGO" : "CORTO"} {usd(top.net)}{dTag}</span>{data.cumulative ? <span style={{ color: "var(--muted)" }}> · acumulado del día</span> : null}
               {top.dominant ? <> · domina <b>{top.dominant}</b></> : null}
             </div>
           ) : <div style={{ color: "var(--muted)" }}>Sin posicionamiento en esta ventana.</div>}
@@ -125,7 +127,7 @@ export default function VisionFuturaPruebaPanel(props: {
         <div>
           <div style={head}>3. ¿Están entrando o saliendo?</div>
           <div>
-            Total {totChg == null ? "—" : `${totChg >= 0 ? "+" : ""}${totChg.toFixed(0)}%`} vs {data.window === "1D" ? "hace 15 min" : "la ventana anterior"} · {trend(totCur, totPrev)} · {entering} strikes ▲ / {leaving} ▼
+            Total {totChg == null ? "—" : `${totChg >= 0 ? "+" : ""}${totChg.toFixed(0)}%`} vs {vsLabel} · {trend(totCur, totPrev)} · {entering} strikes ▲ / {leaving} ▼
           </div>
           {CASES.map((k) => (curB[k] || prevB[k]) ? (
             <div key={k} style={{ color: "var(--muted)" }}>{BUCKET_LABEL[k]}: {usd(prevB[k] ?? 0)} → {usd(curB[k] ?? 0)} · {trend(curB[k] ?? 0, prevB[k] ?? 0)}</div>

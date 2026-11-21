@@ -43,7 +43,7 @@ import { gridRows, gridStepFor, nativeStep } from "@/lib/visionFuturaGrid";
 import { OPEN_MAGNET_TUNING, openMagnets } from "@/lib/visionFuturaOpenMagnets";
 import { CUMULATIVE_MAGNET_TUNING, FLOW_MAGNET_TUNING, GEX_SIDE_MAGNET_TUNING, aggressorSides, flowMagnetHistory, flowMagnetsAt, gexSideMagnets, withMagnetTrend } from "@/lib/visionFuturaFlowMagnets";
 import { NET_PERIODS, netBars, pickBase, snapOf, type NetPeriod, type NetSnap } from "@/lib/visionFuturaNetPeriod";
-import { buildLadder, PRUEBA_WINDOWS, windowLabel, type PruebaLadder, type PruebaResponse, type PruebaWindow } from "@/lib/visionFuturaPrueba";
+import { buildLadder, PRUEBA_WINDOWS, windowLabel, type PruebaLadder, type PruebaResponse, type PruebaUnit, type PruebaWindow } from "@/lib/visionFuturaPrueba";
 import VisionFuturaPruebaPanel from "./VisionFuturaPruebaPanel";
 import VisionFuturaChart, { DEFAULT_LAYERS, LAYERS, type CandleBar, type HistoryPoint, type LayerKey, type PruebaChart, type VixStrip } from "./VisionFuturaChart";
 import type { ConvertedLevel, DealerLevel, KeyLevel, KeyLevelKind, VisionFuturaReport, VisionStrikeRow } from "@/lib/visionFutura";
@@ -97,6 +97,16 @@ const KEY_FIT = "visionary.visionFutura.fitHeight";
  *  "Gamma" = barras de GEX neto por strike en su lugar, con todo lo demás pero sin el posicionamiento. */
 type LadderMode = "longshort" | "gamma" | "neto" | "prueba";
 const KEY_PRUEBA_WIN = "visionary.visionFutura.pruebaWin";
+const KEY_PRUEBA_UNIT = "visionary.visionFutura.pruebaUnit";
+/** Vista Prueba: la escalera se amplía hasta ±N pts de SPX (× escala) para mostrar posicionamiento lejano. */
+const PRUEBA_EXTRA_PTS = 150;
+/**
+ * Vista Long/Short de la escalera: OCULTA (Carlos, 20-nov: "ya no la necesito, pero guárdala de forma
+ * interna"). Todo su código sigue; poner true para que vuelva el botón (y sea la vista por defecto).
+ */
+const SHOW_LONGSHORT = false;
+/** Vista Prueba (Carlos, 20-nov): solo estas capas (el resto se apaga en esa vista sin tocar lo guardado). */
+const PRUEBA_LAYERS = new Set<LayerKey>(["precio", "agresor", "iman_gex", "poc", "inusuales_ms", "volumen_delta"]);
 /** Vista Prueba: refresco del flujo trade por trade. */
 const PRUEBA_REFRESH_MS = 15_000;
 /** Un piso/techo que deja de ser clave se desvanece en este tiempo en vez de desaparecer de golpe. */
@@ -348,7 +358,7 @@ function expLabel(date: string, dte: number): string {
 
 export default function VisionFuturaTab() {
   const [radius, setRadius] = useState<number>(60);
-  const [ladder, setLadder] = useState<LadderMode>("longshort");
+  const [ladder, setLadder] = useState<LadderMode>(SHOW_LONGSHORT ? "longshort" : "prueba");
   const [inst, setInst] = useState<InstrumentId>("SPX");
   const [recientes, setRecientes] = useState<string[]>(["TSLA"]);
   const [expIdx, setExpIdx] = useState(0);
@@ -390,6 +400,8 @@ export default function VisionFuturaTab() {
   const [netPeriod, setNetPeriod] = useState<NetPeriod>(15);
   // Vista "Prueba" (posicionamiento con la fórmula oficial sobre el flujo trade por trade).
   const [pruebaWin, setPruebaWin] = useState<PruebaWindow>(15);
+  // Medida de las barras: contratos (default, como la columna de SofIA) o $ de delta.
+  const [pruebaUnit, setPruebaUnit] = useState<PruebaUnit>("contratos");
   const [prueba, setPrueba] = useState<{ data: PruebaResponse; at: number } | null>(null);
   const [pruebaErr, setPruebaErr] = useState<string | null>(null);
   const [pruebaLoading, setPruebaLoading] = useState(false);
@@ -446,6 +458,7 @@ export default function VisionFuturaTab() {
       const savedPw = window.localStorage.getItem(KEY_PRUEBA_WIN);
       const pw = PRUEBA_WINDOWS.find((x) => String(x) === savedPw);
       if (pw != null) setPruebaWin(pw);
+      if (window.localStorage.getItem(KEY_PRUEBA_UNIT) === "delta") setPruebaUnit("delta");
       const savedNet = window.localStorage.getItem(KEY_NET_PERIOD);
       const np = NET_PERIODS.find((x) => String(x) === savedNet);
       if (np != null) setNetPeriod(np);
@@ -465,7 +478,7 @@ export default function VisionFuturaTab() {
     const pull = async () => {
       setPruebaLoading(true);
       try {
-        const res = await fetch(`/api/vision-futura/prueba?inst=SPX&w=${pruebaWin}${replayQs}`, { cache: "no-store" });
+        const res = await fetch(`/api/vision-futura/prueba?inst=SPX&w=${pruebaWin}&u=${pruebaUnit}${replayQs}`, { cache: "no-store" });
         const json = await res.json();
         if (!alive) return;
         if (!res.ok || json.error) {
@@ -488,7 +501,7 @@ export default function VisionFuturaTab() {
     pull();
     const id = window.setInterval(pull, PRUEBA_REFRESH_MS);
     return () => { alive = false; window.clearInterval(id); };
-  }, [ladder, inst, mode, pruebaWin, pruebaReplayAt, pruebaReplayDate]);
+  }, [ladder, inst, mode, pruebaWin, pruebaUnit, pruebaReplayAt, pruebaReplayDate]);
 
   const load = useCallback(async () => {
     const key = `${radius}|${inst}|${expIdx}`;
@@ -753,6 +766,10 @@ export default function VisionFuturaTab() {
   const pickPruebaWin = (x: PruebaWindow) => {
     setPruebaWin(x);
     try { window.localStorage.setItem(KEY_PRUEBA_WIN, String(x)); } catch { /* ignorar */ }
+  };
+  const pickPruebaUnit = (u: PruebaUnit) => {
+    setPruebaUnit(u);
+    try { window.localStorage.setItem(KEY_PRUEBA_UNIT, u); } catch { /* ignorar */ }
   };
   const pickNetPeriod = (x: NetPeriod) => {
     setNetPeriod(x);
@@ -1036,14 +1053,26 @@ export default function VisionFuturaTab() {
     }
     chartCandles = out;
   }
-  const pruebaView = ((): { ladder: PruebaLadder; chart: PruebaChart } | null => {
+  const pruebaView = ((): { ladder: PruebaLadder; rows: typeof view.rows; chart: PruebaChart } | null => {
     if (ladder !== "prueba" || pruebaUnavailable || !prueba) return null;
     const d = prueba.data;
     // Las MISMAS filas que dibuja la escalera: cuadrícula + filas vacías hasta cubrir el rango del precio.
     const pxVals = (chartCandles.length ? chartCandles.flatMap((c) => [c.high, c.low]) : view.priceSeries.map((x) => x.value))
       .concat(view.spot.spx).filter((v) => Number.isFinite(v) && v > 0);
-    const cover = pxVals.length ? { lo: Math.min(...pxVals), hi: Math.max(...pxVals) } : null;
-    const strikes = gridRows(view.rows, gridStep, cover).map((r) => r.spx);
+    const cover0 = pxVals.length ? { lo: Math.min(...pxVals), hi: Math.max(...pxVals) } : null;
+    // Escalera AMPLIADA (Carlos, 20-nov: "amplifica la escalera"): también caben los strikes con
+    // posicionamiento acumulado hasta ±PRUEBA_EXTRA_PTS del precio (ej. los puts 6,900 a 120 pts que
+    // jalaron el precio), con filas vacías donde MarketSnack no trae GEX.
+    const far = d.cur.filter((p) => p.net !== 0 && Math.abs(p.strike - view.spot.spx) <= PRUEBA_EXTRA_PTS * scale).map((p) => p.strike);
+    const cover = cover0 || far.length
+      ? {
+          lo: Math.min(...(cover0 ? [cover0.lo] : []), ...far),
+          hi: Math.max(...(cover0 ? [cover0.hi] : []), ...far),
+          maxExtra: Math.ceil((PRUEBA_EXTRA_PTS * scale) / gridStep) + 2,
+        }
+      : null;
+    const rows = gridRows(view.rows, gridStep, cover);
+    const strikes = rows.map((r) => r.spx);
     const gexBy = new Map(view.rows.map((r) => [r.spx, r.netGex] as [number, number]));
     const lad = buildLadder(new Map(d.cur.map((p) => [p.strike, p])), new Map(d.prev.map((p) => [p.strike, p])), strikes, gexBy, view.spot.spx);
     // Desvanecido: lo que deja de ser clave se queda tenue PRUEBA_FADE_MS (se recalcula en cada refresco).
@@ -1061,10 +1090,12 @@ export default function VisionFuturaTab() {
     }
     return {
       ladder: lad,
+      rows,
       chart: {
         ladder: lad,
         agg: new Map(d.agg.map((a) => [a.strike, a])),
-        label: windowLabel(d.window),
+        label: d.cumulative ? `día · ▲ vs hace ${d.window === "1D" ? "15m" : windowLabel(d.window)}` : windowLabel(d.window),
+        unit: d.unit ?? "delta",
         marks,
       },
     };
@@ -1351,16 +1382,24 @@ export default function VisionFuturaTab() {
           <h4 style={{ margin: 0 }}>Escalera en vivo</h4>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <div className="view-toggle">
-            <button className={ladder === "longshort" ? "active" : ""} onClick={() => pickLadder("longshort")} title="Barras de posicionamiento: verde = apuestas arriba, morado = apuestas abajo">Long/Short</button>
+            {SHOW_LONGSHORT && <button className={ladder === "longshort" ? "active" : ""} onClick={() => pickLadder("longshort")} title="Barras de posicionamiento: verde = apuestas arriba, morado = apuestas abajo">Long/Short</button>}
             <button className={ladder === "gamma" ? "active" : ""} onClick={() => pickLadder("gamma")} title="Barras de GEX neto por strike: verde = frena el precio, rojo = lo acelera">Gamma</button>
             <button className={ladder === "neto" ? "active" : ""} onClick={() => pickLadder("neto")} title="Una barra neta por strike del periodo: verde → Long (calls compradas + puts vendidas), morada ← Short; tenue = poco dinero">Neto</button>
             <button className={ladder === "prueba" ? "active" : ""} onClick={() => pickLadder("prueba")} title="Fórmula oficial sobre el flujo trade por trade: delta $ × apertura, spreads en su strike vendido; verde → LARGO, roja ← CORTO; pisos celestes y techos amarillos">Prueba</button>
           </div>
           {ladder === "prueba" && (
-            <div className="view-toggle">
+            <div className="view-toggle" style={{ alignItems: "center" }}>
+              {/* Carlos, 20-nov: las barras siempre son del día; estos botones solo eligen la ventana del agresor (y del ▲). */}
+              <span style={{ fontSize: 12, color: "var(--muted)", padding: "0 6px" }} title="Las barras de posicionamiento siempre son el acumulado del día">Agresor:</span>
               {PRUEBA_WINDOWS.map((x) => (
-                <button key={String(x)} className={pruebaWin === x ? "active" : ""} onClick={() => pickPruebaWin(x)} title={x === "1D" ? "Todo el día (se compara con el día hasta hace 15 min)" : `Flujo de los últimos ${windowLabel(x)} (se compara con los ${windowLabel(x)} anteriores)`}>{windowLabel(x)}</button>
+                <button key={String(x)} className={pruebaWin === x ? "active" : ""} onClick={() => pickPruebaWin(x)} title={`Agresor de ${x === "1D" ? "todo el día" : `los últimos ${windowLabel(x)}`}. ▲ ENTRANDO / tenue = la barra creció o se cerró en ${x === "1D" ? "los últimos 15 min" : `los últimos ${windowLabel(x)}`}. Las barras siempre son el acumulado del día.`}>{x === "1D" ? "Día" : windowLabel(x)}</button>
               ))}
+            </div>
+          )}
+          {ladder === "prueba" && (
+            <div className="view-toggle">
+              <button className={pruebaUnit === "contratos" ? "active" : ""} onClick={() => pickPruebaUnit("contratos")} title="Barras en contratos del agresor (como SofIA): las compras de puts lejanos pesan igual que cerca del precio">Contratos</button>
+              <button className={pruebaUnit === "delta" ? "active" : ""} onClick={() => pickPruebaUnit("delta")} title="Barras en $ de delta (fórmula oficial): lo cercano al precio pesa más, lo muy OTM casi no se ve">Delta $</button>
             </div>
           )}
           {ladder === "neto" && (
@@ -1380,7 +1419,7 @@ export default function VisionFuturaTab() {
           </div>
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
-          {LAYERS.filter((l) => l.key !== "posicionamiento" && l.key !== "magneto" && l.key !== "agresor_neto").map((l) => {
+          {LAYERS.filter((l) => l.key !== "posicionamiento" && l.key !== "magneto" && l.key !== "agresor_neto" && (ladder !== "prueba" || PRUEBA_LAYERS.has(l.key))).map((l) => {
             const on = layers[l.key];
             return (
               <button
@@ -1512,7 +1551,7 @@ export default function VisionFuturaTab() {
           <div className="wheel-empty">{levelsSrc} no devolvió contratos para {view.expiration}.</div>
         ) : (
           <VisionFuturaChart
-            rows={view.rows}
+            rows={pruebaView?.rows ?? view.rows}
             netGexTotal={view.netGex ?? null}
             spot={view.spot.spx}
             priceSeries={view.priceSeries}
@@ -1526,7 +1565,10 @@ export default function VisionFuturaTab() {
             dealerLevels={view.dealerLevels}
             expectedMove={view.expectedMove}
             conversion={view.conversion}
-            layers={{ ...layers, posicionamiento: ladder === "longshort", historial_ls: ladder === "gamma" ? false : layers.historial_ls }}
+            layers={ladder === "prueba"
+              // Vista Prueba: solo las capas de PRUEBA_LAYERS (con su interruptor); el resto apagado sin tocar lo guardado.
+              ? { ...(Object.fromEntries(LAYERS.map((l) => [l.key, PRUEBA_LAYERS.has(l.key) ? layers[l.key] : false])) as Record<LayerKey, boolean>), agresor_neto: layers.agresor_neto }
+              : { ...layers, posicionamiento: ladder === "longshort", historial_ls: ladder === "gamma" ? false : layers.historial_ls }}
             gexBars={ladder === "gamma"}
             netPos={netView}
             prueba={pruebaView?.chart ?? null}

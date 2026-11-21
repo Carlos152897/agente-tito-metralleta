@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  aggressorSide, buildLadder, findConflicts, groupStructures, openingFactor, positionWindow, prepare, trendOf, windowBounds,
+  aggressorSide, buildLadder, cumulativeBounds, findConflicts, groupStructures, openingFactor, positionWindow, prepare, trendOf, windowBounds,
   type PruebaTrade, type StrikePos,
 } from "./visionFuturaPrueba";
 
@@ -278,5 +278,36 @@ describe("clasificador.py (portado tal cual)", () => {
       tr({ strike: 7030, cp: "C", ...atBid, t: T0 + 2500 }), // 2.5 s de la primera → grupo nuevo (solo)
     ]).structures;
     expect(s.map((x) => x.kind)).toEqual(["credit_call", "suelta"]);
+  });
+});
+
+describe("Contratos y barras acumuladas (20-nov)", () => {
+  it("en contratos un put lejano pesa lo mismo que uno cerca (la delta en $ lo achica)", () => {
+    const trades = [
+      tr({ strike: 7000, cp: "P", ...atAsk }),
+      tr({ strike: 6900, cp: "P", ...atAsk, delta: -0.05 }),
+    ];
+    const c = positionWindow(prepare(trades), T0 - 1, T0 + 1, "contratos").byStrike;
+    expect(c.get(7000)!.net).toBeCloseTo(-10);
+    expect(c.get(6900)!.net).toBeCloseTo(-10);
+    const d = positionWindow(prepare(trades), T0 - 1, T0 + 1).byStrike;
+    expect(d.get(6900)!.net / d.get(7000)!.net).toBeCloseTo(0.1);
+  });
+
+  it("un spread cuenta los contratos de la pata vendida una vez", () => {
+    const trades = [
+      tr({ strike: 6990, cp: "P", ...atBid, size: 20 }),
+      tr({ strike: 6980, cp: "P", ...atAsk, size: 20 }),
+    ];
+    const c = positionWindow(prepare(trades), T0 - 1, T0 + 1, "contratos").byStrike;
+    expect(c.get(6990)!.buckets.creditPut).toBeCloseTo(20);
+    expect(c.get(6980)).toBeUndefined();
+  });
+
+  it("acumulado: la barra es el día entero y se compara con el día hasta hace N min", () => {
+    const open = T0 - 3 * 3_600_000;
+    expect(cumulativeBounds(15, T0, open)).toEqual({ cur: [open, T0], prev: [open, T0 - 15 * 60_000] });
+    expect(cumulativeBounds("1D", T0, open).prev[1]).toBe(T0 - 15 * 60_000);
+    expect(cumulativeBounds(60, open + 60_000, open).prev).toEqual([open, open]);
   });
 });

@@ -7,8 +7,8 @@
 import { NextResponse } from "next/server";
 import { loadPruebaFeed, loadSavedPruebaFeed, PRUEBA_DATA_TUNING } from "@/lib/visionFuturaPruebaData";
 import {
-  aggressorSide, positionWindow, prepare, PRUEBA_WINDOWS, windowBounds,
-  type PruebaAgg, type PruebaResponse, type PruebaTrade,
+  aggressorSide, cumulativeBounds, positionWindow, prepare, PRUEBA_WINDOWS, windowBounds,
+  type PruebaAgg, type PruebaResponse, type PruebaTrade, type PruebaUnit,
 } from "@/lib/visionFuturaPrueba";
 
 export const runtime = "nodejs";
@@ -60,11 +60,16 @@ export async function GET(req: Request) {
     const key = `${feed.date}|${feed.version}|${feed.trades.length}`;
     if (!prepCache || prepCache.key !== key) prepCache = { key, prep: prepare(feed.trades) };
     const prep = prepCache.prep;
+    // Barras: acumuladas del día (no se borran mientras no cierren) y en contratos por defecto; &acc=0 /
+    // &u=delta = la ventana suelta y la delta en $ de antes. El agresor siempre es la ventana reciente.
+    const unit: PruebaUnit = url.searchParams.get("u") === "delta" ? "delta" : "contratos";
+    const cumulative = url.searchParams.get("acc") !== "0";
     const bounds = windowBounds(w, feed.asOf, feed.open);
-    const cur = positionWindow(prep, bounds.cur[0], bounds.cur[1]);
-    const prev = positionWindow(prep, bounds.prev[0], bounds.prev[1]);
+    const pb = cumulative ? cumulativeBounds(w, feed.asOf, feed.open) : bounds;
+    const cur = positionWindow(prep, pb.cur[0], pb.cur[1], unit);
+    const prev = positionWindow(prep, pb.prev[0], pb.prev[1], unit);
     const body: PruebaResponse = {
-      inst, date: feed.date, window: w, asOf: feed.asOf,
+      inst, date: feed.date, window: w, unit, cumulative, asOf: feed.asOf,
       cur: [...cur.byStrike.values()], prev: [...prev.byStrike.values()],
       unclassified: cur.unclassified, classified: cur.classified,
       bySubagent: cur.bySubagent, prevBySubagent: prev.bySubagent, structures: cur.structures,
