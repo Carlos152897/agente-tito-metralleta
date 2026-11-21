@@ -1035,25 +1035,12 @@ export default function VisionFuturaChart(rawProps: Props) {
                 const ry = y(b.strike) - 6;
                 const fill = long ? PRUEBA_LONG : PRUEBA_SHORT;
                 const op = b.trend === "saliendo" ? 0.35 : b.frac >= 0.1 ? 0.88 : 0.5;
-                const arrow = b.trend === "entrando" ? "▲ ENTRANDO" : b.trend === "saliendo" ? "▼ SALIENDO" : "";
-                const txt = `${long ? "+" : "−"}${money(Math.abs(b.net))} Δ${b.dominant ? ` · ${b.dominant}` : ""}`;
-                // Si el texto no cabe afuera de la barra (choca con la columna de precios o con el
-                // agresor), va DENTRO de la barra, pegado al eje, en blanco.
-                const estW = (txt.length + (arrow ? arrow.length + 1 : 0)) * 5.3;
-                const fitsOut = long ? posX + w + 4 + estW <= plotR - 4 : posX - w - 4 - estW >= plotL + 4;
-                const inside = !fitsOut && w >= estW * 0.6;
-                const outX = inside ? (long ? posX + 4 : posX - 4) : long ? posX + w + 4 : posX - w - 4;
-                const arrowCol = inside ? "#ffffff" : b.trend === "entrando" ? "#f5f7fb" : "#9aa5c0";
+                // Sin etiquetas sobre las barras (Carlos, 20-nov: "basta con los posicionamientos verdes
+                // y rojos"); el detalle sigue en el tooltip de la fila.
                 return (
                   <g key={`pr-${b.strike}`}>
                     <rect y={ry} height={12} rx={1} fill={fill}
                       style={{ x: long ? posX : posX - w, width: w, opacity: op, transition: "x 300ms ease, width 300ms ease, opacity 300ms ease" } as React.CSSProperties} />
-                    <text x={outX} y={ry + 10} fontSize={9} fontWeight={b.frac >= 0.1 ? 700 : 400} textAnchor={long ? "start" : "end"}
-                      fill={inside ? "#ffffff" : fill} opacity={b.trend === "saliendo" ? 0.6 : 1} style={{ pointerEvents: "none" }}>
-                      {long
-                        ? <>{txt}{arrow && <tspan fill={arrowCol}> {arrow}</tspan>}</>
-                        : <>{arrow && <tspan fill={arrowCol}>{arrow} </tspan>}{txt}</>}
-                    </text>
                   </g>
                 );
               })}

@@ -293,3 +293,30 @@ export async function loadPruebaFeed(inst = "SPX", now = Date.now()): Promise<Pr
     cookieExpired: l.cookieExpired, error: l.lastError,
   };
 }
+
+// ───────────────────────── Repetición ─────────────────────────
+
+/** Día guardado para "Repetir sesión" (sin red): el de memoria si es el que se está llenando, si no el del disco. */
+let replayCache: { key: string; store: DayStore; version: number } | null = null;
+export function loadSavedPruebaFeed(inst: string, date: string): PruebaFeed | null {
+  const live = lives.get(`${inst}|${date}`);
+  let s: DayStore | null = null;
+  let version = 1;
+  if (live) { sortTrades(live); s = live.store; version = live.version; }
+  else {
+    const key = `${inst}|${date}`;
+    if (replayCache?.key !== key) {
+      const d = loadFromDisk(inst, date);
+      if (!d) return null;
+      d.trades.sort((a, b) => a.t - b.t || a.id - b.id);
+      replayCache = { key, store: d, version: 1 };
+    }
+    s = replayCache.store;
+  }
+  return {
+    inst, date, open: s.open, close: s.close, asOf: s.close, trades: s.trades, version,
+    segmentsDone: s.segments.filter((x) => x.done).length, segmentsTotal: s.segments.length,
+    coveredFrom: s.open, lastTradeT: s.trades.at(-1)?.t ?? null, updatedAt: s.updatedAt,
+    cookieExpired: false, error: null,
+  };
+}

@@ -5,7 +5,7 @@
 // Paso 1. El navegador la pide cada 15 s; los pisos/techos/imanes se arman allá con la gamma de la escalera.
 
 import { NextResponse } from "next/server";
-import { loadPruebaFeed, PRUEBA_DATA_TUNING } from "@/lib/visionFuturaPruebaData";
+import { loadPruebaFeed, loadSavedPruebaFeed, PRUEBA_DATA_TUNING } from "@/lib/visionFuturaPruebaData";
 import {
   aggressorSide, positionWindow, prepare, PRUEBA_WINDOWS, windowBounds,
   type PruebaAgg, type PruebaResponse, type PruebaTrade,
@@ -44,7 +44,19 @@ export async function GET(req: Request) {
   const wRaw = url.searchParams.get("w") ?? "15";
   const w = PRUEBA_WINDOWS.find((x) => String(x) === wRaw) ?? 15;
   try {
-    const feed = await loadPruebaFeed(inst);
+    // Repetición: &date=YYYY-MM-DD&at=ms → el día guardado, cortado en el minuto del cursor (sin mirar el futuro).
+    const rDate = url.searchParams.get("date");
+    const rAt = Number(url.searchParams.get("at"));
+    let feed;
+    if (rDate && /^\d{4}-\d{2}-\d{2}$/.test(rDate) && rAt > 0) {
+      const saved = loadSavedPruebaFeed(inst, rDate);
+      if (!saved) return NextResponse.json({ error: `No hay flujo trade por trade guardado del ${rDate} (solo existe de los días en que la vista Prueba corrió).` }, { status: 404 });
+      const asOf = Math.max(saved.open, Math.min(saved.close, rAt));
+      feed = { ...saved, asOf, trades: saved.trades.filter((t) => t.t <= asOf) };
+      feed.lastTradeT = feed.trades.at(-1)?.t ?? null;
+    } else {
+      feed = await loadPruebaFeed(inst);
+    }
     const key = `${feed.date}|${feed.version}|${feed.trades.length}`;
     if (!prepCache || prepCache.key !== key) prepCache = { key, prep: prepare(feed.trades) };
     const prep = prepCache.prep;

@@ -452,14 +452,20 @@ export default function VisionFuturaTab() {
     } catch { /* sin storage: queda el default */ }
   }, []);
 
-  // Vista Prueba: flujo trade por trade cada 15 s (solo SPX en vivo; la repetición no tiene trades).
+  // Vista Prueba: flujo trade por trade cada 15 s (solo SPX). En la repetición (20-nov) se usa el día
+  // guardado por el colector, cortado en el minuto del cursor (redondeado a 1 min para no pedir de más).
+  const pruebaReplayAt = mode === "repeticion" && replay?.ticks.length
+    ? (replay.ticks[0].time + Math.min(replayMin, replayLastMin(replay)) * 60) * 1000 : null;
+  const pruebaReplayDate = mode === "repeticion" ? replay?.date ?? null : null;
   useEffect(() => {
-    if (ladder !== "prueba" || inst !== "SPX" || mode !== "vivo") return;
+    if (ladder !== "prueba" || inst !== "SPX") return;
+    if (mode !== "vivo" && (pruebaReplayAt == null || !pruebaReplayDate)) return;
     let alive = true;
+    const replayQs = mode === "vivo" ? "" : `&date=${pruebaReplayDate}&at=${pruebaReplayAt}`;
     const pull = async () => {
       setPruebaLoading(true);
       try {
-        const res = await fetch(`/api/vision-futura/prueba?inst=SPX&w=${pruebaWin}`, { cache: "no-store" });
+        const res = await fetch(`/api/vision-futura/prueba?inst=SPX&w=${pruebaWin}${replayQs}`, { cache: "no-store" });
         const json = await res.json();
         if (!alive) return;
         if (!res.ok || json.error) {
@@ -474,10 +480,15 @@ export default function VisionFuturaTab() {
         if (alive) setPruebaLoading(false);
       }
     };
+    // Repetición: se pide al mover el cursor (con una pausa corta por si va en "play"), sin refresco.
+    if (mode !== "vivo") {
+      const t = window.setTimeout(pull, 250);
+      return () => { alive = false; window.clearTimeout(t); };
+    }
     pull();
     const id = window.setInterval(pull, PRUEBA_REFRESH_MS);
     return () => { alive = false; window.clearInterval(id); };
-  }, [ladder, inst, mode, pruebaWin]);
+  }, [ladder, inst, mode, pruebaWin, pruebaReplayAt, pruebaReplayDate]);
 
   const load = useCallback(async () => {
     const key = `${radius}|${inst}|${expIdx}`;
@@ -939,8 +950,7 @@ export default function VisionFuturaTab() {
   })();
   // Vista "Prueba": escalera con la fórmula oficial; la gamma sale de las mismas filas (columna GEX).
   const pruebaUnavailable = ladder !== "prueba" ? null
-    : inst !== "SPX" ? "La vista Prueba por ahora es solo para SPX (el flujo trade por trade de los demás instrumentos todavía no se baja)."
-    : tick ? "La vista Prueba es solo en vivo: la repetición no guarda el flujo trade por trade." : null;
+    : inst !== "SPX" ? "La vista Prueba por ahora es solo para SPX (el flujo trade por trade de los demás instrumentos todavía no se baja)." : null;
   // En la repetición cada paso son 5 min: se compara contra el paso anterior, sin retener.
   const replayUnusual = tick && replayPrevAgg ? detectUnusual(tick.rows, replayPrevAgg, tick.time * 1000) : [];
   const liveUnusual = unusual.filter((h) => Date.now() - h.at <= UNUSUAL_TUNING.holdMs);
