@@ -817,12 +817,21 @@ export default function VisionFuturaTab() {
     : pmLastSec != null ? new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(pmLastSec * 1000))
     : null;
   const pmReport = usePremarketZones(inst, pmDate);
+  // En "Repetir sesión" el volumen cubre TODOS los strikes que recorrió el día (20-nov: con ±60 del
+  // cierre 6,910 solo llegaban 6,855–6,970 y a las 12:50, precio 7,014, el Imán GEX × lado y el agresor
+  // no tenían lado en sus strikes → no salían).
+  const replayVolRange = (() => {
+    if (mode !== "repeticion" || !replay) return null;
+    let lo = Infinity, hi = -Infinity;
+    for (const t of replay.ticks) for (const r of t.rows) { if (r.spx < lo) lo = r.spx; if (r.spx > hi) hi = r.spx; }
+    return hi >= lo ? { spot: (lo + hi) / 2, radius: (hi - lo) / 2 + (replay.strikeStep ?? 5) } : null;
+  })();
   const vol = useVolumeDelta({
-    // En "Repetir sesión": los contratos que vencían ese día (el 0DTE repetido), con el radio de la repetición.
+    // En "Repetir sesión": los contratos que vencían ese día (el 0DTE repetido), con el rango del día.
     inst,
     expiration: mode === "repeticion" && replay ? replay.expiration || replay.date : data?.expiration ?? null,
-    spot: data?.spot.spx ?? null,
-    radius: mode === "repeticion" && replay ? replay.radius : data?.radius ?? null,
+    spot: replayVolRange?.spot ?? data?.spot.spx ?? null,
+    radius: mode === "repeticion" && replay ? replayVolRange?.radius ?? replay.radius : data?.radius ?? null,
     enabled: ((layers.volumen_delta && layers.agresor) || layers.iman_flujo || layers.imanes_sofia || layers.iman_acumulado || layers.iman_gex) && !NIGHT_IDS.includes(inst),
   });
   // Frescura del volumen delta (Carlos, 19-nov: "nunca quiero retrasos, siempre respaldo y que siempre
