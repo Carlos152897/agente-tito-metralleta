@@ -43,6 +43,8 @@ const PRUEBA_TECHO = "#F5C518";
 const PRUEBA_PISO = "#4FC3F7";
 const PRUEBA_LONG = "#12b76a";
 const PRUEBA_SHORT = "#ef4444";
+/** Las barras de la vista Prueba se escalan con los strikes a ±N pts del precio (no con toda la escalera). */
+const PRUEBA_SCALE_PTS = 50;
 
 export type LayerKey =
   | "precio"
@@ -1027,13 +1029,18 @@ export default function VisionFuturaChart(rawProps: Props) {
           const pr = props.prueba;
           const shown = new Set(rows.map((r) => r.spx));
           const bars = pr.ladder.bars.filter((b) => shown.has(b.strike) && b.net !== 0);
-          const maxAbs = Math.max(0, ...bars.map((b) => Math.abs(b.net)));
+          // Escala con los strikes CERCA del precio (±PRUEBA_SCALE_PTS): con la escalera ampliada a ±150
+          // un strike lejano enorme (24-nov: 7,320 con 2,382 contratos, 125 pts arriba) dejaba las barras
+          // junto al precio en 10–15 px — "no me salen las posiciones". Lo que pasa del tope se corta con ».
+          const near = bars.filter((b) => Math.abs(b.strike - props.spot) <= PRUEBA_SCALE_PTS);
+          const maxAbs = Math.max(0, ...(near.length ? near : bars).map((b) => Math.abs(b.net)));
           return (
             <g>
               <line x1={posX} x2={posX} y1={TOP} y2={plotBottom} stroke="#3a4560" strokeDasharray="2 3" />
               {bars.map((b) => {
                 const long = b.net > 0;
-                const w = maxAbs > 0 ? Math.max(3, (Math.abs(b.net) / maxAbs) * POS_SPAN) : 0;
+                const over = maxAbs > 0 && Math.abs(b.net) > maxAbs * 1.001;
+                const w = maxAbs > 0 ? Math.max(3, Math.min(1, Math.abs(b.net) / maxAbs) * POS_SPAN) : 0;
                 const ry = y(b.strike) - 6;
                 const fill = long ? PRUEBA_LONG : PRUEBA_SHORT;
                 const op = b.trend === "saliendo" ? 0.35 : b.frac >= 0.1 ? 0.88 : 0.5;
@@ -1043,6 +1050,10 @@ export default function VisionFuturaChart(rawProps: Props) {
                   <g key={`pr-${b.strike}`}>
                     <rect y={ry} height={12} rx={1} fill={fill}
                       style={{ x: long ? posX : posX - w, width: w, opacity: op, transition: "x 300ms ease, width 300ms ease, opacity 300ms ease" } as React.CSSProperties} />
+                    {over && (
+                      <text x={long ? posX + w - 3 : posX - w + 3} y={ry + 10} fontSize={11} fontWeight={700}
+                        textAnchor={long ? "end" : "start"} fill="#0b1020">{long ? "»" : "«"}</text>
+                    )}
                   </g>
                 );
               })}
