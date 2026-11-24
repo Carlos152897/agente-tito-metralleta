@@ -27,6 +27,11 @@ export const PRUEBA_DATA_TUNING = {
   concurrency: 3,
   /** La cola en vivo arranca este tanto antes de "ahora" la primera vez. */
   tailStartMin: 6,
+  /** La cola pide desde el último trade recibido menos esto (MarketSnack publica con retraso). */
+  tailOverlapMs: 120_000,
+  /** Barrido de huecos: cada cuánto y con cuánto retraso respecto al reloj. */
+  sweepEveryMs: 5 * 60_000,
+  sweepLagMs: 3 * 60_000,
   /** Tope de páginas por pedido de la cola (50 trades c/u). */
   maxTailPages: 60,
   saveEveryMs: 60_000,
@@ -50,6 +55,8 @@ interface DayStore {
   tailStart: number;
   /** Último instante bajado completo por la cola. */
   tailTo: number;
+  /** Hasta dónde ya se re-barrió el día para tapar huecos de la cola (ausente = nunca → barre todo). */
+  sweptTo?: number;
   updatedAt: number;
 }
 
@@ -260,7 +267,13 @@ export async function loadPruebaFeed(inst = "SPX", now = Date.now()): Promise<Pr
   // Cola en vivo (solo con la sesión abierta o recién cerrada sin cubrir).
   if (s.tailTo < asOf - 1000) {
     try {
-      const from = Math.max(s.tailStart, s.tailTo - 3000);
+      // Desde el ÚLTIMO TRADE recibido (no desde el reloj) con traslape: MarketSnack publica los trades
+      // con retraso (24-nov: >1 min). Pidiendo "desde tailTo − 3 s" cada consulta llegaba vacía, tailTo
+      // avanzaba igual y desde las 10:39 no entró nada — "no se ven los agresores". Los repetidos se
+      // descartan por id.
+      let lastT = s.tailStart;
+      for (const t of s.trades) if (t.t > lastT) lastT = t.t;
+      const from = Math.max(s.tailStart, Math.min(s.tailTo, lastT) - PRUEBA_DATA_TUNING.tailOverlapMs);
       const list = await fetchRange(inst, from, null, PRUEBA_DATA_TUNING.maxTailPages);
       addTrades(l, list);
       // Tope de páginas (servidor reiniciado a media sesión): el hueco queda como tramo pendiente.
@@ -276,6 +289,18 @@ export async function loadPruebaFeed(inst = "SPX", now = Date.now()): Promise<Pr
       l.lastError = e instanceof Error ? e.message : String(e);
       if (e instanceof PruebaCookieError) l.cookieExpired = true;
     }
+  }
+  // Barrido: vuelve a pedir lo ya pasado (con retraso, por la demora de MarketSnack) para tapar huecos
+  // de la cola. 24-nov: faltaban 9:39–9:48, 10:17–10:22, 10:25–10:47 sin que nadie se diera cuenta.
+  const tune = PRUEBA_DATA_TUNING;
+  const sweepEnd = asOf >= s.close ? s.close : asOf - tune.sweepLagMs;
+  const swept = s.sweptTo ?? s.open;
+  if (sweepEnd > swept && (s.sweptTo == null || sweepEnd - swept >= tune.sweepEveryMs || asOf >= s.close)) {
+    const seg = tune.segMin * 60_000;
+    for (let a = Math.max(s.open, swept - tune.tailOverlapMs); a < sweepEnd; a += seg) {
+      s.segments.push({ from: a, to: Math.min(sweepEnd, a + seg), done: false });
+    }
+    s.sweptTo = sweepEnd;
   }
   sortTrades(l);
   if (!l.cookieExpired) startFill(l);
