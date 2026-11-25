@@ -5,6 +5,7 @@
 // Paso 1. El navegador la pide cada 15 s; los pisos/techos/imanes se arman allá con la gamma de la escalera.
 
 import { NextResponse } from "next/server";
+import { pruebaSupported } from "@/lib/visionFuturaInstruments";
 import { loadPruebaFeed, loadSavedPruebaFeed, PRUEBA_DATA_TUNING } from "@/lib/visionFuturaPruebaData";
 import {
   aggressorSide, cumulativeBounds, positionWindow, prepare, PRUEBA_WINDOWS, windowBounds,
@@ -40,7 +41,10 @@ function aggressorBy(trades: PruebaTrade[], cur: [number, number], prev: [number
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const inst = (url.searchParams.get("inst") ?? "SPX").toUpperCase();
-  if (inst !== "SPX") return NextResponse.json({ error: "La vista Prueba por ahora es solo SPX." }, { status: 400 });
+  // SPX, TSLA y acciones del buscador. NQ/QQQ/SPY y los modos noche todavía no.
+  if (!pruebaSupported(inst)) return NextResponse.json({ error: "La vista Prueba por ahora es solo SPX, TSLA y acciones." }, { status: 400 });
+  const expQ = url.searchParams.get("exp");
+  const exp = expQ && /^\d{4}-\d{2}-\d{2}$/.test(expQ) ? expQ : null;
   const wRaw = url.searchParams.get("w") ?? "15";
   const w = PRUEBA_WINDOWS.find((x) => String(x) === wRaw) ?? 15;
   try {
@@ -49,15 +53,15 @@ export async function GET(req: Request) {
     const rAt = Number(url.searchParams.get("at"));
     let feed;
     if (rDate && /^\d{4}-\d{2}-\d{2}$/.test(rDate) && rAt > 0) {
-      const saved = loadSavedPruebaFeed(inst, rDate);
+      const saved = loadSavedPruebaFeed(inst, rDate, inst !== "SPX" && exp && exp >= rDate ? exp : rDate);
       if (!saved) return NextResponse.json({ error: `No hay flujo trade por trade guardado del ${rDate} (solo existe de los días en que la vista Prueba corrió).` }, { status: 404 });
       const asOf = Math.max(saved.open, Math.min(saved.close, rAt));
       feed = { ...saved, asOf, trades: saved.trades.filter((t) => t.t <= asOf) };
       feed.lastTradeT = feed.trades.at(-1)?.t ?? null;
     } else {
-      feed = await loadPruebaFeed(inst);
+      feed = await loadPruebaFeed(inst, Date.now(), inst === "SPX" ? null : exp);
     }
-    const key = `${feed.date}|${feed.version}|${feed.trades.length}`;
+    const key = `${feed.inst}|${feed.date}|${feed.exp}|${feed.version}|${feed.trades.length}`;
     if (!prepCache || prepCache.key !== key) prepCache = { key, prep: prepare(feed.trades) };
     const prep = prepCache.prep;
     // Barras: acumuladas del día (no se borran mientras no cierren) y en contratos por defecto; &acc=0 /

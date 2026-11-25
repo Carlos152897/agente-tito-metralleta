@@ -9,6 +9,8 @@ import {
 } from "@/lib/visionFuturaPrueba";
 
 const n0 = (v: number) => v.toLocaleString("en-US", { maximumFractionDigits: 0 });
+/** Strikes: TSLA y acciones usan 2.5 / 0.5 — no redondear. */
+const sk = (v: number) => v.toLocaleString("en-US", { maximumFractionDigits: 2 });
 const hhmm = (ms: number, sec = false) =>
   new Date(ms).toLocaleTimeString("es-MX", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", ...(sec ? { second: "2-digit" } : {}), hour12: false });
 
@@ -83,14 +85,14 @@ export default function VisionFuturaPruebaPanel(props: {
     if (a < p * 0.9) return <span style={{ color: "var(--faint)" }}>▼ saliendo</span>;
     return <span style={{ color: "var(--muted)" }}>= igual</span>;
   };
-  const dist = (m: { distPts: number; distPct: number }) => `${m.distPts >= 0 ? "+" : "−"}${n0(Math.abs(m.distPts))} pts (${Math.abs(m.distPct).toFixed(2)}%)`;
+  const dist = (m: { distPts: number; distPct: number }) => `${m.distPts >= 0 ? "+" : "−"}${sk(Math.abs(m.distPts))} pts (${Math.abs(m.distPct).toFixed(2)}%)`;
   const head: React.CSSProperties = { fontWeight: 700, color: "var(--text)" };
 
   return (
     <div style={box}>
       {cookie && <div style={{ color: "#fff", background: "#b42318", padding: "6px 10px", borderRadius: 8, fontWeight: 700 }}>Cookie de MarketSnack expirada — actualízala en Ajustes. Se muestran los últimos datos guardados.</div>}
       <div style={{ fontSize: 12, color: "var(--muted)", display: "flex", flexWrap: "wrap", gap: "2px 12px" }}>
-        <span>Flujo trade por trade · SPX 0DTE {data.date} · trades ≥ ${n0(data.minPremium)} · {n0(data.tradesTotal)} trades del día</span>
+        <span>Flujo trade por trade · {data.inst} {data.inst === "SPX" ? "0DTE" : "venc. más próximo"} · {data.date} · trades ≥ ${n0(data.minPremium)} · {n0(data.tradesTotal)} trades del día</span>
         <span>{n0(data.classified)} clasificados en {props.windowName} · {n0(data.unclassified)} al mid (no clasificados)</span>
         <span>Actualizado {props.receivedAt ? hhmm(props.receivedAt, true) : "—"} NY{data.lastTradeT ? ` · último trade ${hhmm(data.lastTradeT, true)}` : ""}</span>
         {filling && <span style={{ color: "var(--amber-text)" }}>Cargando el día: {data.segmentsDone} de {data.segmentsTotal} tramos (completo desde {hhmm(data.coveredFrom)})</span>}
@@ -103,7 +105,7 @@ export default function VisionFuturaPruebaPanel(props: {
           <div style={head}>1. ¿Dónde hay más posicionamiento?</div>
           {top ? (
             <div>
-              <b>{n0(top.strike)}</b>: <span style={{ color: top.net >= 0 ? LONG : SHORT, fontWeight: 700 }}>{top.net >= 0 ? "LARGO" : "CORTO"} {usd(top.net)}{dTag}</span>{data.cumulative ? <span style={{ color: "var(--muted)" }}> · acumulado del día</span> : null}
+              <b>{sk(top.strike)}</b>: <span style={{ color: top.net >= 0 ? LONG : SHORT, fontWeight: 700 }}>{top.net >= 0 ? "LARGO" : "CORTO"} {usd(top.net)}{dTag}</span>{data.cumulative ? <span style={{ color: "var(--muted)" }}> · acumulado del día</span> : null}
               {top.dominant ? <> · domina <b>{top.dominant}</b></> : null}
             </div>
           ) : <div style={{ color: "var(--muted)" }}>Sin posicionamiento en esta ventana.</div>}
@@ -136,10 +138,10 @@ export default function VisionFuturaPruebaPanel(props: {
 
         <div>
           <div style={head}>4. Techo, piso e imanes</div>
-          <div>Techo clave: {techo ? <b style={{ color: TECHO }}>{n0(techo.strike)}</b> : "—"}{techo ? ` · defensa ${usd(techo.score).replace("+", "")}` : ""}</div>
-          <div>Piso clave: {piso ? <b style={{ color: PISO }}>{n0(piso.strike)}</b> : "—"}{piso ? ` · defensa ${usd(piso.score).replace("+", "")}` : ""}</div>
-          <div>🧲+ atrae: {ladder.magnetPos ? <><b style={{ color: LONG }}>{n0(ladder.magnetPos.strike)}</b> {dist(ladder.magnetPos)} · {ladder.magnetPos.why}</> : "—"}</div>
-          <div>🧲− rechaza: {ladder.magnetNeg ? <><b style={{ color: ladder.magnetNeg.why === "techo clave" ? TECHO : PISO }}>{n0(ladder.magnetNeg.strike)}</b> {dist(ladder.magnetNeg)} · {ladder.magnetNeg.why}</> : "—"}</div>
+          <div>Techo clave: {techo ? <b style={{ color: TECHO }}>{sk(techo.strike)}</b> : "—"}{techo ? ` · defensa ${usd(techo.score).replace("+", "")}` : ""}</div>
+          <div>Piso clave: {piso ? <b style={{ color: PISO }}>{sk(piso.strike)}</b> : "—"}{piso ? ` · defensa ${usd(piso.score).replace("+", "")}` : ""}</div>
+          <div>🧲+ atrae: {ladder.magnetPos ? <><b style={{ color: LONG }}>{sk(ladder.magnetPos.strike)}</b> {dist(ladder.magnetPos)} · {ladder.magnetPos.why}</> : "—"}</div>
+          <div>🧲− rechaza: {ladder.magnetNeg ? <><b style={{ color: ladder.magnetNeg.why === "techo clave" ? TECHO : PISO }}>{sk(ladder.magnetNeg.strike)}</b> {dist(ladder.magnetNeg)} · {ladder.magnetNeg.why}</> : "—"}</div>
         </div>
 
         <div>
@@ -147,8 +149,8 @@ export default function VisionFuturaPruebaPanel(props: {
           {conflicts.length ? conflicts.map((c) => (
             <div key={`${c.long}-${c.short}`}>
               {c.long === c.short
-                ? <><b>{n0(c.long)}</b>: largo <span style={{ color: LONG }}>{usd(c.longAmt)}</span> y corto <span style={{ color: SHORT }}>{usd(-c.shortAmt)}</span> en el mismo strike</>
-                : <>largo <b>{n0(c.long)}</b> <span style={{ color: LONG }}>{usd(c.longAmt)}</span> vs corto <b>{n0(c.short)}</b> <span style={{ color: SHORT }}>{usd(-c.shortAmt)}</span></>}
+                ? <><b>{sk(c.long)}</b>: largo <span style={{ color: LONG }}>{usd(c.longAmt)}</span> y corto <span style={{ color: SHORT }}>{usd(-c.shortAmt)}</span> en el mismo strike</>
+                : <>largo <b>{sk(c.long)}</b> <span style={{ color: LONG }}>{usd(c.longAmt)}</span> vs corto <b>{sk(c.short)}</b> <span style={{ color: SHORT }}>{usd(-c.shortAmt)}</span></>}
             </div>
           )) : <div style={{ color: "var(--muted)" }}>Sin largos y cortos grandes juntos.</div>}
         </div>

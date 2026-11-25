@@ -1,6 +1,6 @@
 // Colector del flujo TRADE POR TRADE para la vista "Prueba" (servidor). Fuente: MarketSnack
 // /api/flow_feed (Time & Sales) con la cookie guardada (lib/marketsnackCookie.ts, nunca se escribe en
-// logs). Solo SPX 0DTE (filter[dte][lte]=0) con prima ≥ PRUEBA_DATA_TUNING.minPremium: SPX imprime
+// logs). SPX 0DTE (filter[dte][lte]=0); TSLA y acciones = el vencimiento que muestra la pestaña con prima ≥ PRUEBA_DATA_TUNING.minPremium: SPX imprime
 // cientos de trades por segundo y bajar TODO el día no es viable.
 //
 // Cómo se llena el día:
@@ -46,6 +46,8 @@ interface Segment { from: number; to: number; done: boolean }
 interface DayStore {
   inst: string;
   date: string;
+  /** Vencimiento que se baja (SPX = el mismo día; TSLA y acciones = el que muestra la pestaña). Ausente = date. */
+  exp?: string;
   minPremium: number;
   open: number;
   close: number;
@@ -74,14 +76,25 @@ interface Live {
 
 const lives = new Map<string, Live>();
 
-function fileOf(inst: string, date: string) {
-  return join(DIR, `${inst}-${date}.json`);
+/** SPX 0DTE conserva el nombre de siempre; otro vencimiento lleva su fecha en el nombre. */
+function fileOf(inst: string, date: string, exp = date) {
+  return join(DIR, exp === date ? `${inst}-${date}.json` : `${inst}-${date}-exp${exp}.json`);
+}
+
+/** Días de calendario entre la sesión y el vencimiento (filtro dte de MarketSnack). */
+function dteOf(date: string, exp: string): number {
+  return Math.max(0, Math.round((Date.parse(`${exp}T12:00:00Z`) - Date.parse(`${date}T12:00:00Z`)) / 86_400_000));
+}
+
+/** SPX 0DTE ya viene filtrado por dte=0; otro vencimiento se filtra trade por trade. */
+function expFilter(s: DayStore): string | null {
+  return s.exp && s.exp !== s.date ? s.exp : null;
 }
 
 function save(l: Live) {
   try {
     mkdirSync(DIR, { recursive: true });
-    const f = fileOf(l.store.inst, l.store.date);
+    const f = fileOf(l.store.inst, l.store.date, l.store.exp ?? l.store.date);
     const tmp = `${f}.tmp`;
     writeFileSync(tmp, JSON.stringify(l.store));
     renameSync(tmp, f);
@@ -89,8 +102,8 @@ function save(l: Live) {
   } catch { /* disco lleno / bloqueado: se reintenta en el siguiente guardado */ }
 }
 
-function loadFromDisk(inst: string, date: string): DayStore | null {
-  const f = fileOf(inst, date);
+function loadFromDisk(inst: string, date: string, exp = date): DayStore | null {
+  const f = fileOf(inst, date, exp);
   if (!existsSync(f)) return null;
   try {
     const s = JSON.parse(readFileSync(f, "utf8")) as DayStore;
@@ -105,10 +118,10 @@ interface RawFlow {
   delta: number; implied_volatility: number; open_interest: number; volume: number; timestamp: string; asset_price?: number;
 }
 
-async function fetchPage(inst: string, extra: Record<string, string>, token: string | null): Promise<{ list: RawFlow[]; next: string | null }> {
+async function fetchPage(inst: string, extra: Record<string, string>, token: string | null, dte = 0): Promise<{ list: RawFlow[]; next: string | null }> {
   const cookie = await loadCookie();
   if (!cookie) throw new PruebaCookieError();
-  const p = new URLSearchParams({ "filter[scope]": "all", period: "1d", "filter[dte][lte]": "0", "filter[premium][gte]": String(PRUEBA_DATA_TUNING.minPremium), ...extra });
+  const p = new URLSearchParams({ "filter[scope]": "all", period: "1d", "filter[dte][lte]": String(dte), "filter[premium][gte]": String(PRUEBA_DATA_TUNING.minPremium), ...extra });
   p.append("filter[symbol][]", inst);
   if (token) p.set("next_page_token", token);
   for (let attempt = 0; ; attempt++) {
@@ -138,17 +151,17 @@ function toTrade(r: RawFlow): PruebaTrade | null {
   };
 }
 
-/** Todas las páginas de [from, to] (ms). */
-async function fetchRange(inst: string, from: number, to: number | null, maxPages = 10_000): Promise<PruebaTrade[] & { capped?: boolean }> {
+/** Todas las páginas de [from, to] (ms). Con `exp` solo quedan los trades de ese vencimiento. */
+async function fetchRange(inst: string, from: number, to: number | null, maxPages = 10_000, exp: string | null = null, dte = 0): Promise<PruebaTrade[] & { capped?: boolean }> {
   const extra: Record<string, string> = { "filter[timestamp][gte]": new Date(from).toISOString() };
   if (to != null) extra["filter[timestamp][lte]"] = new Date(to).toISOString();
   const out: PruebaTrade[] & { capped?: boolean } = [];
   let token: string | null = null;
   let pages = 0;
   do {
-    const { list, next } = await fetchPage(inst, extra, token);
+    const { list, next } = await fetchPage(inst, extra, token, dte);
     pages += 1;
-    for (const r of list) { const t = toTrade(r); if (t) out.push(t); }
+    for (const r of list) { const t = toTrade(r); if (t && (!exp || t.exp === exp)) out.push(t); }
     token = next;
     if (list.length === 0) break;
   } while (token && pages < maxPages);
@@ -174,7 +187,7 @@ async function sessionDate(inst: string, now: number): Promise<string> {
   return date;
 }
 
-function newStore(inst: string, date: string, now: number): DayStore {
+function newStore(inst: string, date: string, now: number, exp = date): DayStore {
   const open = etTimeToUnix(date, 9, 30) * 1000;
   const close = etTimeToUnix(date, 16, 0) * 1000;
   const tailStart = Math.max(open, Math.min(close, now - PRUEBA_DATA_TUNING.tailStartMin * 60_000));
@@ -182,14 +195,14 @@ function newStore(inst: string, date: string, now: number): DayStore {
   const seg = PRUEBA_DATA_TUNING.segMin * 60_000;
   for (let a = open; a < tailStart; a += seg) segments.push({ from: a, to: Math.min(tailStart, a + seg), done: false });
   // Tras el cierre todo lo cubren los tramos: la cola queda vacía.
-  return { inst, date, minPremium: PRUEBA_DATA_TUNING.minPremium, open, close, trades: [], segments, tailStart, tailTo: tailStart, updatedAt: now };
+  return { inst, date, exp, minPremium: PRUEBA_DATA_TUNING.minPremium, open, close, trades: [], segments, tailStart, tailTo: tailStart, updatedAt: now };
 }
 
-function liveFor(inst: string, date: string, now: number): Live {
-  const key = `${inst}|${date}`;
+function liveFor(inst: string, date: string, now: number, exp = date): Live {
+  const key = `${inst}|${date}|${exp}`;
   let l = lives.get(key);
   if (l) return l;
-  const store = loadFromDisk(inst, date) ?? newStore(inst, date, now);
+  const store = loadFromDisk(inst, date, exp) ?? newStore(inst, date, now, exp);
   l = { store, ids: new Set(store.trades.map((t) => t.id)), sorted: true, savedAt: 0, filling: null, version: 1, lastError: null, cookieExpired: false };
   // Solo un día en memoria por instrumento.
   for (const k of [...lives.keys()]) if (k.startsWith(`${inst}|`)) lives.delete(k);
@@ -224,7 +237,7 @@ function startFill(l: Live) {
       const s = pending.shift();
       if (!s) return;
       try {
-        addTrades(l, await fetchRange(l.store.inst, s.from, s.to));
+        addTrades(l, await fetchRange(l.store.inst, s.from, s.to, 10_000, expFilter(l.store), dteOf(l.store.date, l.store.exp ?? l.store.date)));
         s.done = true;
         sortTrades(l);
         save(l);
@@ -242,6 +255,8 @@ function startFill(l: Live) {
 export interface PruebaFeed {
   inst: string;
   date: string;
+  /** Vencimiento de los trades. */
+  exp: string;
   open: number;
   close: number;
   /** "Ahora" de los cálculos: el reloj en horario; el cierre si ya cerró. */
@@ -259,9 +274,11 @@ export interface PruebaFeed {
 }
 
 /** Baja lo nuevo (cola en vivo), arranca el relleno y devuelve lo que haya. */
-export async function loadPruebaFeed(inst = "SPX", now = Date.now()): Promise<PruebaFeed> {
+export async function loadPruebaFeed(inst = "SPX", now = Date.now(), expWanted: string | null = null): Promise<PruebaFeed> {
   const date = await sessionDate(inst, now);
-  const l = liveFor(inst, date, now);
+  // Vencimiento: el que muestra la pestaña (TSLA no tiene 0DTE los martes/jueves); nunca antes de la sesión.
+  const exp = expWanted && /^\d{4}-\d{2}-\d{2}$/.test(expWanted) && expWanted >= date ? expWanted : date;
+  const l = liveFor(inst, date, now, exp);
   const s = l.store;
   const asOf = Math.min(now, s.close);
   // Cola en vivo (solo con la sesión abierta o recién cerrada sin cubrir).
@@ -274,7 +291,7 @@ export async function loadPruebaFeed(inst = "SPX", now = Date.now()): Promise<Pr
       let lastT = s.tailStart;
       for (const t of s.trades) if (t.t > lastT) lastT = t.t;
       const from = Math.max(s.tailStart, Math.min(s.tailTo, lastT) - PRUEBA_DATA_TUNING.tailOverlapMs);
-      const list = await fetchRange(inst, from, null, PRUEBA_DATA_TUNING.maxTailPages);
+      const list = await fetchRange(inst, from, null, PRUEBA_DATA_TUNING.maxTailPages, expFilter(s), dteOf(date, exp));
       addTrades(l, list);
       // Tope de páginas (servidor reiniciado a media sesión): el hueco queda como tramo pendiente.
       if (list.capped && list.length) {
@@ -312,7 +329,7 @@ export async function loadPruebaFeed(inst = "SPX", now = Date.now()): Promise<Pr
     else break;
   }
   return {
-    inst, date, open: s.open, close: s.close, asOf, trades: s.trades, version: l.version,
+    inst, date, exp, open: s.open, close: s.close, asOf, trades: s.trades, version: l.version,
     segmentsDone: s.segments.filter((x) => x.done).length, segmentsTotal: s.segments.length,
     coveredFrom, lastTradeT: s.trades.at(-1)?.t ?? null, updatedAt: s.updatedAt,
     cookieExpired: l.cookieExpired, error: l.lastError,
@@ -323,15 +340,15 @@ export async function loadPruebaFeed(inst = "SPX", now = Date.now()): Promise<Pr
 
 /** Día guardado para "Repetir sesión" (sin red): el de memoria si es el que se está llenando, si no el del disco. */
 let replayCache: { key: string; store: DayStore; version: number } | null = null;
-export function loadSavedPruebaFeed(inst: string, date: string): PruebaFeed | null {
-  const live = lives.get(`${inst}|${date}`);
+export function loadSavedPruebaFeed(inst: string, date: string, exp = date): PruebaFeed | null {
+  const live = lives.get(`${inst}|${date}|${exp}`);
   let s: DayStore | null = null;
   let version = 1;
   if (live) { sortTrades(live); s = live.store; version = live.version; }
   else {
-    const key = `${inst}|${date}`;
+    const key = `${inst}|${date}|${exp}`;
     if (replayCache?.key !== key) {
-      const d = loadFromDisk(inst, date);
+      const d = loadFromDisk(inst, date, exp);
       if (!d) return null;
       d.trades.sort((a, b) => a.t - b.t || a.id - b.id);
       replayCache = { key, store: d, version: 1 };
@@ -339,7 +356,7 @@ export function loadSavedPruebaFeed(inst: string, date: string): PruebaFeed | nu
     s = replayCache.store;
   }
   return {
-    inst, date, open: s.open, close: s.close, asOf: s.close, trades: s.trades, version,
+    inst, date, exp, open: s.open, close: s.close, asOf: s.close, trades: s.trades, version,
     segmentsDone: s.segments.filter((x) => x.done).length, segmentsTotal: s.segments.length,
     coveredFrom: s.open, lastTradeT: s.trades.at(-1)?.t ?? null, updatedAt: s.updatedAt,
     cookieExpired: false, error: null,

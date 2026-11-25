@@ -95,6 +95,10 @@ export const isNight = (cfg: InstrumentConfig | InstrumentId | string | null | u
 /** Ticker válido para el buscador: letras, números y punto, hasta 6 (sin "/", sin espacios). */
 export const isEquityTicker = (x: string | null | undefined): x is string => !!x && /^[A-Z][A-Z0-9.]{0,5}$/.test(x);
 
+/** Vista "Prueba" (flujo trade por trade): SPX, TSLA y acciones del buscador (no NQ/SPY/QQQ ni noche). */
+export const pruebaSupported = (x: string): boolean =>
+  x === "SPX" || x === "TSLA" || (isEquityTicker(x) && !(x in INSTRUMENTS));
+
 /** Configuración de una acción cualquiera: igual que TSLA con su propio ticker. */
 export function equityInstrument(ticker: string): InstrumentConfig {
   const t = ticker.toUpperCase();

@@ -22,7 +22,7 @@ import { retestAlertFrom, runRetestDay, screenLevels, type RetestAlertIn } from 
 import type { RetestLive } from "@/lib/visionFuturaAlertStore";
 import { orderResultsFromPrices } from "@/lib/visionFuturaAlertOutcome";
 import { hybridFromReplay, type HybridDay } from "@/lib/visionFuturaHybrid";
-import { instrumentOf, isEquityTicker } from "@/lib/visionFuturaInstruments";
+import { instrumentOf, isEquityTicker, pruebaSupported } from "@/lib/visionFuturaInstruments";
 import { historyAt, positionsFromTicks, type PosHistory } from "@/lib/visionFuturaPositioning";
 import { DEFAULT_LABELS, FutureFirstContext, VisionLabelsContext, useVisionLabels } from "./visionLabels";
 import type { InstrumentId, InstrumentLabels } from "@/lib/visionFuturaInstruments";
@@ -470,15 +470,19 @@ export default function VisionFuturaTab() {
   const pruebaReplayAt = mode === "repeticion" && replay?.ticks.length
     ? (replay.ticks[0].time + Math.min(replayMin, replayLastMin(replay)) * 60) * 1000 : null;
   const pruebaReplayDate = mode === "repeticion" ? replay?.date ?? null : null;
+  const pruebaExp = mode === "repeticion" ? replay?.expiration || replay?.date || null : data?.expiration ?? null;
   useEffect(() => {
-    if (ladder !== "prueba" || inst !== "SPX") return;
+    if (ladder !== "prueba" || !pruebaSupported(inst)) return;
     if (mode !== "vivo" && (pruebaReplayAt == null || !pruebaReplayDate)) return;
+    // TSLA/acciones: el vencimiento que muestra la pestaña (los martes no hay 0DTE de TSLA).
+    if (inst !== "SPX" && !pruebaExp) return;
     let alive = true;
     const replayQs = mode === "vivo" ? "" : `&date=${pruebaReplayDate}&at=${pruebaReplayAt}`;
+    const expQs = inst !== "SPX" && pruebaExp ? `&exp=${pruebaExp}` : "";
     const pull = async () => {
       setPruebaLoading(true);
       try {
-        const res = await fetch(`/api/vision-futura/prueba?inst=SPX&w=${pruebaWin}&u=${pruebaUnit}${replayQs}`, { cache: "no-store" });
+        const res = await fetch(`/api/vision-futura/prueba?inst=${encodeURIComponent(inst)}&w=${pruebaWin}&u=${pruebaUnit}${replayQs}${expQs}`, { cache: "no-store" });
         const json = await res.json();
         if (!alive) return;
         if (!res.ok || json.error) {
@@ -501,7 +505,7 @@ export default function VisionFuturaTab() {
     pull();
     const id = window.setInterval(pull, PRUEBA_REFRESH_MS);
     return () => { alive = false; window.clearInterval(id); };
-  }, [ladder, inst, mode, pruebaWin, pruebaUnit, pruebaReplayAt, pruebaReplayDate]);
+  }, [ladder, inst, mode, pruebaWin, pruebaUnit, pruebaReplayAt, pruebaReplayDate, pruebaExp]);
 
   const load = useCallback(async () => {
     const key = `${radius}|${inst}|${expIdx}`;
@@ -967,7 +971,7 @@ export default function VisionFuturaTab() {
   })();
   // Vista "Prueba": escalera con la fórmula oficial; la gamma sale de las mismas filas (columna GEX).
   const pruebaUnavailable = ladder !== "prueba" ? null
-    : inst !== "SPX" ? "La vista Prueba por ahora es solo para SPX (el flujo trade por trade de los demás instrumentos todavía no se baja)." : null;
+    : !pruebaSupported(inst) ? "La vista Prueba por ahora es solo para SPX, TSLA y acciones (el flujo trade por trade de NQ/SPY/QQQ todavía no se baja)." : null;
   // En la repetición cada paso son 5 min: se compara contra el paso anterior, sin retener.
   const replayUnusual = tick && replayPrevAgg ? detectUnusual(tick.rows, replayPrevAgg, tick.time * 1000) : [];
   const liveUnusual = unusual.filter((h) => Date.now() - h.at <= UNUSUAL_TUNING.holdMs);
